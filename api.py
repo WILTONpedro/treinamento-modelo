@@ -1,0 +1,23 @@
+from flask import Flask, request, jsonify
+import pickle
+
+app = Flask(__name__)
+
+# Carregar modelo treinado
+with open("modelo_curriculos.pkl", "rb") as f:
+    clf, vectorizer = pickle.load(f)
+
+@app.route("/classificar", methods=["POST"])
+def classificar():
+    data = request.get_json()
+    texto = data.get("texto", "")
+    if not texto.strip():
+        return jsonify({"erro": "Texto vazio"}), 400
+    
+    x = vectorizer.transform([texto])
+    vaga = clf.predict(x)[0]
+    
+    return jsonify({"vaga": vaga})
+
+if __name__ == "__main__":
+    app.run(port=5000)
