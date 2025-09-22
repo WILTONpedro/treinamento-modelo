@@ -9,6 +9,7 @@ from docx import Document
 import unicodedata
 import logging
 
+C:\Users\Usuario\PROJETOpypy\.venv\Scripts\pytesseract.exe
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 app = Flask(__name__)
