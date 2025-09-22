@@ -6,14 +6,42 @@ import pickle
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
+import re
+import docx
+import pdfplumber
+from nltk.corpus import stopwords
 
-# Importe suas funções de extração/limpeza do script anterior
-from api_curriculos import (
-    limpar_texto,
-    processar_item,
-    extrair_texto_arquivo
-)
+def limpar_texto(texto: str) -> str:
+    texto = texto.lower()
+    texto = re.sub(r"[^a-zá-ú0-9\s]", " ", texto)
+    stop = set(stopwords.words("portuguese"))
+    palavras = [p for p in texto.split() if p not in stop]
+    return " ".join(palavras)
 
+def processar_item(filepath):
+    import os
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".zip":
+        with zipfile.ZipFile(filepath, "r") as z:
+            for name in z.namelist():
+                tmp_path = os.path.join(tempfile.mkdtemp(), name)
+                z.extract(name, os.path.dirname(tmp_path))
+                yield tmp_path, os.path.splitext(name)[1].lower()
+    else:
+        yield filepath, ext
+
+def extrair_texto_arquivo(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    if ext == ".pdf":
+        with pdfplumber.open(filepath) as pdf:
+            return " ".join([p.extract_text() or "" for p in pdf.pages])
+    elif ext in (".docx", ".doc"):
+        doc = docx.Document(filepath)
+        return " ".join([p.text for p in doc.paragraphs])
+    elif ext == ".txt":
+        with open(filepath, encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    return ""
 app = Flask(__name__)
 
 # Extensões suportadas
