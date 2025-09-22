@@ -1,76 +1,104 @@
 from flask import Flask, request, jsonify
-import pickle
 import os
+import pickle
 import re
-from docx import Document
 import pdfplumber
 import pytesseract
 from PIL import Image
-import io
+from docx import Document
+import unicodedata
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
 app = Flask(__name__)
 
-# Carregar modelo treinado
-with open("modelo_curriculos.pkl", "rb") as f:
+# -----------------------
+# Carregar modelo
+# -----------------------
+with open("modelo_curriculos_avancado.pkl", "rb") as f:
     clf, vectorizer = pickle.load(f)
+logging.info("Modelo carregado com sucesso.")
 
-def extrair_texto_pdf(file_bytes):
+# -----------------------
+# Funções utilitárias
+# -----------------------
+def remover_acentos(texto):
+    return ''.join(
+        c for c in unicodedata.normalize('NFD', texto)
+        if unicodedata.category(c) != 'Mn'
+    )
+
+def limpar_texto(texto):
+    texto = texto.lower()
+    texto = re.sub(r'\s+', ' ', texto)
+    texto = re.sub(r'(http[s]?://\S+)|(\S+@\S+)|([^\w\s])', ' ', texto)
+    texto = remover_acentos(texto)
+    return texto.strip()
+
+def extrair_texto_pdf(path):
     texto = ""
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+    with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             txt = page.extract_text()
-            if not txt:
-                # PDF como imagem, usa OCR
+            if not txt or txt.strip() == "":
                 imagem = page.to_image(resolution=300).original
                 txt = pytesseract.image_to_string(imagem, lang="por")
             texto += txt + " "
     return texto
 
-def extrair_texto_docx(file_bytes):
-    doc = Document(io.BytesIO(file_bytes))
-    texto = "\n".join([p.text for p in doc.paragraphs])
-    return texto
+def extrair_texto_docx(path):
+    doc = Document(path)
+    return "\n".join([p.text for p in doc.paragraphs])
 
-def limpar_texto(texto):
-    texto = texto.lower().strip()
-    texto = re.sub(r'\s+', ' ', texto)         # Remove múltiplos espaços
-    texto = re.sub(r'[^\w\s]', '', texto)      # Remove caracteres especiais
-    return texto
+def extrair_texto_txt(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
+def extrair_texto_arquivo(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".pdf":
+        return extrair_texto_pdf(path)
+    elif ext in [".docx", ".doc"]:
+        return extrair_texto_docx(path)
+    elif ext == ".txt":
+        return extrair_texto_txt(path)
+    else:
+        return None
+
+# -----------------------
+# Rota principal
+# -----------------------
 @app.route("/classificar", methods=["POST"])
-def classificar():
-    data = request.get_json()
+def classificar_curriculo():
+    if 'arquivo' not in request.files:
+        return jsonify({"erro": "Nenhum arquivo enviado"}), 400
 
-    pdf_base64 = data.get("pdf_base64")
-    if not pdf_base64:
-        return jsonify({"erro": "Nenhum arquivo recebido"}), 400
+    arquivo = request.files['arquivo']
+    if arquivo.filename == "":
+        return jsonify({"erro": "Nome do arquivo vazio"}), 400
 
-    # Decodifica PDF ou DOCX do Base64
-    file_bytes = io.BytesIO(base64.b64decode(pdf_base64)).read()
-
-    # Detecta tipo (PDF ou DOCX)
-    tipo = data.get("tipo", "pdf").lower()
+    # Salvar temporariamente
+    temp_path = os.path.join("temp", arquivo.filename)
+    os.makedirs("temp", exist_ok=True)
+    arquivo.save(temp_path)
 
     try:
-        if tipo == "pdf":
-            texto = extrair_texto_pdf(file_bytes)
-        elif tipo == "docx":
-            texto = extrair_texto_docx(file_bytes)
-        else:
-            return jsonify({"erro": "Formato não suportado"}), 400
-
-        texto_limpo = limpar_texto(texto)
-
-        if not texto_limpo.strip():
-            return jsonify({"erro": "Texto vazio"}), 400
-
-        x = vectorizer.transform([texto_limpo])
-        vaga = clf.predict(x)[0]
-
-        return jsonify({"vaga": vaga})
-
+        texto = extrair_texto_arquivo(temp_path)
+        if not texto or texto.strip() == "":
+            return jsonify({"erro": "Não foi possível extrair texto do arquivo"}), 400
+        texto = limpar_texto(texto)
+        X_vect = vectorizer.transform([texto])
+        predicao = clf.predict(X_vect)[0]
+        return jsonify({"vaga": predicao})
     except Exception as e:
+        logging.error(f"Erro na classificação: {e}")
         return jsonify({"erro": str(e)}), 500
+    finally:
+        os.remove(temp_path)
 
+# -----------------------
+# Inicialização
+# -----------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=5000, debug=True)
