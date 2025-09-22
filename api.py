@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
 import pickle
+import os
+import re
+from docx import Document
 import pdfplumber
-from io import BytesIO
-import base64
+import pytesseract
+from PIL import Image
+import io
 
 app = Flask(__name__)
 
@@ -10,41 +14,63 @@ app = Flask(__name__)
 with open("modelo_curriculos.pkl", "rb") as f:
     clf, vectorizer = pickle.load(f)
 
-# Função para extrair texto do PDF
-def extrair_texto(pdf_bytesio):
+def extrair_texto_pdf(file_bytes):
     texto = ""
-    try:
-        with pdfplumber.open(pdf_bytesio) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    texto += page_text + "\n"
-    except Exception as e:
-        return f"ERRO: {e}"
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            txt = page.extract_text()
+            if not txt:
+                # PDF como imagem, usa OCR
+                imagem = page.to_image(resolution=300).original
+                txt = pytesseract.image_to_string(imagem, lang="por")
+            texto += txt + " "
+    return texto
+
+def extrair_texto_docx(file_bytes):
+    doc = Document(io.BytesIO(file_bytes))
+    texto = "\n".join([p.text for p in doc.paragraphs])
+    return texto
+
+def limpar_texto(texto):
+    texto = texto.lower().strip()
+    texto = re.sub(r'\s+', ' ', texto)         # Remove múltiplos espaços
+    texto = re.sub(r'[^\w\s]', '', texto)      # Remove caracteres especiais
     return texto
 
 @app.route("/classificar", methods=["POST"])
 def classificar():
     data = request.get_json()
-    pdf_base64 = data.get("pdf_base64")
 
+    pdf_base64 = data.get("pdf_base64")
     if not pdf_base64:
-        return jsonify({"erro": "PDF não enviado"}), 400
+        return jsonify({"erro": "Nenhum arquivo recebido"}), 400
+
+    # Decodifica PDF ou DOCX do Base64
+    file_bytes = io.BytesIO(base64.b64decode(pdf_base64)).read()
+
+    # Detecta tipo (PDF ou DOCX)
+    tipo = data.get("tipo", "pdf").lower()
 
     try:
-        pdf_bytes = BytesIO(base64.b64decode(pdf_base64))
+        if tipo == "pdf":
+            texto = extrair_texto_pdf(file_bytes)
+        elif tipo == "docx":
+            texto = extrair_texto_docx(file_bytes)
+        else:
+            return jsonify({"erro": "Formato não suportado"}), 400
+
+        texto_limpo = limpar_texto(texto)
+
+        if not texto_limpo.strip():
+            return jsonify({"erro": "Texto vazio"}), 400
+
+        x = vectorizer.transform([texto_limpo])
+        vaga = clf.predict(x)[0]
+
+        return jsonify({"vaga": vaga})
+
     except Exception as e:
-        return jsonify({"erro": f"Erro ao decodificar PDF: {e}"}), 400
-
-    texto = extrair_texto(pdf_bytes)
-
-    if not texto.strip():
-        return jsonify({"erro": "Texto vazio"}), 400
-
-    x = vectorizer.transform([texto])
-    vaga = clf.predict(x)[0]
-
-    return jsonify({"vaga": vaga})
+        return jsonify({"erro": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
