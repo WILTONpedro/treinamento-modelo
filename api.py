@@ -10,6 +10,12 @@ import re
 import docx
 import pdfplumber
 from nltk.corpus import stopwords
+import nltk
+
+try:
+    nltk.data.find("corpora/stopwords")
+except LookupError:
+    nltk.download("stopwords")
 
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
