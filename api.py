@@ -8,7 +8,7 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
 
 # Importe suas funções de extração/limpeza do script anterior
-from treinar_modelo.py import (
+from modelo_curriculos_avancado import (
     limpar_texto,
     processar_item,
     extrair_texto_arquivo
