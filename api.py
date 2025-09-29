@@ -14,6 +14,10 @@ from scipy.sparse import hstack
 import nltk
 from nltk.corpus import stopwords
 
+# OCR
+from PIL import Image
+import pytesseract
+
 # --------------------------------------------------
 # Configuração de logs
 # --------------------------------------------------
@@ -36,7 +40,7 @@ STOPWORDS = set(stopwords.words("portuguese"))
 app = Flask(__name__)
 
 # Extensões suportadas
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'jpg', 'jpeg', 'png'}
 
 # --------------------------------------------------
 # Funções auxiliares
@@ -67,7 +71,7 @@ def processar_item(filepath):
 
 
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de diferentes formatos suportados."""
+    """Extrai texto de diferentes formatos suportados (PDF, DOCX, TXT, JPG, PNG)."""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
@@ -79,6 +83,10 @@ def extrair_texto_arquivo(filepath):
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
+        elif ext in (".jpg", ".jpeg", ".png"):
+            img = Image.open(filepath)
+            texto = pytesseract.image_to_string(img, lang="por")  # OCR em português
+            return texto
     except Exception as e:
         logger.error(f"Erro ao extrair texto de {filepath}: {e}")
     return ""
