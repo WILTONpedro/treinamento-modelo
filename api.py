@@ -5,6 +5,7 @@ import shutil
 import zipfile
 import pickle
 import logging
+import subprocess
 
 import docx
 import pdfplumber
@@ -70,22 +71,34 @@ def processar_item(filepath):
         yield filepath, ext
 
 
+def extrair_doc(filepath):
+    """Extrai texto de arquivos .doc usando antiword."""
+    try:
+        output = subprocess.check_output(["antiword", filepath])
+        return output.decode("utf-8", errors="ignore")
+    except Exception as e:
+        logger.error(f"Erro ao extrair .doc com antiword: {e}")
+        return ""
+
+
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de diferentes formatos suportados (PDF, DOCX, TXT, JPG, PNG)."""
+    """Extrai texto de diferentes formatos suportados (PDF, DOCX, TXT, JPG, PNG, DOC)."""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
             with pdfplumber.open(filepath) as pdf:
                 return " ".join([p.extract_text() or "" for p in pdf.pages])
-        elif ext in (".docx", ".doc"):
+        elif ext == ".docx":
             doc = docx.Document(filepath)
             return " ".join([p.text for p in doc.paragraphs])
+        elif ext == ".doc":
+            return extrair_doc(filepath)
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
         elif ext in (".jpg", ".jpeg", ".png"):
             img = Image.open(filepath)
-            texto = pytesseract.image_to_string(img, lang="por")  # OCR em português
+            texto = pytesseract.image_to_string(img, lang="por")
             return texto
     except Exception as e:
         logger.error(f"Erro ao extrair texto de {filepath}: {e}")
