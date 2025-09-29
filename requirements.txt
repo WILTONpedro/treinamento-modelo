@@ -69,3 +69,4 @@ wrapt==1.17.3
 fastapi
 uvicorn
 unidecode
+pytesseract
