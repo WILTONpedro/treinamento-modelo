@@ -60,8 +60,10 @@ def extrair_texto_arquivo(filepath):
                 return f.read()
 
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath)
-            return pytesseract.image_to_string(img, lang="por")  # OCR em português
+    img = Image.open(filepath)
+    img = img.convert("L")  # converte para tons de cinza
+    texto = pytesseract.image_to_string(img, lang="por", config="--psm 6")
+    return texto
 
     except Exception as e:
         print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
