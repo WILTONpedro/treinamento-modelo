@@ -1,65 +1,37 @@
 import os
-import re
 import tempfile
 import shutil
 import zipfile
 import pickle
-import logging
-import subprocess
-
+import re
 import docx
 import pdfplumber
+import pytesseract
+from PIL import Image
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
-import nltk
 from nltk.corpus import stopwords
+import nltk
 
-# OCR
-from PIL import Image
-import pytesseract
-
-# --------------------------------------------------
-# Configuração de logs
-# --------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("cv_api")
-
-# --------------------------------------------------
-# Download de stopwords se não existirem
-# --------------------------------------------------
+# Garante que o stopwords está baixado
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
 
-STOPWORDS = set(stopwords.words("portuguese"))
-
-# --------------------------------------------------
-# Inicialização do Flask
-# --------------------------------------------------
-app = Flask(__name__)
-
-# Extensões suportadas
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'jpg', 'jpeg', 'png'}
-
-# --------------------------------------------------
-# Funções auxiliares
-# --------------------------------------------------
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
+# ----------- Funções utilitárias -----------
 
 def limpar_texto(texto: str) -> str:
-    """Limpa o texto para o modelo (lowercase + remove símbolos + remove stopwords)."""
+    """Limpa texto e remove stopwords"""
     texto = texto.lower()
     texto = re.sub(r"[^a-zá-ú0-9\s]", " ", texto)
-    palavras = [p for p in texto.split() if p not in STOPWORDS]
+    stop = set(stopwords.words("portuguese"))
+    palavras = [p for p in texto.split() if p not in stop]
     return " ".join(palavras)
 
-
 def processar_item(filepath):
-    """Descompacta ZIP ou retorna o arquivo único."""
+    """Processa arquivos, inclusive dentro de ZIP"""
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
         with zipfile.ZipFile(filepath, "r") as z:
@@ -70,64 +42,50 @@ def processar_item(filepath):
     else:
         yield filepath, ext
 
-
-def extrair_doc(filepath):
-    """Extrai texto de arquivos .doc usando antiword."""
-    try:
-        output = subprocess.check_output(["antiword", filepath])
-        return output.decode("utf-8", errors="ignore")
-    except Exception as e:
-        logger.error(f"Erro ao extrair .doc com antiword: {e}")
-        return ""
-
-
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de diferentes formatos suportados (PDF, DOCX, TXT, JPG, PNG, DOC)."""
+    """Extrai texto de PDF, DOCX, TXT e imagens"""
     ext = os.path.splitext(filepath)[1].lower()
+
     try:
         if ext == ".pdf":
             with pdfplumber.open(filepath) as pdf:
                 return " ".join([p.extract_text() or "" for p in pdf.pages])
-        elif ext == ".docx":
+
+        elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
             return " ".join([p.text for p in doc.paragraphs])
-        elif ext == ".doc":
-            return extrair_doc(filepath)
+
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
-        elif ext in (".jpg", ".jpeg", ".png"):
+
+        elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
             img = Image.open(filepath)
-            texto = pytesseract.image_to_string(img, lang="por")
-            return texto
+            return pytesseract.image_to_string(img, lang="por")  # OCR em português
+
     except Exception as e:
-        logger.error(f"Erro ao extrair texto de {filepath}: {e}")
+        print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
+        return ""
+
     return ""
 
-# --------------------------------------------------
-# Carrega modelo treinado
-# --------------------------------------------------
-MODEL_PATH = "modelo_curriculos_avancado.pkl"
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Modelo não encontrado: {MODEL_PATH}")
+# ----------- Flask API -----------
 
-with open(MODEL_PATH, "rb") as f:
+app = Flask(__name__)
+
+# Extensões suportadas
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# Carrega modelo e vetorizadores
+with open("modelo_curriculos_avancado.pkl", "rb") as f:
     clf, word_v, char_v = pickle.load(f)
-
-logger.info("✅ Modelo carregado com sucesso.")
-
-# --------------------------------------------------
-# Rotas da API
-# --------------------------------------------------
-@app.route("/ping", methods=["GET"])
-def ping():
-    """Healthcheck endpoint"""
-    return jsonify({"status": "pong"})
-
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """Recebe arquivo, extrai texto, limpa, vetoriza e retorna a predição."""
     try:
         if "file" not in request.files:
             return jsonify({"error": "Nenhum arquivo enviado"}), 400
@@ -139,19 +97,21 @@ def predict():
             return jsonify({"error": "Nome de arquivo vazio"}), 400
 
         if not allowed_file(filename):
-            return jsonify({"error": "Tipo de arquivo não suportado"}), 400
+            return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
         # salva em uma pasta temporária
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
+        # extrai texto de todos os itens (incluindo dentro de .zip)
         textos = []
         for pfile, ext in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
             if txt:
                 textos.append(limpar_texto(txt))
 
+        # remove arquivos temporários
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         if not textos:
@@ -164,17 +124,24 @@ def predict():
         Xc = char_v.transform([full_text])
         Xv = hstack([Xw, Xc])
 
+        # predição
         pred = clf.predict(Xv)[0]
-        logger.info(f"Arquivo '{filename}' classificado como: {pred}")
 
-        return jsonify({"prediction": pred})
+        return jsonify({
+            "success": True,
+            "prediction": pred,
+            "tokens": len(full_text.split())
+        })
 
     except Exception as e:
-        logger.exception("Erro inesperado no /predict")
-        return jsonify({"error": str(e)}), 500
+        # Sempre retorna JSON mesmo em erros
+        return jsonify({"error": f"Falha interna: {str(e)}"}), 500
 
-# --------------------------------------------------
-# Inicialização local (debug)
-# --------------------------------------------------
+
+@app.route("/", methods=["GET"])
+def healthcheck():
+    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
