@@ -1,1 +1,1 @@
-http://localhost:5000/health
+web: gunicorn -b 0.0.0.0:5000 main:app
