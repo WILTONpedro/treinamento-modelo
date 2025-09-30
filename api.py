@@ -82,9 +82,16 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# Carrega modelo e vetorizadores
-with open("modelo_curriculos_xgb_final_corrigido.pkl", "rb") as f:
-    clf, word_v, char_v = pickle.load(f)
+# Carrega modelo, vetorizadores, palavras-chave, LabelEncoder e seletor de features
+with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
+    clf, word_v, char_v, palavras_chave_dict, le, X_selected = pickle.load(f)
+
+# Função para extrair features de palavras-chave
+def extrair_features_chave(texto):
+    features = []
+    for area, palavras in palavras_chave_dict.items():
+        features.append(int(any(p in texto for p in palavras)))
+    return features
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -101,19 +108,17 @@ def predict():
         if not allowed_file(filename):
             return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
-        # salva em uma pasta temporária
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
-        # extrai texto de todos os itens (incluindo dentro de .zip)
+        # Extrai texto de todos os itens (inclusive dentro de ZIP)
         textos = []
         for pfile, ext in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
             if txt:
                 textos.append(limpar_texto(txt))
 
-        # remove arquivos temporários
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         if not textos:
@@ -121,22 +126,30 @@ def predict():
 
         full_text = " ".join(textos)
 
-        # vetorização
+        # Vetorização
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
         Xv = hstack([Xw, Xc])
 
-        # predição
-        pred = clf.predict(Xv)[0]
+        # Adiciona features de palavras-chave
+        X_chaves = extrair_features_chave(full_text)
+        from scipy.sparse import csr_matrix
+        X_chaves_sparse = csr_matrix([X_chaves])
+        Xv = hstack([Xv, X_chaves_sparse])
+
+        # Seleção de features (mesmo seletor usado no treino)
+        Xv_selected = X_selected.transform(Xv)
+
+        # Predição
+        pred_label = le.inverse_transform([clf.predict(Xv_selected)[0]])[0]
 
         return jsonify({
             "success": True,
-            "prediction": pred,
+            "prediction": pred_label,
             "tokens": len(full_text.split())
         })
 
     except Exception as e:
-        # Sempre retorna JSON mesmo em erros
         return jsonify({"error": f"Falha interna: {str(e)}"}), 500
 
 
