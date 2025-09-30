@@ -83,7 +83,7 @@ def allowed_file(filename):
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Carrega modelo e vetorizadores
-with open("modelo_curriculos_avancado.pkl", "rb") as f:
+with open("modelo_curriculos_xgb_final_corrigido.pkl", "rb") as f:
     clf, word_v, char_v = pickle.load(f)
 
 @app.route("/predict", methods=["POST"])
