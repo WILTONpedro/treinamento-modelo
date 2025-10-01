@@ -106,19 +106,32 @@ def predict():
             return jsonify({"error": "Nenhum arquivo enviado"}), 400
 
         uploaded = request.files["file"]
-        filename = secure_filename(uploaded.filename)
-
-        if filename == "":
+        original_filename = uploaded.filename
+        if original_filename == "":
             return jsonify({"error": "Nome de arquivo vazio"}), 400
-        if not allowed_file(filename):
-            return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
+        # Limpa o nome do arquivo
+        filename = secure_filename(original_filename)
+
+        # Pega a extensão real do arquivo
+        ext = os.path.splitext(filename)[1].lower().lstrip(".")
+        if ext not in ALLOWED_EXTENSIONS:
+            # Tenta inferir pelo content_type (ex: application/pdf)
+            content_type_ext = uploaded.content_type.split("/")[-1].lower()
+            if content_type_ext in ALLOWED_EXTENSIONS:
+                ext = content_type_ext
+                filename = f"{filename}.{ext}"
+            else:
+                return jsonify({"error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
+
+        # Cria diretório temporário e salva o arquivo
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
+        # Processa arquivos (incluindo ZIPs)
         textos = []
-        for pfile, ext in processar_item(filepath):
+        for pfile, pext in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
             if txt:
                 textos.append(limpar_texto(txt))
@@ -133,7 +146,7 @@ def predict():
         # Vetorização
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
-        Xchaves = [extrair_features_chave(full_text)]
+        Xchaves = csr_matrix([extrair_features_chave(full_text)])
         Xfull = hstack([Xw, Xc, Xchaves])
 
         # Seleção de features
