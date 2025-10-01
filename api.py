@@ -11,9 +11,8 @@ from PIL import Image
 import nltk
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-from scipy.sparse import hstack
+from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
-from scipy.sparse import csr_matrix
 
 # --- Preparar NLTK ---
 try:
@@ -66,7 +65,7 @@ def extrair_texto_arquivo(filepath):
         return ""
     return ""
 
-# --- Carrega modelo ---
+# --- Carrega modelo (dicionário ou tupla) ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
@@ -77,8 +76,7 @@ if isinstance(data, dict):
     palavras_chave_dict = data["palavras_chave_dict"]
     selector = data["selector"]
     le = data["label_encoder"]
-elif isinstance(data, tuple) or isinstance(data, list):
-    # Ajuste os índices conforme a ordem em que você salvou
+elif isinstance(data, (tuple, list)):
     clf = data[0]
     word_v = data[1]
     char_v = data[2]
@@ -88,17 +86,17 @@ elif isinstance(data, tuple) or isinstance(data, list):
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Função de extração de features de palavras-chave ---
+# --- Extrair features de palavras-chave ---
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
 # --- Flask API ---
 app = Flask(__name__)
-
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
 def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    return ext in ALLOWED_EXTENSIONS
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -111,13 +109,9 @@ def predict():
         if original_filename == "":
             return jsonify({"error": "Nome de arquivo vazio"}), 400
 
-        # Limpa o nome do arquivo
         filename = secure_filename(original_filename)
-
-        # Pega a extensão real do arquivo
         ext = os.path.splitext(filename)[1].lower().lstrip(".")
         if ext not in ALLOWED_EXTENSIONS:
-            # Tenta inferir pelo content_type (ex: application/pdf)
             content_type_ext = uploaded.content_type.split("/")[-1].lower()
             if content_type_ext in ALLOWED_EXTENSIONS:
                 ext = content_type_ext
@@ -125,12 +119,10 @@ def predict():
             else:
                 return jsonify({"error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
 
-        # Cria diretório temporário e salva o arquivo
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
-        # Processa arquivos (incluindo ZIPs)
         textos = []
         for pfile, pext in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
