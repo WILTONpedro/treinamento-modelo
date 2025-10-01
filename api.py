@@ -69,13 +69,25 @@ def extrair_texto_arquivo(filepath):
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
-clf = data["clf"]
-word_v = data["word_vectorizer"]
-char_v = data["char_vectorizer"]
-palavras_chave_dict = data["palavras_chave_dict"]
-selector = data["selector"]
-le = data["label_encoder"]
+if isinstance(data, dict):
+    clf = data["clf"]
+    word_v = data["word_vectorizer"]
+    char_v = data["char_vectorizer"]
+    palavras_chave_dict = data["palavras_chave_dict"]
+    selector = data["selector"]
+    le = data["label_encoder"]
+elif isinstance(data, tuple) or isinstance(data, list):
+    # Ajuste os índices conforme a ordem em que você salvou
+    clf = data[0]
+    word_v = data[1]
+    char_v = data[2]
+    palavras_chave_dict = data[3]
+    selector = data[4]
+    le = data[5]
+else:
+    raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
+# --- Função de extração de features de palavras-chave ---
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
