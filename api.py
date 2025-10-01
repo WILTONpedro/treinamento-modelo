@@ -69,12 +69,12 @@ def extrair_texto_arquivo(filepath):
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
-clf = data[0]
-word_v = data[1]
-char_v = data[2]
-palavras_chave_dict = data[3]
-le = data[4]
-X_selected = data[5]
+clf = data["clf"]
+word_v = data["word_vectorizer"]
+char_v = data["char_vectorizer"]
+palavras_chave_dict = data["palavras_chave_dict"]
+selector = data["selector"]
+le = data["label_encoder"]
 
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
