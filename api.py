@@ -13,6 +13,7 @@ from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
 from nltk.corpus import stopwords
+from scipy.sparse import csr_matrix
 
 # --- Preparar NLTK ---
 try:
