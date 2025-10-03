@@ -35,11 +35,17 @@ def processar_item(filepath):
     """Processa arquivos, inclusive dentro de ZIP"""
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
-        with zipfile.ZipFile(filepath, "r") as z:
-            for name in z.namelist():
-                tmp_path = os.path.join(tempfile.mkdtemp(), name)
-                z.extract(name, os.path.dirname(tmp_path))
-                yield tmp_path, os.path.splitext(name)[1].lower()
+        tmpdir_zip = tempfile.mkdtemp(prefix="cv_zip_")
+        try:
+            with zipfile.ZipFile(filepath, "r") as z:
+                for name in z.namelist():
+                    filename = secure_filename(name)
+                    file_path = os.path.join(tmpdir_zip, filename)
+                    z.extract(name, tmpdir_zip)
+                    yield file_path, os.path.splitext(filename)[1].lower()
+        except Exception as e:
+            print(f"[ERRO] Falha ao processar ZIP {filepath}: {e}")
+        # Limpeza será feita depois
     else:
         yield filepath, ext
 
@@ -57,15 +63,14 @@ def extrair_texto_arquivo(filepath):
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath)
-            img = img.convert("L")
+            img = Image.open(filepath).convert("L")
             return pytesseract.image_to_string(img, lang="por", config="--psm 6")
     except Exception as e:
         print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
         return ""
     return ""
 
-# --- Carrega modelo (dicionário ou tupla) ---
+# --- Carrega modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
@@ -86,7 +91,6 @@ elif isinstance(data, (tuple, list)):
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Extrair features de palavras-chave ---
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
@@ -98,16 +102,21 @@ def allowed_file(filename):
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
     return ext in ALLOWED_EXTENSIONS
 
+# --- Handler global de exceções ---
+@app.errorhandler(Exception)
+def handle_exception(e):
+    return jsonify({"success": False, "error": f"Erro interno: {str(e)}"}), 500
+
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         if "file" not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
+            return jsonify({"success": False, "error": "Nenhum arquivo enviado"}), 400
 
         uploaded = request.files["file"]
         original_filename = uploaded.filename
         if original_filename == "":
-            return jsonify({"error": "Nome de arquivo vazio"}), 400
+            return jsonify({"success": False, "error": "Nome de arquivo vazio"}), 400
 
         filename = secure_filename(original_filename)
         ext = os.path.splitext(filename)[1].lower().lstrip(".")
@@ -117,7 +126,7 @@ def predict():
                 ext = content_type_ext
                 filename = f"{filename}.{ext}"
             else:
-                return jsonify({"error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
+                return jsonify({"success": False, "error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
 
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
@@ -132,20 +141,16 @@ def predict():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         if not textos:
-            return jsonify({"error": "Não foi possível extrair texto"}), 400
+            return jsonify({"success": False, "error": "Não foi possível extrair texto"}), 400
 
         full_text = " ".join(textos)
 
-        # Vetorização
+        # Vetorização e predição
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
         Xchaves = csr_matrix([extrair_features_chave(full_text)])
         Xfull = hstack([Xw, Xc, Xchaves])
-
-        # Seleção de features
         Xsel = selector.transform(Xfull)
-
-        # Predição
         pred = clf.predict(Xsel)[0]
         classe = le.inverse_transform([pred])[0]
 
@@ -156,7 +161,8 @@ def predict():
         })
 
     except Exception as e:
-        return jsonify({"error": f"Falha interna: {str(e)}"}), 500
+        # Nunca retorna vazio
+        return jsonify({"success": False, "error": f"Falha interna: {str(e)}"}), 500
 
 @app.route("/", methods=["GET"])
 def healthcheck():
