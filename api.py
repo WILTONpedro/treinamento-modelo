@@ -1,5 +1,4 @@
 import os
-import re
 import tempfile
 import shutil
 import zipfile
@@ -13,44 +12,36 @@ from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
+import time
 
-# --- Preparar NLTK ---
+# --- NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 STOPWORDS = set(stopwords.words("portuguese"))
 
 # --- Funções auxiliares ---
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
-    texto = re.sub(r"\S+@\S+", " ", texto)  # remove emails
-    texto = re.sub(r"\d+", " ", texto)      # remove números
+    texto = re.sub(r"\S+@\S+", " ", texto)
+    texto = re.sub(r"\d+", " ", texto)
     texto = re.sub(r"[^a-zá-ú\s]", " ", texto)
     palavras = [p for p in texto.split() if p not in STOPWORDS]
     return " ".join(palavras)
 
 def processar_item(filepath):
-    """Processa arquivos, inclusive dentro de ZIP"""
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
-        tmpdir_zip = tempfile.mkdtemp(prefix="cv_zip_")
-        try:
-            with zipfile.ZipFile(filepath, "r") as z:
-                for name in z.namelist():
-                    filename = secure_filename(name)
-                    file_path = os.path.join(tmpdir_zip, filename)
-                    z.extract(name, tmpdir_zip)
-                    yield file_path, os.path.splitext(filename)[1].lower()
-        except Exception as e:
-            print(f"[ERRO] Falha ao processar ZIP {filepath}: {e}")
-        # Limpeza será feita depois
+        with zipfile.ZipFile(filepath, "r") as z:
+            for name in z.namelist():
+                tmp_path = os.path.join(tempfile.mkdtemp(), name)
+                z.extract(name, os.path.dirname(tmp_path))
+                yield tmp_path, os.path.splitext(name)[1].lower()
     else:
         yield filepath, ext
 
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de PDF, DOCX, TXT e imagens"""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
@@ -63,7 +54,8 @@ def extrair_texto_arquivo(filepath):
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath).convert("L")
+            img = Image.open(filepath)
+            img = img.convert("L")
             return pytesseract.image_to_string(img, lang="por", config="--psm 6")
     except Exception as e:
         print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
@@ -89,7 +81,7 @@ elif isinstance(data, (tuple, list)):
     selector = data[4]
     le = data[5]
 else:
-    raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
+    raise ValueError("Formato do pickle desconhecido.")
 
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
@@ -97,36 +89,32 @@ def extrair_features_chave(texto):
 # --- Flask API ---
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
+MAX_MB = 5
+MAX_BYTES = MAX_MB * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = MAX_BYTES
 
 def allowed_file(filename):
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
     return ext in ALLOWED_EXTENSIONS
 
-# --- Handler global de exceções ---
-@app.errorhandler(Exception)
-def handle_exception(e):
-    return jsonify({"success": False, "error": f"Erro interno: {str(e)}"}), 500
-
 @app.route("/predict", methods=["POST"])
 def predict():
+    start_time = time.time()
     try:
         if "file" not in request.files:
             return jsonify({"success": False, "error": "Nenhum arquivo enviado"}), 400
 
         uploaded = request.files["file"]
-        original_filename = uploaded.filename
-        if original_filename == "":
+        if uploaded.filename == "":
             return jsonify({"success": False, "error": "Nome de arquivo vazio"}), 400
 
-        filename = secure_filename(original_filename)
+        if uploaded.content_length > MAX_BYTES:
+            return jsonify({"success": False, "error": f"Arquivo maior que {MAX_MB} MB"}), 400
+
+        filename = secure_filename(uploaded.filename)
         ext = os.path.splitext(filename)[1].lower().lstrip(".")
         if ext not in ALLOWED_EXTENSIONS:
-            content_type_ext = uploaded.content_type.split("/")[-1].lower()
-            if content_type_ext in ALLOWED_EXTENSIONS:
-                ext = content_type_ext
-                filename = f"{filename}.{ext}"
-            else:
-                return jsonify({"success": False, "error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
+            return jsonify({"success": False, "error": f"Tipo de arquivo não suportado: {uploaded.filename}"}), 400
 
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
@@ -145,23 +133,19 @@ def predict():
 
         full_text = " ".join(textos)
 
-        # Vetorização e predição
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
         Xchaves = csr_matrix([extrair_features_chave(full_text)])
         Xfull = hstack([Xw, Xc, Xchaves])
         Xsel = selector.transform(Xfull)
+
         pred = clf.predict(Xsel)[0]
         classe = le.inverse_transform([pred])[0]
 
-        return jsonify({
-            "success": True,
-            "prediction": classe,
-            "tokens": len(full_text.split())
-        })
+        tempo = round(time.time() - start_time, 2)
+        return jsonify({"success": True, "prediction": classe, "tokens": len(full_text.split()), "processing_time": tempo})
 
     except Exception as e:
-        # Nunca retorna vazio
         return jsonify({"success": False, "error": f"Falha interna: {str(e)}"}), 500
 
 @app.route("/", methods=["GET"])
