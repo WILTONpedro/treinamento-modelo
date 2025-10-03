@@ -8,11 +8,11 @@ import docx
 import pdfplumber
 import pytesseract
 from PIL import Image
-import nltk
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
+import nltk
 import time
 
 # --- NLTK ---
@@ -45,22 +45,54 @@ def processar_item(filepath):
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
+        # ----------------------
+        # PDFs
+        # ----------------------
         if ext == ".pdf":
+            texto = ""
             with pdfplumber.open(filepath) as pdf:
-                return " ".join([p.extract_text() or "" for p in pdf.pages if p.extract_text()])
+                for p in pdf.pages:
+                    page_text = p.extract_text()
+                    if page_text:
+                        texto += page_text + " "
+            # Se não extraiu texto, tenta OCR
+            if not texto.strip():
+                try:
+                    from pdf2image import convert_from_path
+                    images = convert_from_path(filepath)
+                    for img in images:
+                        img = img.convert("L")
+                        texto += pytesseract.image_to_string(img, lang="por", config="--psm 6") + " "
+                except Exception as e:
+                    print(f"[ERRO OCR PDF] {filepath}: {e}")
+            return texto
+
+        # ----------------------
+        # DOCX/DOC
+        # ----------------------
         elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
             return " ".join([p.text for p in doc.paragraphs])
+
+        # ----------------------
+        # TXT
+        # ----------------------
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
+
+        # ----------------------
+        # Imagens
+        # ----------------------
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
             img = Image.open(filepath)
             img = img.convert("L")
             return pytesseract.image_to_string(img, lang="por", config="--psm 6")
+
     except Exception as e:
         print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
         return ""
+
     return ""
 
 # --- Carrega modelo ---
@@ -124,7 +156,7 @@ def predict():
         textos = []
         for pfile, pext in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
-            if txt:
+            if txt.strip():
                 textos.append(limpar_texto(txt))
 
         shutil.rmtree(tmpdir, ignore_errors=True)
