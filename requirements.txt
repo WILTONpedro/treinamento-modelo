@@ -18,6 +18,7 @@ pypdfium2==4.30.0
 python-docx==1.2.0
 pillow==11.3.0
 pytesseract
+pdf2image
 
 # Utilidades
 requests==2.32.5
