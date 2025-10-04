@@ -13,20 +13,23 @@ from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
+import logging
 
-# --- Preparar NLTK ---
+# --- Logging ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+# --- NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 STOPWORDS = set(stopwords.words("portuguese"))
 
 # --- Funções auxiliares ---
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
-    texto = re.sub(r"\S+@\S+", " ", texto)  # remove emails
-    texto = re.sub(r"\d+", " ", texto)      # remove números
+    texto = re.sub(r"\S+@\S+", " ", texto)  # emails
+    texto = re.sub(r"\d+", " ", texto)      # números
     texto = re.sub(r"[^a-zá-ú\s]", " ", texto)
     palavras = [p for p in texto.split() if p not in STOPWORDS]
     return " ".join(palavras)
@@ -44,7 +47,7 @@ def processar_item(filepath):
         yield filepath, ext
 
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de PDF, DOCX, TXT e imagens"""
+    """Extrai texto de diversos formatos"""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
@@ -57,106 +60,91 @@ def extrair_texto_arquivo(filepath):
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath)
-            img = img.convert("L")
+            img = Image.open(filepath).convert("L")
             return pytesseract.image_to_string(img, lang="por", config="--psm 6")
     except Exception as e:
-        print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
+        logging.error(f"Erro ao extrair texto de {filepath}: {e}")
         return ""
     return ""
 
-# --- Carrega modelo (dicionário ou tupla) ---
+# --- Carregar modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
-if isinstance(data, dict):
-    clf = data["clf"]
-    word_v = data["word_vectorizer"]
-    char_v = data["char_vectorizer"]
-    palavras_chave_dict = data["palavras_chave_dict"]
-    selector = data["selector"]
-    le = data["label_encoder"]
-elif isinstance(data, (tuple, list)):
-    clf = data[0]
-    word_v = data[1]
-    char_v = data[2]
-    palavras_chave_dict = data[3]
-    selector = data[4]
-    le = data[5]
-else:
-    raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
+clf = data["clf"]
+word_v = data["word_vectorizer"]
+char_v = data["char_vectorizer"]
+palavras_chave_dict = data["palavras_chave_dict"]
+selector = data["selector"]
+le = data["label_encoder"]
 
-# --- Extrair features de palavras-chave ---
+# --- Features palavras-chave ---
 def extrair_features_chave(texto):
-    return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
+    encontradas = []
+    features = []
+    for area, palavras in palavras_chave_dict.items():
+        hit = any(p.lower() in texto for p in palavras)
+        features.append(int(hit))
+        if hit:
+            encontradas.extend([p for p in palavras if p.lower() in texto])
+    return features, list(set(encontradas))
 
 # --- Flask API ---
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
-def allowed_file(filename):
-    ext = os.path.splitext(filename)[1].lower().lstrip(".")
-    return ext in ALLOWED_EXTENSIONS
-
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         if "file" not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
+            return jsonify({"success": False, "error": "Nenhum arquivo enviado"}), 400
 
         uploaded = request.files["file"]
-        original_filename = uploaded.filename
-        if original_filename == "":
-            return jsonify({"error": "Nome de arquivo vazio"}), 400
+        if uploaded.filename == "":
+            return jsonify({"success": False, "error": "Nome de arquivo vazio"}), 400
 
-        filename = secure_filename(original_filename)
-        ext = os.path.splitext(filename)[1].lower().lstrip(".")
-        if ext not in ALLOWED_EXTENSIONS:
-            content_type_ext = uploaded.content_type.split("/")[-1].lower()
-            if content_type_ext in ALLOWED_EXTENSIONS:
-                ext = content_type_ext
-                filename = f"{filename}.{ext}"
-            else:
-                return jsonify({"error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
-
+        filename = secure_filename(uploaded.filename)
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
         textos = []
-        for pfile, pext in processar_item(filepath):
+        for pfile, _ in processar_item(filepath):
             txt = extrair_texto_arquivo(pfile)
             if txt:
                 textos.append(limpar_texto(txt))
-
         shutil.rmtree(tmpdir, ignore_errors=True)
 
         if not textos:
-            return jsonify({"error": "Não foi possível extrair texto"}), 400
+            return jsonify({"success": False, "error": "Não foi possível extrair texto"}), 400
 
         full_text = " ".join(textos)
 
         # Vetorização
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
-        Xchaves = csr_matrix([extrair_features_chave(full_text)])
+        Xchaves, palavras_encontradas = extrair_features_chave(full_text)
+        Xchaves = csr_matrix([Xchaves])
         Xfull = hstack([Xw, Xc, Xchaves])
-
-        # Seleção de features
         Xsel = selector.transform(Xfull)
 
         # Predição
         pred = clf.predict(Xsel)[0]
+        probas = clf.predict_proba(Xsel)[0]
         classe = le.inverse_transform([pred])[0]
+        confianca = float(probas[pred])
 
         return jsonify({
             "success": True,
             "prediction": classe,
-            "tokens": len(full_text.split())
+            "confidence": round(confianca, 3),
+            "tokens": len(full_text.split()),
+            "keywords_found": palavras_encontradas
         })
 
     except Exception as e:
-        return jsonify({"error": f"Falha interna: {str(e)}"}), 500
+        logging.exception("Erro interno")
+        return jsonify({"success": False, "error": f"Falha interna: {str(e)}"}), 500
 
 @app.route("/", methods=["GET"])
 def healthcheck():
