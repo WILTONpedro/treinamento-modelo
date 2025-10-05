@@ -1,34 +1,26 @@
-wheel
-setuptools
-pip
-
+# Web
 Flask==3.1.2
 gunicorn==23.0.0
 
-# Machine Learning básico
-scikit-learn==1.5.2
-scipy==1.12.0
-numpy==1.26.4
-pandas==2.2.2
-xgboost==2.1.2
-imblearn==0.0
-unidecode==1.3.8
-
-# NLP leve
+# NLP e Machine Learning
 nltk==3.9.1
+scikit-learn==1.5.2
+numpy==1.26.4
+xgboost==1.8.5
+imbalanced-learn==0.11.1
+unidecode==1.3.7
 
-# Manipulação de PDF e Word
-pdfplumber==0.11.0
-python-docx==1.1.2
-pillow==10.3.0
+# PDF, Word e OCR
+pdfplumber==0.11.7
+python-docx==0.8.12
+pillow==11.3.0
 pytesseract==0.3.10
-pdf2image==1.17.0
+pdf2image==1.16.3
 
-# Utilidades
-requests==2.32.3
+# BERT
+sentence-transformers==2.2.2
+
+# Utilitários
+requests==2.32.5
 regex==2025.9.1
-tqdm==4.66.4
-
-
-# (Opcional) Transformer leve — só se for realmente usar BERT
-# sentence-transformers==3.2.1
+tqdm==4.67.1
