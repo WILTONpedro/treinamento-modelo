@@ -48,16 +48,19 @@ def extrair_texto_pdf_ocr(fp, dpi=150):
             return pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
         except Exception:
             return ""
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_page, p) for p in pages]
-        for f in concurrent.futures.as_completed(futures, timeout=TIMEOUT_OCR):
-            try:
-                texto += f.result()
-            except concurrent.futures.TimeoutError:
-                print("[TIMEOUT OCR] página ignorada")
-            finally:
-                del f
-                gc.collect()
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [executor.submit(process_page, p) for p in pages]
+            for f in concurrent.futures.as_completed(futures, timeout=TIMEOUT_OCR):
+                try:
+                    texto += f.result()
+                except concurrent.futures.TimeoutError:
+                    print("[TIMEOUT OCR] página ignorada")
+                finally:
+                    del f
+                    gc.collect()
+    except concurrent.futures.TimeoutError:
+        print(f"[TIMEOUT OCR] arquivo ignorado {fp}")
     for p in pages:
         del p
     gc.collect()
@@ -91,24 +94,20 @@ def extrair_texto_arquivo(fp):
                         texto += p.extract_text() + " "
             if not texto.strip():
                 texto += extrair_texto_pdf_ocr(fp)
-            return texto.strip()
-
+            return texto.strip() or ""
         elif ext in (".docx", ".doc"):
             doc = docx.Document(fp)
-            return " ".join(p.text for p in doc.paragraphs)
-
+            return " ".join(p.text for p in doc.paragraphs) or ""
         elif ext == ".txt":
             with open(fp, encoding="utf-8", errors="ignore") as f:
-                return f.read()
-
+                return f.read() or ""
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            return extrair_texto_imagem_ocr(fp)
-
+            return extrair_texto_imagem_ocr(fp) or ""
     except Exception as e:
         print(f"[ERRO extração] {fp}: {e}")
         return ""
 
-# --- Carregar modelos leves ---
+# --- Carregar modelos ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 clf = data["clf"]
@@ -136,23 +135,23 @@ app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_file(e):
-    return jsonify({"error": "Arquivo muito grande. Máximo permitido: 20MB"}), 413
+    return jsonify({"success": False, "error": "Arquivo muito grande. Máximo permitido: 20MB"}), 413
 
 @app.route("/predict", methods=["POST"])
 def predict():
     tmpdir = None
     try:
         if "file" not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
+            return jsonify({"success": False, "error": "Nenhum arquivo enviado"}), 400
 
         uploaded = request.files["file"]
         filename = secure_filename(uploaded.filename)
         if not filename:
-            return jsonify({"error": "Nome vazio"}), 400
+            return jsonify({"success": False, "error": "Nome vazio"}), 400
 
         ext = os.path.splitext(filename)[1].lower().lstrip(".")
         if ext not in ALLOWED_EXT:
-            return jsonify({"error": "Extensão não permitida"}), 400
+            return jsonify({"success": False, "error": "Extensão não permitida"}), 400
 
         tmpdir = tempfile.mkdtemp(prefix="tmp_api_")
         path = os.path.join(tmpdir, filename)
@@ -162,7 +161,7 @@ def predict():
         texto = limpar_texto(texto_raw)
 
         if not texto.strip():
-            return jsonify({"error": "Não foi possível extrair texto"}), 400
+            return jsonify({"success": False, "error": "Não foi possível extrair texto do arquivo"}), 400
 
         # --- Inferência TF-IDF ---
         Xw = word_v.transform([texto])
@@ -189,7 +188,7 @@ def predict():
                 ib = np.argmax(pb)
                 classe = le_bert.inverse_transform([ib])[0]
                 conf = float(pb[ib])
-            except Exception as e:
+            except Exception:
                 classe, conf = "INDEFINIDO", 0.0
                 print(f"[ERRO BERT] {traceback.format_exc()}")
 
@@ -200,9 +199,9 @@ def predict():
             "origin": origem
         })
 
-    except Exception as e:
+    except Exception:
         print("[ERRO API]", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"success": False, "error": "Erro interno ao processar arquivo"}), 500
 
     finally:
         if tmpdir:
