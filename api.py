@@ -1,4 +1,4 @@
-import os, re, tempfile, shutil, zipfile, pickle, docx, pdfplumber
+import os, re, tempfile, shutil, pickle, docx, pdfplumber
 import pytesseract
 from PIL import Image
 import nltk
@@ -6,16 +6,14 @@ from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
-from sentence_transformers import SentenceTransformer
-from sklearn.linear_model import LogisticRegression
 import numpy as np
+from sklearn.linear_model import LogisticRegression
 
 # --- NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 STOPWORDS = set(stopwords.words("portuguese"))
 
 # --- Funções utilitárias ---
@@ -44,7 +42,7 @@ def extrair_texto_arquivo(fp):
         return ""
     return ""
 
-# --- Carrega modelo TF-IDF ---
+# --- Carrega modelo TF-IDF + XGBoost (sempre carregado) ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
@@ -58,16 +56,12 @@ le = data["label_encoder"]
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
-# --- BERTimbau como fallback ---
-bert_model = SentenceTransformer("neuralmind/bert-base-portuguese-cased")
-
-# Se quiser, salve/treine um classificador simples baseado em embeddings
+# --- BERTimbau como fallback (carrega só se necessário) ---
+bert_model = None
+clf_bert, le_bert = LogisticRegression(), le
 if os.path.exists("modelo_bert_fallback.pkl"):
     with open("modelo_bert_fallback.pkl", "rb") as f:
         clf_bert, le_bert = pickle.load(f)
-else:
-    # Placeholder: cria um classificador vazio para evitar erro na primeira execução
-    clf_bert, le_bert = LogisticRegression(), le
 
 # --- API Flask ---
 app = Flask(__name__)
@@ -88,12 +82,16 @@ def predict():
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({"error": "Tipo de arquivo não suportado"}), 400
 
+        # --- Salva temporariamente ---
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         path = os.path.join(tmpdir, filename)
         uploaded.save(path)
 
         texto = limpar_texto(extrair_texto_arquivo(path))
+
+        # --- Limpa diretório temporário e força garbage collection ---
         shutil.rmtree(tmpdir, ignore_errors=True)
+        import gc; gc.collect()
 
         if not texto.strip():
             return jsonify({"error": "Não foi possível extrair texto"}), 400
@@ -107,13 +105,16 @@ def predict():
         pred_idx = np.argmax(probs)
         confidence = float(probs[pred_idx])
         classe = le.inverse_transform([pred_idx])[0]
+        origem = "tfidf"
 
         # --- Limiar de confiança ---
         LIMIAR = 0.6
-        origem = "tfidf"
-
         if confidence < LIMIAR:
             origem = "bert_fallback"
+            global bert_model
+            if bert_model is None:
+                from sentence_transformers import SentenceTransformer
+                bert_model = SentenceTransformer("neuralmind/bert-base-portuguese-cased")
             emb = bert_model.encode([texto])
             try:
                 probs_b = clf_bert.predict_proba(emb)[0]
