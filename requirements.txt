@@ -18,7 +18,7 @@ pypdfium2==4.30.0
 python-docx==1.2.0
 pillow==11.3.0
 pytesseract
-pdf2image
+pdf2image==1.16.3
 sentence-transformers
 
 # Utilidades
