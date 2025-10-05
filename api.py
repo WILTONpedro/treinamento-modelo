@@ -30,11 +30,11 @@ def extrair_texto_arquivo(fp):
     ext = os.path.splitext(fp)[1].lower()
     try:
         if ext == ".pdf":
-            import pdfplumber
             texto = ""
             with pdfplumber.open(fp) as pdf:
                 texto = " ".join(p.extract_text() or "" for p in pdf.pages)
-            if not texto.strip():  # se não extraiu texto, aplica OCR
+            # Se não extraiu texto, aplica OCR
+            if not texto.strip():
                 imagens = convert_from_path(fp, dpi=300)
                 texto = " ".join(
                     pytesseract.image_to_string(img, lang="por", config="--psm 6")
@@ -43,30 +43,22 @@ def extrair_texto_arquivo(fp):
             return texto
 
         elif ext in (".docx", ".doc"):
-            import docx
             doc = docx.Document(fp)
             return " ".join(p.text for p in doc.paragraphs)
 
         elif ext == ".txt":
-            return open(fp, encoding="utf-8", errors="ignore").read()
+            with open(fp, encoding="utf-8", errors="ignore") as f:
+                return f.read()
 
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
             img = Image.open(fp).convert("L")
-            # binarização simples para melhorar OCR
+            # Binarização simples para melhorar OCR
             img = img.point(lambda x: 0 if x < 140 else 255, '1')
             return pytesseract.image_to_string(img, lang="por", config="--psm 3")
 
-    except Exception:
+    except Exception as e:
+        print(f"[ERRO] Falha ao extrair texto de {fp}: {e}")
         return ""
-    
-    if ext == ".pdf":
-        with pdfplumber.open(fp) as pdf:
-        texto = " ".join(p.extract_text() or "" for p in pdf.pages)
-        if not texto.strip():  # se não extraiu texto, aplica OCR
-            from pdf2image import convert_from_path
-            imagens = convert_from_path(fp, dpi=300)
-            texto = " ".join(pytesseract.image_to_string(img, lang="por", config="--psm 6") for img in imagens)
-    return texto
 
 # --- Carrega modelo TF-IDF + XGBoost (sempre carregado) ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
