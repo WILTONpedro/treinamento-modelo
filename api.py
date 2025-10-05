@@ -10,7 +10,6 @@ from nltk.corpus import stopwords
 import pdfplumber
 import docx
 from pdf2image import convert_from_path
-
 # --- Setup NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
@@ -25,39 +24,44 @@ def limpar_texto(txt):
     txt = re.sub(r"[^a-zá-ú\s]", " ", txt)
     return " ".join([t for t in txt.split() if t not in STOPWORDS])
 
+from pdf2image import convert_from_path
+from PIL import Image
+import pytesseract, pdfplumber, docx, os, gc
+
 def extrair_texto_arquivo(fp):
     ext = os.path.splitext(fp)[1].lower()
     try:
         if ext == ".pdf":
             texto = ""
             with pdfplumber.open(fp) as pdf:
-                texto = " ".join(p.extract_text() or "" for p in pdf.pages)
+                for p in pdf.pages:
+                    if p.extract_text():
+                        texto += p.extract_text() + " "
             if not texto.strip():
-                # OCR fallback
-                imagens = convert_from_path(fp, dpi=150)
-                partes = []
-                for img in imagens:
-                    partes.append(pytesseract.image_to_string(img, lang="por", config="--psm 6"))
-                return " ".join(partes)
-            return texto
+                # Converte e processa página por página, liberando memória
+                for page_img in convert_from_path(fp, dpi=150):
+                    texto += pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
+                    del page_img
+                    gc.collect()
+            return texto.strip()
 
         elif ext in (".docx", ".doc"):
             doc = docx.Document(fp)
             return " ".join(p.text for p in doc.paragraphs)
 
         elif ext == ".txt":
-            with open(fp, encoding="utf-8", errors="ignore") as f:
-                return f.read()
+            return open(fp, encoding="utf-8", errors="ignore").read()
 
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
             img = Image.open(fp).convert("L")
             img = img.point(lambda x: 0 if x < 140 else 255, '1')
-            return pytesseract.image_to_string(img, lang="por", config="--psm 3")
+            texto = pytesseract.image_to_string(img, lang="por", config="--psm 3")
+            img.close()
+            return texto.strip()
 
     except Exception as e:
-        print("erro extrair:", e)
+        print(f"[ERRO] {fp}: {e}")
         return ""
-    return ""
 
 # --- Carregar modelos leves ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
