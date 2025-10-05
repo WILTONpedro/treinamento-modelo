@@ -2,68 +2,66 @@ import os
 import re
 import tempfile
 import shutil
+import zipfile
 import pickle
-import gc
-import traceback
+import docx
+import pdfplumber
+import pytesseract
+from PIL import Image
+import nltk
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from scipy.sparse import hstack, csr_matrix
-import numpy as np
-import pytesseract
-from PIL import Image
-import nltk
 from nltk.corpus import stopwords
-import pdfplumber
-import docx
-from pdf2image import convert_from_path
 import concurrent.futures
+import gc
+import traceback
 
-# --- Setup NLTK ---
+# --- NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
 STOPWORDS = set(stopwords.words("portuguese"))
 
-def limpar_texto(txt):
-    txt = txt.lower()
-    txt = re.sub(r"\S+@\S+", " ", txt)
-    txt = re.sub(r"\d+", " ", txt)
-    txt = re.sub(r"[^a-zá-ú\s]", " ", txt)
-    return " ".join([t for t in txt.split() if t not in STOPWORDS])
+# --- Config ---
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
+OCR_TIMEOUT = 15  # segundos por página
 
-# --- Timeout OCR ---
-TIMEOUT_OCR = 15  # segundos
+# --- Funções auxiliares ---
+def limpar_texto(texto: str) -> str:
+    texto = texto.lower()
+    texto = re.sub(r"\S+@\S+", " ", texto)
+    texto = re.sub(r"\d+", " ", texto)
+    texto = re.sub(r"[^a-zá-ú\s]", " ", texto)
+    return " ".join([p for p in texto.split() if p not in STOPWORDS])
 
-def extrair_texto_pdf_ocr(fp, dpi=150):
+def allowed_file(filename):
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    return ext in ALLOWED_EXTENSIONS
+
+def extrair_texto_pdf_ocr(fp):
     texto = ""
     try:
-        pages = convert_from_path(fp, dpi=dpi)
-    except Exception as e:
-        print(f"[ERRO conversão PDF] {fp}: {e}")
-        return ""
-    def process_page(page_img):
-        try:
-            return pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
-        except Exception:
-            return ""
-    try:
+        pages = convert_from_path(fp, dpi=150)
+        def process_page(page_img):
+            try:
+                return pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
+            except Exception:
+                return ""
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [executor.submit(process_page, p) for p in pages]
-            for f in concurrent.futures.as_completed(futures, timeout=TIMEOUT_OCR):
+            for f in concurrent.futures.as_completed(futures, timeout=OCR_TIMEOUT):
                 try:
                     texto += f.result()
                 except concurrent.futures.TimeoutError:
-                    print("[TIMEOUT OCR] página ignorada")
-                finally:
-                    del f
-                    gc.collect()
-    except concurrent.futures.TimeoutError:
-        print(f"[TIMEOUT OCR] arquivo ignorado {fp}")
-    for p in pages:
-        del p
-    gc.collect()
+                    continue
+    except Exception as e:
+        print(f"[ERRO OCR PDF] {fp}: {e}")
+    finally:
+        gc.collect()
     return texto.strip()
 
 def extrair_texto_imagem_ocr(fp):
@@ -71,56 +69,72 @@ def extrair_texto_imagem_ocr(fp):
     try:
         img = Image.open(fp).convert("L")
         img = img.point(lambda x: 0 if x < 140 else 255, '1')
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(pytesseract.image_to_string, img, "por", "--psm 3")
-            texto = future.result(timeout=TIMEOUT_OCR)
+        texto = pytesseract.image_to_string(img, lang="por", config="--psm 3")
         img.close()
-    except concurrent.futures.TimeoutError:
-        print(f"[TIMEOUT OCR] {fp}")
     except Exception as e:
-        print(f"[ERRO OCR] {fp}: {e}")
+        print(f"[ERRO OCR IMG] {fp}: {e}")
     finally:
         gc.collect()
     return texto.strip()
 
-def extrair_texto_arquivo(fp):
-    ext = os.path.splitext(fp)[1].lower()
+def extrair_texto_arquivo(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
-            texto = ""
-            with pdfplumber.open(fp) as pdf:
-                for p in pdf.pages:
-                    if p.extract_text():
-                        texto += p.extract_text() + " "
+            with pdfplumber.open(filepath) as pdf:
+                texto = " ".join([p.extract_text() or "" for p in pdf.pages if p.extract_text()])
             if not texto.strip():
-                texto += extrair_texto_pdf_ocr(fp)
-            return texto.strip() or ""
+                texto = extrair_texto_pdf_ocr(filepath)
+            return texto.strip()
         elif ext in (".docx", ".doc"):
-            doc = docx.Document(fp)
-            return " ".join(p.text for p in doc.paragraphs) or ""
+            doc = docx.Document(filepath)
+            return " ".join([p.text for p in doc.paragraphs])
         elif ext == ".txt":
-            with open(fp, encoding="utf-8", errors="ignore") as f:
-                return f.read() or ""
-        elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            return extrair_texto_imagem_ocr(fp) or ""
+            with open(filepath, encoding="utf-8", errors="ignore") as f:
+                return f.read()
+        elif ext in ("png","jpg","jpeg","tiff"):
+            return extrair_texto_imagem_ocr(filepath)
+        elif ext == ".zip":
+            # ZIP não é extraído automaticamente, será tratado separadamente
+            return ""
     except Exception as e:
-        print(f"[ERRO extração] {fp}: {e}")
-        return ""
+        print(f"[ERRO EXTRAÇÃO] {filepath}: {e}")
+    finally:
+        gc.collect()
+    return ""
 
-# --- Carregar modelos ---
+def processar_zip(filepath):
+    textos = []
+    try:
+        with zipfile.ZipFile(filepath, "r") as z:
+            tmpdir = tempfile.mkdtemp()
+            for name in z.namelist():
+                z.extract(name, tmpdir)
+                txt = extrair_texto_arquivo(os.path.join(tmpdir, name))
+                if txt:
+                    textos.append(limpar_texto(txt))
+            shutil.rmtree(tmpdir, ignore_errors=True)
+    except Exception as e:
+        print(f"[ERRO ZIP] {filepath}: {e}")
+    return textos
+
+# --- Carregar modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
-clf = data["clf"]
-word_v = data["word_vectorizer"]
-char_v = data["char_vectorizer"]
-palavras_chave_dict = data["palavras_chave_dict"]
-selector = data["selector"]
-le = data["label_encoder"]
+if isinstance(data, dict):
+    clf = data["clf"]
+    word_v = data["word_vectorizer"]
+    char_v = data["char_vectorizer"]
+    palavras_chave_dict = data["palavras_chave_dict"]
+    selector = data["selector"]
+    le = data["label_encoder"]
+else:
+    raise ValueError("Formato de pickle inválido. Esperado dict.")
 
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
-# --- Fallback BERT (lazy-loaded) ---
+# --- Fallback BERT (opcional) ---
 bert_model = None
 clf_bert = None
 le_bert = le
@@ -128,10 +142,9 @@ if os.path.exists("modelo_bert_fallback.pkl"):
     with open("modelo_bert_fallback.pkl", "rb") as f:
         clf_bert, le_bert = pickle.load(f)
 
-# --- Config Flask ---
+# --- Flask ---
 app = Flask(__name__)
-ALLOWED_EXT = {"pdf", "docx", "doc", "txt", "png", "jpg", "jpeg", "tiff"}
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB
+app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_file(e):
@@ -143,38 +156,47 @@ def predict():
     try:
         if "file" not in request.files:
             return jsonify({"success": False, "error": "Nenhum arquivo enviado"}), 400
-
         uploaded = request.files["file"]
         filename = secure_filename(uploaded.filename)
         if not filename:
-            return jsonify({"success": False, "error": "Nome vazio"}), 400
-
+            return jsonify({"success": False, "error": "Nome de arquivo vazio"}), 400
         ext = os.path.splitext(filename)[1].lower().lstrip(".")
-        if ext not in ALLOWED_EXT:
-            return jsonify({"success": False, "error": "Extensão não permitida"}), 400
+        if ext not in ALLOWED_EXTENSIONS:
+            return jsonify({"success": False, "error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
-        tmpdir = tempfile.mkdtemp(prefix="tmp_api_")
-        path = os.path.join(tmpdir, filename)
-        uploaded.save(path)
+        tmpdir = tempfile.mkdtemp(prefix="cv_api_")
+        filepath = os.path.join(tmpdir, filename)
+        uploaded.save(filepath)
 
-        texto_raw = extrair_texto_arquivo(path)
-        texto = limpar_texto(texto_raw)
+        # Extrair texto
+        textos = []
+        if ext == "zip":
+            textos.extend(processar_zip(filepath))
+        else:
+            txt = extrair_texto_arquivo(filepath)
+            if txt:
+                textos.append(limpar_texto(txt))
 
-        if not texto.strip():
-            return jsonify({"success": False, "error": "Não foi possível extrair texto do arquivo"}), 400
+        if not textos:
+            return jsonify({"success": False, "error": "Não foi possível extrair texto"}), 400
 
-        # --- Inferência TF-IDF ---
-        Xw = word_v.transform([texto])
-        Xc = char_v.transform([texto])
-        Xch = csr_matrix([extrair_features_chave(texto)])
-        X = selector.transform(hstack([Xw, Xc, Xch]))
+        full_text = " ".join(textos)
 
-        probs = clf.predict_proba(X)[0]
-        idx = np.argmax(probs)
+        # Vetorização TF-IDF
+        Xw = word_v.transform([full_text])
+        Xc = char_v.transform([full_text])
+        Xchaves = csr_matrix([extrair_features_chave(full_text)])
+        Xfull = hstack([Xw, Xc, Xchaves])
+        Xsel = selector.transform(Xfull)
+
+        # Predição TF-IDF
+        probs = clf.predict_proba(Xsel)[0]
+        idx = probs.argmax()
         conf = float(probs[idx])
         classe = le.inverse_transform([idx])[0]
         origem = "tfidf"
 
+        # Fallback BERT
         LIMIAR = 0.65
         if conf < LIMIAR and clf_bert is not None:
             origem = "bert"
@@ -183,9 +205,9 @@ def predict():
                 if bert_model is None:
                     from sentence_transformers import SentenceTransformer
                     bert_model = SentenceTransformer("neuralmind/bert-base-portuguese-cased")
-                emb = bert_model.encode([texto])
+                emb = bert_model.encode([full_text])
                 pb = clf_bert.predict_proba(emb)[0]
-                ib = np.argmax(pb)
+                ib = pb.argmax()
                 classe = le_bert.inverse_transform([ib])[0]
                 conf = float(pb[ib])
             except Exception:
@@ -196,7 +218,8 @@ def predict():
             "success": True,
             "prediction": classe,
             "confidence": round(conf, 3),
-            "origin": origem
+            "origin": origem,
+            "tokens": len(full_text.split())
         })
 
     except Exception:
@@ -209,8 +232,8 @@ def predict():
         gc.collect()
 
 @app.route("/", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"})
+def healthcheck():
+    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
