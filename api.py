@@ -4,8 +4,10 @@ import tempfile
 import shutil
 import pickle
 import gc
+import traceback
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from scipy.sparse import hstack, csr_matrix
 import numpy as np
 import pytesseract
@@ -15,7 +17,7 @@ from nltk.corpus import stopwords
 import pdfplumber
 import docx
 from pdf2image import convert_from_path
-import traceback
+import concurrent.futures
 
 # --- Setup NLTK ---
 try:
@@ -31,6 +33,53 @@ def limpar_texto(txt):
     txt = re.sub(r"[^a-zá-ú\s]", " ", txt)
     return " ".join([t for t in txt.split() if t not in STOPWORDS])
 
+# --- Timeout OCR ---
+TIMEOUT_OCR = 15  # segundos
+
+def extrair_texto_pdf_ocr(fp, dpi=150):
+    texto = ""
+    try:
+        pages = convert_from_path(fp, dpi=dpi)
+    except Exception as e:
+        print(f"[ERRO conversão PDF] {fp}: {e}")
+        return ""
+    def process_page(page_img):
+        try:
+            return pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
+        except Exception:
+            return ""
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_page, p) for p in pages]
+        for f in concurrent.futures.as_completed(futures, timeout=TIMEOUT_OCR):
+            try:
+                texto += f.result()
+            except concurrent.futures.TimeoutError:
+                print("[TIMEOUT OCR] página ignorada")
+            finally:
+                del f
+                gc.collect()
+    for p in pages:
+        del p
+    gc.collect()
+    return texto.strip()
+
+def extrair_texto_imagem_ocr(fp):
+    texto = ""
+    try:
+        img = Image.open(fp).convert("L")
+        img = img.point(lambda x: 0 if x < 140 else 255, '1')
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(pytesseract.image_to_string, img, "por", "--psm 3")
+            texto = future.result(timeout=TIMEOUT_OCR)
+        img.close()
+    except concurrent.futures.TimeoutError:
+        print(f"[TIMEOUT OCR] {fp}")
+    except Exception as e:
+        print(f"[ERRO OCR] {fp}: {e}")
+    finally:
+        gc.collect()
+    return texto.strip()
+
 def extrair_texto_arquivo(fp):
     ext = os.path.splitext(fp)[1].lower()
     try:
@@ -41,10 +90,7 @@ def extrair_texto_arquivo(fp):
                     if p.extract_text():
                         texto += p.extract_text() + " "
             if not texto.strip():
-                for page_img in convert_from_path(fp, dpi=150):
-                    texto += pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
-                    del page_img
-                    gc.collect()
+                texto += extrair_texto_pdf_ocr(fp)
             return texto.strip()
 
         elif ext in (".docx", ".doc"):
@@ -56,11 +102,7 @@ def extrair_texto_arquivo(fp):
                 return f.read()
 
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(fp).convert("L")
-            img = img.point(lambda x: 0 if x < 140 else 255, '1')
-            texto = pytesseract.image_to_string(img, lang="por", config="--psm 3")
-            img.close()
-            return texto.strip()
+            return extrair_texto_imagem_ocr(fp)
 
     except Exception as e:
         print(f"[ERRO extração] {fp}: {e}")
@@ -87,8 +129,14 @@ if os.path.exists("modelo_bert_fallback.pkl"):
     with open("modelo_bert_fallback.pkl", "rb") as f:
         clf_bert, le_bert = pickle.load(f)
 
+# --- Config Flask ---
 app = Flask(__name__)
 ALLOWED_EXT = {"pdf", "docx", "doc", "txt", "png", "jpg", "jpeg", "tiff"}
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20 MB
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_large_file(e):
+    return jsonify({"error": "Arquivo muito grande. Máximo permitido: 20MB"}), 413
 
 @app.route("/predict", methods=["POST"])
 def predict():
