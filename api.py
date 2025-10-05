@@ -1,15 +1,17 @@
-import os, re, tempfile, shutil, pickle, docx, pdfplumber
-import pytesseract
-from PIL import Image
-import nltk
+import os, re, tempfile, shutil, pickle
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
-from nltk.corpus import stopwords
 import numpy as np
+import pytesseract
+from PIL import Image
+import nltk
+from nltk.corpus import stopwords
+from sentence_transformers import SentenceTransformer
 from sklearn.linear_model import LogisticRegression
+import pdfplumber
+import docx
 from pdf2image import convert_from_path
-
 
 # --- NLTK ---
 try:
@@ -18,7 +20,7 @@ except LookupError:
     nltk.download("stopwords")
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Funções utilitárias ---
+# --- Função de limpeza ---
 def limpar_texto(txt):
     txt = txt.lower()
     txt = re.sub(r"\S+@\S+", " ", txt)
@@ -26,6 +28,7 @@ def limpar_texto(txt):
     txt = re.sub(r"[^a-zá-ú\s]", " ", txt)
     return " ".join([t for t in txt.split() if t not in STOPWORDS])
 
+# --- Função de extração de texto (PDF/Word/TXT/Imagens) ---
 def extrair_texto_arquivo(fp):
     ext = os.path.splitext(fp)[1].lower()
     try:
@@ -33,8 +36,7 @@ def extrair_texto_arquivo(fp):
             texto = ""
             with pdfplumber.open(fp) as pdf:
                 texto = " ".join(p.extract_text() or "" for p in pdf.pages)
-            # Se não extraiu texto, aplica OCR
-            if not texto.strip():
+            if not texto.strip():  # aplica OCR se não houver texto
                 imagens = convert_from_path(fp, dpi=300)
                 texto = " ".join(
                     pytesseract.image_to_string(img, lang="por", config="--psm 6")
@@ -52,7 +54,6 @@ def extrair_texto_arquivo(fp):
 
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
             img = Image.open(fp).convert("L")
-            # Binarização simples para melhorar OCR
             img = img.point(lambda x: 0 if x < 140 else 255, '1')
             return pytesseract.image_to_string(img, lang="por", config="--psm 3")
 
@@ -60,10 +61,9 @@ def extrair_texto_arquivo(fp):
         print(f"[ERRO] Falha ao extrair texto de {fp}: {e}")
         return ""
 
-# --- Carrega modelo TF-IDF + XGBoost (sempre carregado) ---
+# --- Carrega modelo TF-IDF + XGBoost ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
-
 clf = data["clf"]
 word_v = data["word_vectorizer"]
 char_v = data["char_vectorizer"]
@@ -74,14 +74,15 @@ le = data["label_encoder"]
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
-# --- BERTimbau como fallback (carrega só se necessário) ---
-bert_model = None
-clf_bert, le_bert = LogisticRegression(), le
+# --- BERTimbau como fallback ---
+bert_model = SentenceTransformer("neuralmind/bert-base-portuguese-cased")
 if os.path.exists("modelo_bert_fallback.pkl"):
     with open("modelo_bert_fallback.pkl", "rb") as f:
         clf_bert, le_bert = pickle.load(f)
+else:
+    clf_bert, le_bert = LogisticRegression(), le
 
-# --- API Flask ---
+# --- Configura API Flask ---
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {"pdf", "docx", "doc", "txt", "png", "jpg", "jpeg", "tiff"}
 
@@ -100,16 +101,12 @@ def predict():
         if ext not in ALLOWED_EXTENSIONS:
             return jsonify({"error": "Tipo de arquivo não suportado"}), 400
 
-        # --- Salva temporariamente ---
         tmpdir = tempfile.mkdtemp(prefix="cv_api_")
         path = os.path.join(tmpdir, filename)
         uploaded.save(path)
 
         texto = limpar_texto(extrair_texto_arquivo(path))
-
-        # --- Limpa diretório temporário e força garbage collection ---
         shutil.rmtree(tmpdir, ignore_errors=True)
-        import gc; gc.collect()
 
         if not texto.strip():
             return jsonify({"error": "Não foi possível extrair texto"}), 400
@@ -125,14 +122,10 @@ def predict():
         classe = le.inverse_transform([pred_idx])[0]
         origem = "tfidf"
 
-        # --- Limiar de confiança ---
+        # --- Limiar de confiança para fallback BERT ---
         LIMIAR = 0.6
         if confidence < LIMIAR:
             origem = "bert_fallback"
-            global bert_model
-            if bert_model is None:
-                from sentence_transformers import SentenceTransformer
-                bert_model = SentenceTransformer("neuralmind/bert-base-portuguese-cased")
             emb = bert_model.encode([texto])
             try:
                 probs_b = clf_bert.predict_proba(emb)[0]
