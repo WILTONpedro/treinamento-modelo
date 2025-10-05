@@ -60,7 +60,7 @@ def extrair_texto_arquivo(fp):
         return ""
     
     if ext == ".pdf":
-    with pdfplumber.open(fp) as pdf:
+        with pdfplumber.open(fp) as pdf:
         texto = " ".join(p.extract_text() or "" for p in pdf.pages)
         if not texto.strip():  # se não extraiu texto, aplica OCR
             from pdf2image import convert_from_path
