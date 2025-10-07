@@ -13,13 +13,13 @@ from werkzeug.exceptions import RequestEntityTooLarge
 
 from scipy.sparse import hstack, csr_matrix
 
-# --- Configurações ---
+# --- CONFIGURAÇÃO ---
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 OCR_ENABLED = os.getenv("ENABLE_OCR", "false").lower() == "true"
-LIMIAR = 0.50
+LIMIAR = 0.40  # menor limiar para reduzir chamadas ao BERT
 
-# --- Carregar modelo leve inicial ---
+# --- MODELO LEVE INICIAL ---
 with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
     model_data = pickle.load(f)
 
@@ -30,14 +30,15 @@ palavras_chave_dict = model_data["palavras_chave_dict"]
 selector = model_data["selector"]
 le = model_data["label_encoder"]
 
-# --- Variáveis de fallback (BERT) ---
+# --- VARIÁVEIS DE FALLBACK (BERT) ---
 bert_model = None
 clf_bert = None
 le_bert = None
 
-# --- Funções auxiliares ---
+# --- FUNÇÕES AUXILIARES ---
 def allowed_file(filename):
-    return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    return ext in ALLOWED_EXTENSIONS
 
 def limpar_texto(texto: str) -> str:
     import nltk
@@ -59,7 +60,13 @@ def extrair_texto_arquivo(fp):
             with pdfplumber.open(fp) as pdf:
                 texto = " ".join([p.extract_text() or "" for p in pdf.pages if p.extract_text()])
             if not texto.strip() and OCR_ENABLED:
-                texto = extrair_texto_pdf_ocr(fp)
+                from pdf2image import convert_from_path
+                pages = convert_from_path(fp, dpi=150)
+                for page in pages:
+                    try:
+                        texto += pytesseract.image_to_string(page, lang="por", config="--psm 6")
+                    except:
+                        pass
         elif ext in (".docx", ".doc"):
             doc = docx.Document(fp)
             texto = " ".join([p.text for p in doc.paragraphs])
@@ -67,66 +74,29 @@ def extrair_texto_arquivo(fp):
             with open(fp, encoding="utf-8", errors="ignore") as f:
                 texto = f.read()
         elif ext in ("png","jpg","jpeg","tiff") and OCR_ENABLED:
-            texto = extrair_texto_imagem_ocr(fp)
-    except Exception as e:
-        print(f"[WARN] Falha ao extrair texto de {fp}: {e}")
+            from PIL import Image
+            img = Image.open(fp).convert("L")
+            texto = pytesseract.image_to_string(img, lang="por", config="--psm 3")
+            img.close()
+        elif ext == ".zip":
+            with zipfile.ZipFile(fp, "r") as z:
+                tmpd = tempfile.mkdtemp()
+                for name in z.namelist():
+                    extracted = z.extract(name, tmpd)
+                    txt = extrair_texto_arquivo(os.path.join(tmpd, name))
+                    if txt:
+                        texto += " " + txt
+                shutil.rmtree(tmpd, ignore_errors=True)
+    except:
+        pass
     finally:
         gc.collect()
     return texto.strip()
 
-def extrair_texto_pdf_ocr(fp):
-    try:
-        from pdf2image import convert_from_path
-        import pytesseract
-        pages = convert_from_path(fp, dpi=150)
-        texto = ""
-        for page in pages:
-            texto += pytesseract.image_to_string(page, lang="por", config="--psm 6") or ""
-        return texto.strip()
-    except Exception as e:
-        print(f"[WARN] OCR PDF falhou: {e}")
-        return ""
-    finally:
-        gc.collect()
-
-def extrair_texto_imagem_ocr(fp):
-    try:
-        import pytesseract
-        from PIL import Image
-        img = Image.open(fp).convert("L")
-        texto = pytesseract.image_to_string(img, lang="por", config="--psm 3") or ""
-        img.close()
-        return texto.strip()
-    except Exception as e:
-        print(f"[WARN] OCR imagem falhou: {e}")
-        return ""
-    finally:
-        gc.collect()
-
-def processar_zip(fp):
-    textos = []
-    try:
-        with zipfile.ZipFile(fp, "r") as z:
-            tmpd = tempfile.mkdtemp()
-            for name in z.namelist():
-                try:
-                    extracted = z.extract(name, tmpd)
-                    txt = extrair_texto_arquivo(os.path.join(tmpd, name))
-                    if txt:
-                        textos.append(txt)
-                except Exception as e:
-                    print(f"[WARN] Falha ao processar {name} no ZIP: {e}")
-            shutil.rmtree(tmpd, ignore_errors=True)
-    except Exception as e:
-        print(f"[WARN] Falha ao abrir ZIP: {e}")
-    finally:
-        gc.collect()
-    return textos
-
 def extrair_features_chave(texto: str):
     return [int(any(p.lower() in texto for p in lst)) for lst in palavras_chave_dict.values()]
 
-# --- Flask ---
+# --- CONFIGURAÇÃO FLASK ---
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_SIZE
 
@@ -152,44 +122,32 @@ def predict():
         fp = os.path.join(tmpdir, filename)
         uploaded.save(fp)
 
-        # Extrair textos
-        textos = []
-        ext = os.path.splitext(filename)[1].lower().lstrip(".")
-        if ext == "zip":
-            textos.extend(processar_zip(fp))
-        else:
-            txt = extrair_texto_arquivo(fp)
-            if txt:
-                textos.append(txt)
-
-        if not textos:
+        full_text = extrair_texto_arquivo(fp)
+        if not full_text.strip():
             return jsonify({"success": False, "error": "Não foi possível extrair texto"}), 400
 
-        full_text = " ".join(textos)
         cleaned = limpar_texto(full_text)
-
-        # Vetorização + features
         Xw = word_v.transform([cleaned])
         Xc = char_v.transform([cleaned])
         Xk = csr_matrix([extrair_features_chave(cleaned)])
         Xfull = hstack([Xw, Xc, Xk])
         Xsel = selector.transform(Xfull)
 
-        # Predição principal
+        # --- PREDIÇÃO LEVE ---
         probs = clf.predict_proba(Xsel)[0]
         idx = int(probs.argmax())
         conf = float(probs[idx])
         classe = le.inverse_transform([idx])[0]
         origem = "tfidf"
 
-        # Fallback BERT (só se necessário)
-        if conf < LIMIAR:
+        # --- FALLBACK BERT SOMENTE SE NECESSÁRIO ---
+        if conf < LIMIAR and os.path.exists("modelo_bert_fallback.pkl"):
             global clf_bert, le_bert, bert_model
-            try:
-                if clf_bert is None and os.path.exists("modelo_bert_fallback.pkl"):
-                    with open("modelo_bert_fallback.pkl", "rb") as f:
-                        clf_bert, le_bert = pickle.load(f)
-                if clf_bert is not None:
+            if clf_bert is None:
+                with open("modelo_bert_fallback.pkl", "rb") as f:
+                    clf_bert, le_bert = pickle.load(f)
+            if clf_bert is not None:
+                try:
                     if bert_model is None:
                         from sentence_transformers import SentenceTransformer
                         bert_model = SentenceTransformer("paraphrase-multilingual-MiniLM-L12-v2")
@@ -201,19 +159,16 @@ def predict():
                     classe = le_bert.inverse_transform([ib])[0]
                     conf = float(pb[ib])
                     origem = "bert"
-            except Exception as e:
-                print(f"[WARN] Fallback BERT falhou: {e}")
-                classe, conf = "INDEFINIDO", 0.0
+                except:
+                    classe, conf = "INDEFINIDO", 0.0
 
-        result = {
+        return jsonify({
             "success": True,
             "prediction": classe,
-            "confidence": round(conf, 3),
+            "confidence": round(conf,3),
             "origin": origem,
             "tokens": len(cleaned.split())
-        }
-
-        return jsonify(result)
+        })
 
     except Exception:
         traceback_str = traceback.format_exc()
@@ -227,7 +182,8 @@ def predict():
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return jsonify({"status": "ok", "message": "API rodando"})
+    return jsonify({"status":"ok","message":"API rodando"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # THREADS DESATIVADAS PARA RENDER FREE
+    app.run(host="0.0.0.0", port=5000, threaded=False)
