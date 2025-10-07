@@ -129,7 +129,7 @@ def processar_zip(filepath):
     return textos
 
 # --- Carregar modelo ---
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
+with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
     data = pickle.load(f)
 if isinstance(data, dict):
     clf = data["clf"]
@@ -212,7 +212,7 @@ def predict():
         origem = "tfidf"
 
         # Fallback BERT
-        LIMIAR = 0.65
+        LIMIAR = 0.40
         if conf < LIMIAR and clf_bert is not None:
             origem = "bert"
             try:
