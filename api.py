@@ -1,22 +1,15 @@
-import os
-import re
-import tempfile
-import shutil
-import zipfile
-import pickle
-import docx
-import pdfplumber
-import pytesseract
-from PIL import Image
-import nltk
+import os, re, tempfile, shutil, zipfile, pickle, gc, traceback
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
+import nltk
+import docx
+import pdfplumber
+import pytesseract
+from PIL import Image
 import concurrent.futures
-import gc
-import traceback
 
 # --- NLTK ---
 try:
@@ -45,7 +38,6 @@ def allowed_file(filename):
 
 def sanitize_filename(filename):
     filename = secure_filename(filename)
-    # Remove múltiplas extensões estranhas
     parts = filename.split(".")
     if len(parts) > 2:
         filename = parts[0] + "." + parts[-1]
@@ -106,7 +98,7 @@ def extrair_texto_arquivo(filepath):
         elif ext in ("png","jpg","jpeg","tiff"):
             return extrair_texto_imagem_ocr(filepath)
         elif ext == ".zip":
-            return ""  # será tratado separadamente
+            return ""  # tratado separadamente
     except Exception as e:
         print(f"[ERRO EXTRAÇÃO] {filepath}: {e}")
     finally:
@@ -129,22 +121,19 @@ def processar_zip(filepath):
     return textos
 
 # --- Carregar modelo ---
-with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
+with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
-if isinstance(data, dict):
-    clf = data["clf"]
-    word_v = data["word_vectorizer"]
-    char_v = data["char_vectorizer"]
-    palavras_chave_dict = data["palavras_chave_dict"]
-    selector = data["selector"]
-    le = data["label_encoder"]
-else:
-    raise ValueError("Formato de pickle inválido. Esperado dict.")
+clf = data["clf"]
+word_v = data["word_vectorizer"]
+char_v = data["char_vectorizer"]
+palavras_chave_dict = data["palavras_chave_dict"]
+selector = data["selector"]
+le = data["label_encoder"]
 
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
-# --- Fallback BERT (opcional) ---
+# --- Fallback BERT opcional ---
 bert_model = None
 clf_bert = None
 le_bert = le
@@ -183,7 +172,6 @@ def predict():
         filepath = os.path.join(tmpdir, filename)
         uploaded.save(filepath)
 
-        # Extrair texto
         textos = []
         if ext == "zip":
             textos.extend(processar_zip(filepath))
@@ -197,14 +185,13 @@ def predict():
 
         full_text = " ".join(textos)
 
-        # Vetorização TF-IDF
+        # TF-IDF
         Xw = word_v.transform([full_text])
         Xc = char_v.transform([full_text])
         Xchaves = csr_matrix([extrair_features_chave(full_text)])
         Xfull = hstack([Xw, Xc, Xchaves])
         Xsel = selector.transform(Xfull)
 
-        # Predição TF-IDF
         probs = clf.predict_proba(Xsel)[0]
         idx = probs.argmax()
         conf = float(probs[idx])
@@ -212,7 +199,7 @@ def predict():
         origem = "tfidf"
 
         # Fallback BERT
-        LIMIAR = 0.40
+        LIMIAR = 0.65
         if conf < LIMIAR and clf_bert is not None:
             origem = "bert"
             try:
@@ -232,7 +219,7 @@ def predict():
         return jsonify({
             "success": True,
             "prediction": classe,
-            "confidence": round(conf, 3),
+            "confidence": round(conf,3),
             "origin": origem,
             "tokens": len(full_text.split())
         })
@@ -248,3 +235,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
