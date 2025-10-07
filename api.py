@@ -1,4 +1,4 @@
-import os, re, tempfile, shutil, zipfile, pickle, gc, traceback
+import os, re, tempfile, shutil, zipfile, pickle, gc, traceback, threading
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -21,10 +21,11 @@ STOPWORDS = set(stopwords.words("portuguese"))
 # --- Config ---
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
-MAX_PAGES = 100  # Máximo de páginas de PDF processadas
+MAX_PAGES = 100  # Limite de páginas PDF
 OCR_TIMEOUT = 15  # segundos por página
+REQUEST_TIMEOUT = 60  # Timeout global por requisição
 
-# --- Funções auxiliares ---
+# --- Funções ---
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
     texto = re.sub(r"\S+@\S+", " ", texto)
@@ -47,8 +48,7 @@ def extrair_texto_pdf_ocr(fp):
     texto = ""
     try:
         from pdf2image import convert_from_path
-        pages = convert_from_path(fp, dpi=150)
-        pages = pages[:MAX_PAGES]
+        pages = convert_from_path(fp, dpi=150)[:MAX_PAGES]
         def process_page(page_img):
             try:
                 return pytesseract.image_to_string(page_img, lang="por", config="--psm 6")
@@ -56,9 +56,9 @@ def extrair_texto_pdf_ocr(fp):
                 return ""
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [executor.submit(process_page, p) for p in pages]
-            for f in concurrent.futures.as_completed(futures, timeout=OCR_TIMEOUT):
+            for f in concurrent.futures.as_completed(futures):
                 try:
-                    texto += f.result()
+                    texto += f.result(timeout=OCR_TIMEOUT)
                 except concurrent.futures.TimeoutError:
                     continue
     except Exception as e:
@@ -121,7 +121,7 @@ def processar_zip(filepath):
     return textos
 
 # --- Carregar modelo ---
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
+with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
     data = pickle.load(f)
 clf = data["clf"]
 word_v = data["word_vectorizer"]
@@ -133,7 +133,7 @@ le = data["label_encoder"]
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
-# --- Fallback BERT opcional ---
+# --- BERT fallback ---
 bert_model = None
 clf_bert = None
 le_bert = le
@@ -153,6 +153,15 @@ def handle_large_file(e):
 def handle_all_errors(e):
     print("[ERRO GLOBAL]", traceback.format_exc())
     return jsonify({"success": False, "error": "Erro interno do servidor"}), 500
+
+def run_with_timeout(func, args=(), timeout=REQUEST_TIMEOUT):
+    result = {}
+    thread = threading.Thread(target=lambda r: r.update({"value": func(*args)}), args=(result,))
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        return None
+    return result.get("value")
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -176,7 +185,7 @@ def predict():
         if ext == "zip":
             textos.extend(processar_zip(filepath))
         else:
-            txt = extrair_texto_arquivo(filepath)
+            txt = run_with_timeout(extrair_texto_arquivo, (filepath,))
             if txt:
                 textos.append(limpar_texto(txt))
 
@@ -199,7 +208,7 @@ def predict():
         origem = "tfidf"
 
         # Fallback BERT
-        LIMIAR = 0.65
+        LIMIAR = 0.20
         if conf < LIMIAR and clf_bert is not None:
             origem = "bert"
             try:
@@ -230,9 +239,4 @@ def predict():
         gc.collect()
 
 @app.route("/", methods=["GET"])
-def healthcheck():
-    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
-
+def
