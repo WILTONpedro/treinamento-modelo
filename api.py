@@ -76,7 +76,7 @@ def extrair_texto_arquivo(filepath):
     return ""
 
 # --- Carrega modelo ---
-with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
+with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
 if isinstance(data, dict):
