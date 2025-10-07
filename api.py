@@ -20,7 +20,7 @@ OCR_ENABLED = os.getenv("ENABLE_OCR", "false").lower() == "true"
 LIMIAR = 0.65  # limiar de confiança para fallback
 
 # Carregar modelo leve inicial
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
+with open("modelo_curriculos_super_avancado.pkl", "rb") as f:
     model_data = pickle.load(f)
     
 clf = model_data["clf"]
