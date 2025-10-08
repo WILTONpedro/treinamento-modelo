@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import os
 import re
 import tempfile
@@ -143,4 +142,3 @@ def analisar():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
->>>>>>> 1f90bbe (Salvar alterações pendentes antes do rebase)
