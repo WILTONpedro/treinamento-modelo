@@ -118,11 +118,11 @@ def predict():
         classe = le.inverse_transform([pred])[0]
 
         resultados.append({
-            "filename": nome,
-            "prediction": classe,
-            "tokens": len(texto.split())
-        })
-
+        "filename": nome,
+        "prediction": classe,
+        "tokens": len(texto.split()),
+        "preview": texto[:200]  # mostra só os primeiros 200 caracteres
+})
     return jsonify({"success": True, "results": resultados})
 
 # --- Rota auxiliar para o Apps Script (POST simples) ---
