@@ -119,9 +119,10 @@ def predict():
 
     return jsonify({"success": True, "results": resultados})
 
-@app.route("/", methods=["GET"])
-def healthcheck():
-    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
+@app.route('/analisar', methods=['POST'])
+def analisar():
+    dados = request.get_json()
+    return jsonify({"mensagem": "recebido", "dados": dados})
 
 port = int(os.environ.get("PORT", 10000))
 app.run(host="0.0.0.0", port=port)
