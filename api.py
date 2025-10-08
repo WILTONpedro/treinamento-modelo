@@ -66,6 +66,12 @@ app = Flask(__name__)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# --- Rota de teste (GET) ---
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"status": "online", "message": "API de triagem ativa e rodando!"})
+
+# --- Rota principal de predição ---
 @app.route("/predict", methods=["POST"])
 def predict():
     if "files" not in request.files:
@@ -119,11 +125,21 @@ def predict():
 
     return jsonify({"success": True, "results": resultados})
 
-@app.route('/analisar', methods=['POST'])
+# --- Rota auxiliar para o Apps Script (POST simples) ---
+@app.route("/analisar", methods=["POST"])
 def analisar():
-    dados = request.get_json()
-    return jsonify({"mensagem": "recebido", "dados": dados})
+    try:
+        dados = request.get_json()
+        return jsonify({
+            "mensagem": "Recebido com sucesso!",
+            "dados": dados,
+            "status": "ok"
+        })
+    except Exception as e:
+        return jsonify({"erro": str(e)}), 400
 
-port = int(os.environ.get("PORT", 10000))
-app.run(host="0.0.0.0", port=port)
+# --- Execução ---
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
