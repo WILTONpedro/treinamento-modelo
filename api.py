@@ -165,8 +165,3 @@ def predict():
 @app.route("/", methods=["GET"])
 def healthcheck():
     return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
-
-# --- Execução ---
-if __name__ == "__main__":
-    # Debug desligado para produção no Render
-    app.run(host="0.0.0.0", port=5000)port)
