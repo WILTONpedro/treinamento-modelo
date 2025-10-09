@@ -14,10 +14,11 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
 import traceback
+import gzip
+import base64
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-# --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
@@ -54,8 +55,16 @@ def processar_item(filepath):
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
-        # PDF
-        if ext == ".pdf":
+        # Verifica tamanho da imagem antes de fazer OCR
+        if ext in (".png", ".jpg", ".jpeg", ".tiff"):
+            if os.path.getsize(filepath) > 5 * 1024 * 1024:  # 5MB
+                print(f"[AVISO] Imagem muito grande, ignorando OCR: {filepath}")
+                return ""
+            img = Image.open(filepath).convert("L")
+            img.thumbnail((1024, 1024))  # reduz memória no OCR
+            return pytesseract.image_to_string(img, lang="por", config="--psm 6")
+
+        elif ext == ".pdf":
             texts = []
             with pdfplumber.open(filepath) as pdf:
                 for page in pdf.pages:
@@ -64,34 +73,18 @@ def extrair_texto_arquivo(filepath):
                         texts.append(t)
             return " ".join(texts)
 
-        # DOCX/DOC
         elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
             return " ".join(p.text for p in doc.paragraphs)
 
-        # TXT
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
 
-        # Imagens
-        elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath).convert("L")  # tons de cinza
-            # aplica filtros de pré-processamento para OCR
-            img = img.filter(ImageFilter.MedianFilter())  # remove ruído
-            img.thumbnail((1024, 1024))  # reduz tamanho para memória
-            # Inverter imagem se necessário (para fundos escuros)
-            # img = ImageOps.invert(img)
-            texto = pytesseract.image_to_string(img, lang="por", config="--psm 6")
-            return texto
-
-        else:
-            print(f"[INFO] Tipo de arquivo não tratado pelo OCR: {filepath}")
-            return ""
-
     except Exception:
         print(f"[ERRO] Falha ao extrair texto de {filepath}:\n{traceback.format_exc()}")
         return ""
+    return ""
 
 # --- Carrega modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
@@ -157,24 +150,38 @@ def predict():
 
             full_text = " ".join(textos)
 
+            # --- Limita tamanho do texto ---
+            if len(full_text) > 30000:
+                print(f"[AVISO] Texto muito grande ({len(full_text)} caracteres). Cortando para 30.000.")
+                full_text = full_text[:30000]
+
+            # --- Compressão opcional para payloads grandes ---
+            compressed_text = None
+            if len(full_text.encode("utf-8")) > 20000:  # ~20KB
+                compressed_text = base64.b64encode(
+                    gzip.compress(full_text.encode("utf-8"))
+                ).decode("utf-8")
+
             # --- Vetorização ---
             Xw = word_v.transform([full_text])
             Xc = char_v.transform([full_text])
             Xchaves = csr_matrix([extrair_features_chave(full_text)])
             Xfull = hstack([Xw, Xc, Xchaves])
 
-            # --- Seleção de features ---
             Xsel = selector.transform(Xfull)
-
-            # --- Predição ---
             pred = clf.predict(Xsel)[0]
             classe = le.inverse_transform([pred])[0]
 
-            return jsonify({
+            resp = {
                 "success": True,
                 "prediction": classe,
-                "tokens": len(full_text.split())
-            })
+                "tokens": len(full_text.split()),
+            }
+
+            if compressed_text:
+                resp["compressed_text"] = compressed_text[:200] + "... (compactado)"  # debug opcional
+
+            return jsonify(resp)
 
     except Exception:
         print(traceback.format_exc())
