@@ -15,6 +15,8 @@ from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
 import traceback
 
+pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+
 # --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
@@ -52,6 +54,7 @@ def processar_item(filepath):
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
+        # PDF
         if ext == ".pdf":
             texts = []
             with pdfplumber.open(filepath) as pdf:
@@ -60,20 +63,35 @@ def extrair_texto_arquivo(filepath):
                     if t:
                         texts.append(t)
             return " ".join(texts)
+
+        # DOCX/DOC
         elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
             return " ".join(p.text for p in doc.paragraphs)
+
+        # TXT
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
+
+        # Imagens
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath).convert("L")
-            img.thumbnail((1024, 1024))  # reduz memória no OCR
-            return pytesseract.image_to_string(img, lang="por", config="--psm 6")
+            img = Image.open(filepath).convert("L")  # tons de cinza
+            # aplica filtros de pré-processamento para OCR
+            img = img.filter(ImageFilter.MedianFilter())  # remove ruído
+            img.thumbnail((1024, 1024))  # reduz tamanho para memória
+            # Inverter imagem se necessário (para fundos escuros)
+            # img = ImageOps.invert(img)
+            texto = pytesseract.image_to_string(img, lang="por", config="--psm 6")
+            return texto
+
+        else:
+            print(f"[INFO] Tipo de arquivo não tratado pelo OCR: {filepath}")
+            return ""
+
     except Exception:
         print(f"[ERRO] Falha ao extrair texto de {filepath}:\n{traceback.format_exc()}")
         return ""
-    return ""
 
 # --- Carrega modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
