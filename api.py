@@ -8,28 +8,30 @@ import docx
 import pdfplumber
 import pytesseract
 from PIL import Image
+import unicodedata
 import nltk
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
+import numpy as np
 
 # --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 STOPWORDS = set(stopwords.words("portuguese"))
 
 # --- Funções auxiliares ---
 def limpar_texto(texto: str) -> str:
+    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8', 'ignore')
     texto = texto.lower()
-    texto = re.sub(r"\S+@\S+", " ", texto)  # remove emails
-    texto = re.sub(r"\d+", " ", texto)      # remove números
-    texto = re.sub(r"[^a-zá-ú\s]", " ", texto)
-    palavras = [p for p in texto.split() if p not in STOPWORDS]
-    return " ".join(palavras)
+    texto = re.sub(r'\S+@\S+', ' ', texto)       # remove emails
+    texto = re.sub(r'\d+', ' ', texto)           # remove números
+    texto = re.sub(r'http\S+|www\S+', ' ', texto)
+    texto = re.sub(r'[^a-z\s]', ' ', texto)
+    return " ".join([w for w in texto.split() if w not in STOPWORDS and len(w) > 2])
 
 def processar_item(filepath):
     """Processa arquivos, inclusive dentro de ZIP"""
@@ -57,15 +59,14 @@ def extrair_texto_arquivo(filepath):
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
         elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath)
-            img = img.convert("L")
+            img = Image.open(filepath).convert("L")
             return pytesseract.image_to_string(img, lang="por", config="--psm 6")
     except Exception as e:
         print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
         return ""
     return ""
 
-# --- Carrega modelo (dicionário ou tupla) ---
+# --- Carrega modelo ---
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data = pickle.load(f)
 
@@ -90,6 +91,45 @@ else:
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
+# --- Função de análise combinada ---
+def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, vectorizer=word_v):
+    texto_completo = f"{assunto}\n{corpo}\n\n{texto}"
+    clean_text = limpar_texto(texto_completo)
+
+    # Vetorização
+    Xw = word_v.transform([clean_text])
+    Xc = char_v.transform([clean_text])
+    Xchaves = csr_matrix([extrair_features_chave(clean_text)])
+    Xfull = hstack([Xw, Xc, Xchaves])
+    Xsel = selector.transform(Xfull)
+
+    # Predição
+    pred = modelo.predict(Xsel)[0]
+    classe = le.inverse_transform([pred])[0]
+
+    # Confiança
+    try:
+        probas = modelo.predict_proba(Xsel)[0]
+        conf = round(float(np.max(probas)) * 100, 2)
+    except Exception:
+        conf = None
+
+    # Palavras-chave
+    keywords = []
+    for categoria, palavras in palavras_chave_dict.items():
+        for p in palavras:
+            if p.lower() in texto_completo.lower():
+                keywords.append(p)
+    keywords = list(set(keywords))
+
+    return {
+        "success": True,
+        "prediction": classe,
+        "confidence": conf,
+        "keywords": keywords,
+        "tokens": len(texto_completo.split())
+    }
+
 # --- Flask API ---
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
@@ -105,66 +145,29 @@ def predict():
         if not file:
             return jsonify({"success": False, "error": "Nenhum arquivo enviado."}), 400
 
-        # --- Extrair texto ---
+        assunto = request.form.get("assunto", "")
+        corpo = request.form.get("corpo", "")
+
         filename = secure_filename(file.filename)
         ext = filename.split(".")[-1].lower()
         temp_path = os.path.join(tempfile.gettempdir(), filename)
         file.save(temp_path)
 
+        # Extrair texto
         full_text = ""
+        for pfile, pext in processar_item(temp_path):
+            txt = extrair_texto_arquivo(pfile)
+            if txt:
+                full_text += txt + " "
 
-        if ext in ["pdf"]:
-            with pdfplumber.open(temp_path) as pdf:
-                for page in pdf.pages:
-                    full_text += page.extract_text() or ""
-        elif ext in ["docx"]:
-            doc = docx.Document(temp_path)
-            full_text = " ".join([p.text for p in doc.paragraphs])
-        elif ext in ["jpg", "jpeg", "png"]:
-            img = Image.open(temp_path)
-            full_text = pytesseract.image_to_string(img)
-        else:
-            return jsonify({"success": False, "error": f"Extensão não suportada: {ext}"}), 400
-
-        os.remove(temp_path)
+        shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
 
         if not full_text.strip():
-            return jsonify({"success": False, "error": "Texto vazio extraído."}), 400
+            return jsonify({"success": False, "error": "Não foi possível extrair texto."}), 400
 
-        # --- Pré-processar texto ---
-        clean = re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", full_text.lower())
-        clean = " ".join([w for w in clean.split() if w not in stopwords_port])
-
-        # --- Vetorização ---
-        Xvec = vectorizer.transform([clean])
-        Xsel = selector.transform(Xvec)
-
-        # --- Predição ---
-        pred = clf.predict(Xsel)[0]
-        classe = le.inverse_transform([pred])[0]
-
-        # 🔹 Calcular probabilidade da classe
-        if hasattr(clf, "predict_proba"):
-            probas = clf.predict_proba(Xsel)[0]
-            conf = round(float(probas[pred]) * 100, 2)
-        else:
-            conf = None
-
-        # 🔹 Extrair palavras-chave mais relevantes
-        palavras_encontradas = []
-        for categoria, palavras in palavras_chave_dict.items():
-            for p in palavras:
-                if p.lower() in full_text.lower():
-                    palavras_encontradas.append(p)
-
-        # 🔹 Retorno final para o Apps Script
-        return jsonify({
-            "success": True,
-            "prediction": classe,
-            "confidence": conf,
-            "keywords": list(set(palavras_encontradas)),
-            "tokens": len(full_text.split())
-        })
+        # Analisar currículo
+        resultado = analisar_curriculo(assunto, corpo, full_text)
+        return jsonify(resultado)
 
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
