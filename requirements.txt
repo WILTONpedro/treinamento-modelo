@@ -10,6 +10,7 @@ xgboost
 imbalanced-learn
 unidecode
 pandas
+openpyxl
 
 # PDF, Word e OCR
 pdfplumber
