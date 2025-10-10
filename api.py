@@ -89,7 +89,7 @@ else:
 # Supondo que a planilha seja um Excel com colunas: "original", "destino"
 planilha_path = "palavras_chave.xlsx"  # ajuste o caminho
 df_map = pd.read_excel(planilha_path)
-cargo_planilha = {row["original"].lower(): row["destino"] for idx, row in df_map.iterrows()}
+cargo_planilha = {row["area"].lower(): row["palavra_chave"] for idx, row in df_map.iterrows()}
 
 # --- Extração de features ponderadas ---
 def extrair_features_chave(texto, assunto=""):
