@@ -17,9 +17,6 @@ pillow
 pytesseract
 pdf2image
 
-# BERT
-sentence-transformers
-
 # Utilitários
 requests
 regex
