@@ -15,26 +15,30 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
 import numpy as np
+import pandas as pd
 
-# --- Preparar NLTK ---
+# --- Configuração NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
 STOPWORDS = set(stopwords.words("portuguese"))
 
+# --- Pesos configuráveis ---
+PESO_ASSUNTO = 3
+PESO_CURRICULO = 1
+
 # --- Funções auxiliares ---
 def limpar_texto(texto: str) -> str:
     texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8', 'ignore')
     texto = texto.lower()
-    texto = re.sub(r'\S+@\S+', ' ', texto)       # remove emails
-    texto = re.sub(r'\d+', ' ', texto)           # remove números
+    texto = re.sub(r'\S+@\S+', ' ', texto)
+    texto = re.sub(r'\d+', ' ', texto)
     texto = re.sub(r'http\S+|www\S+', ' ', texto)
     texto = re.sub(r'[^a-z\s]', ' ', texto)
     return " ".join([w for w in texto.split() if w not in STOPWORDS and len(w) > 2])
 
 def processar_item(filepath):
-    """Processa arquivos, inclusive dentro de ZIP"""
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
         with zipfile.ZipFile(filepath, "r") as z:
@@ -46,7 +50,6 @@ def processar_item(filepath):
         yield filepath, ext
 
 def extrair_texto_arquivo(filepath):
-    """Extrai texto de PDF, DOCX, TXT e imagens"""
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext == ".pdf":
@@ -78,16 +81,17 @@ if isinstance(data, dict):
     selector = data["selector"]
     le = data["label_encoder"]
 elif isinstance(data, (tuple, list)):
-    clf = data[0]
-    word_v = data[1]
-    char_v = data[2]
-    palavras_chave_dict = data[3]
-    selector = data[4]
-    le = data[5]
+    clf, word_v, char_v, palavras_chave_dict, selector, le = data
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Extrair features de palavras-chave ponderadas com assunto ---
+# --- Carrega mapeamento da planilha ---
+# Supondo que a planilha seja um Excel com colunas: "original", "destino"
+planilha_path = "palavras_chave.xlsx"  # ajuste o caminho
+df_map = pd.read_excel(planilha_path)
+cargo_planilha = {row["original"].lower(): row["destino"] for idx, row in df_map.iterrows()}
+
+# --- Extração de features ponderadas ---
 def extrair_features_chave(texto, assunto=""):
     texto = texto.lower()
     assunto = assunto.lower()
@@ -96,36 +100,44 @@ def extrair_features_chave(texto, assunto=""):
         score = 0
         for p in palavras:
             if p.lower() in texto:
-                score += 1       # pontuação normal para o texto do currículo
+                score += PESO_CURRICULO
             if p.lower() in assunto:
-                score += 2       # peso maior se a palavra estiver no assunto
+                score += PESO_ASSUNTO
         features.append(score)
     return features
 
 # --- Função de análise combinada ---
-def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, vectorizer=word_v):
+def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, word_v=word_v, char_v=char_v):
     texto_completo = f"{assunto}\n{corpo}\n\n{texto}"
     clean_text = limpar_texto(texto_completo)
 
-    # Vetorização
+    # --- VERIFICA MAPEAMENTO DA PLANILHA PRIMEIRO ---
+    for cargo_orig, cargo_dest in cargo_planilha.items():
+        if cargo_orig in assunto.lower() or cargo_orig in texto.lower():
+            return {
+                "success": True,
+                "prediction": cargo_dest,
+                "confidence": 100,
+                "keywords": [cargo_orig],
+                "tokens": len(texto_completo.split())
+            }
+
+    # --- SE NAO ENCONTRAR, USA O MODELO ---
     Xw = word_v.transform([clean_text])
     Xc = char_v.transform([clean_text])
     Xchaves = csr_matrix([extrair_features_chave(clean_text, assunto)])
     Xfull = hstack([Xw, Xc, Xchaves])
     Xsel = selector.transform(Xfull)
 
-    # Predição
     pred = modelo.predict(Xsel)[0]
     classe = le.inverse_transform([pred])[0]
 
-    # Confiança
     try:
         probas = modelo.predict_proba(Xsel)[0]
         conf = round(float(np.max(probas)) * 100, 2)
     except Exception:
         conf = None
 
-    # Palavras-chave detectadas
     keywords = []
     for categoria, palavras in palavras_chave_dict.items():
         for p in palavras:
@@ -160,8 +172,8 @@ def predict():
         corpo = request.form.get("corpo", "")
 
         filename = secure_filename(file.filename)
-        ext = filename.split(".")[-1].lower()
-        temp_path = os.path.join(tempfile.gettempdir(), filename)
+        temp_dir = tempfile.mkdtemp()
+        temp_path = os.path.join(temp_dir, filename)
         file.save(temp_path)
 
         # Extrair texto
@@ -171,13 +183,15 @@ def predict():
             if txt:
                 full_text += txt + " "
 
-        shutil.rmtree(tempfile.gettempdir(), ignore_errors=True)
+        # Analisar currículo
+        resultado = analisar_curriculo(assunto, corpo, full_text)
+
+        # Limpar arquivos temporários
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
         if not full_text.strip():
             return jsonify({"success": False, "error": "Não foi possível extrair texto."}), 400
 
-        # Analisar currículo
-        resultado = analisar_curriculo(assunto, corpo, full_text)
         return jsonify(resultado)
 
     except Exception as e:
@@ -188,4 +202,5 @@ def healthcheck():
     return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(debug=True, port=5000)
+
