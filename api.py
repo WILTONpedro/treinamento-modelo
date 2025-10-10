@@ -101,62 +101,73 @@ def allowed_file(filename):
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        if "file" not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
+        file = request.files.get("file")
+        if not file:
+            return jsonify({"success": False, "error": "Nenhum arquivo enviado."}), 400
 
-        uploaded = request.files["file"]
-        original_filename = uploaded.filename
-        if original_filename == "":
-            return jsonify({"error": "Nome de arquivo vazio"}), 400
+        # --- Extrair texto ---
+        filename = secure_filename(file.filename)
+        ext = filename.split(".")[-1].lower()
+        temp_path = os.path.join(tempfile.gettempdir(), filename)
+        file.save(temp_path)
 
-        filename = secure_filename(original_filename)
-        ext = os.path.splitext(filename)[1].lower().lstrip(".")
-        if ext not in ALLOWED_EXTENSIONS:
-            content_type_ext = uploaded.content_type.split("/")[-1].lower()
-            if content_type_ext in ALLOWED_EXTENSIONS:
-                ext = content_type_ext
-                filename = f"{filename}.{ext}"
-            else:
-                return jsonify({"error": f"Tipo de arquivo não suportado: {original_filename}"}), 400
+        full_text = ""
 
-        tmpdir = tempfile.mkdtemp(prefix="cv_api_")
-        filepath = os.path.join(tmpdir, filename)
-        uploaded.save(filepath)
+        if ext in ["pdf"]:
+            with pdfplumber.open(temp_path) as pdf:
+                for page in pdf.pages:
+                    full_text += page.extract_text() or ""
+        elif ext in ["docx"]:
+            doc = docx.Document(temp_path)
+            full_text = " ".join([p.text for p in doc.paragraphs])
+        elif ext in ["jpg", "jpeg", "png"]:
+            img = Image.open(temp_path)
+            full_text = pytesseract.image_to_string(img)
+        else:
+            return jsonify({"success": False, "error": f"Extensão não suportada: {ext}"}), 400
 
-        textos = []
-        for pfile, pext in processar_item(filepath):
-            txt = extrair_texto_arquivo(pfile)
-            if txt:
-                textos.append(limpar_texto(txt))
+        os.remove(temp_path)
 
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        if not full_text.strip():
+            return jsonify({"success": False, "error": "Texto vazio extraído."}), 400
 
-        if not textos:
-            return jsonify({"error": "Não foi possível extrair texto"}), 400
+        # --- Pré-processar texto ---
+        clean = re.sub(r"[^a-zA-ZÀ-ÿ\s]", "", full_text.lower())
+        clean = " ".join([w for w in clean.split() if w not in stopwords_port])
 
-        full_text = " ".join(textos)
+        # --- Vetorização ---
+        Xvec = vectorizer.transform([clean])
+        Xsel = selector.transform(Xvec)
 
-        # Vetorização
-        Xw = word_v.transform([full_text])
-        Xc = char_v.transform([full_text])
-        Xchaves = csr_matrix([extrair_features_chave(full_text)])
-        Xfull = hstack([Xw, Xc, Xchaves])
-
-        # Seleção de features
-        Xsel = selector.transform(Xfull)
-
-        # Predição
+        # --- Predição ---
         pred = clf.predict(Xsel)[0]
         classe = le.inverse_transform([pred])[0]
 
+        # 🔹 Calcular probabilidade da classe
+        if hasattr(clf, "predict_proba"):
+            probas = clf.predict_proba(Xsel)[0]
+            conf = round(float(probas[pred]) * 100, 2)
+        else:
+            conf = None
+
+        # 🔹 Extrair palavras-chave mais relevantes
+        palavras_encontradas = []
+        for categoria, palavras in palavras_chave_dict.items():
+            for p in palavras:
+                if p.lower() in full_text.lower():
+                    palavras_encontradas.append(p)
+
+        # 🔹 Retorno final para o Apps Script
         return jsonify({
             "success": True,
             "prediction": classe,
+            "confidence": conf,
+            "keywords": list(set(palavras_encontradas)),
             "tokens": len(full_text.split())
         })
 
     except Exception as e:
-        return jsonify({"error": f"Falha interna: {str(e)}"}), 500
+        return jsonify({"success": False, "error": str(e)})
 
 @app.route("/", methods=["GET"])
 def healthcheck():
