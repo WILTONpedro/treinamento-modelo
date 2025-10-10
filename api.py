@@ -87,9 +87,20 @@ elif isinstance(data, (tuple, list)):
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Extrair features de palavras-chave ---
-def extrair_features_chave(texto):
-    return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
+# --- Extrair features de palavras-chave ponderadas com assunto ---
+def extrair_features_chave(texto, assunto=""):
+    texto = texto.lower()
+    assunto = assunto.lower()
+    features = []
+    for palavras in palavras_chave_dict.values():
+        score = 0
+        for p in palavras:
+            if p.lower() in texto:
+                score += 1       # pontuação normal para o texto do currículo
+            if p.lower() in assunto:
+                score += 2       # peso maior se a palavra estiver no assunto
+        features.append(score)
+    return features
 
 # --- Função de análise combinada ---
 def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, vectorizer=word_v):
@@ -99,7 +110,7 @@ def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, vectorizer=wo
     # Vetorização
     Xw = word_v.transform([clean_text])
     Xc = char_v.transform([clean_text])
-    Xchaves = csr_matrix([extrair_features_chave(clean_text)])
+    Xchaves = csr_matrix([extrair_features_chave(clean_text, assunto)])
     Xfull = hstack([Xw, Xc, Xchaves])
     Xsel = selector.transform(Xfull)
 
@@ -114,11 +125,11 @@ def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, vectorizer=wo
     except Exception:
         conf = None
 
-    # Palavras-chave
+    # Palavras-chave detectadas
     keywords = []
     for categoria, palavras in palavras_chave_dict.items():
         for p in palavras:
-            if p.lower() in texto_completo.lower():
+            if p.lower() in texto_completo.lower() or p.lower() in assunto.lower():
                 keywords.append(p)
     keywords = list(set(keywords))
 
