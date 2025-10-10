@@ -15,7 +15,6 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
 import numpy as np
-import pandas as pd
 
 # --- Configuração NLTK ---
 try:
@@ -85,12 +84,6 @@ elif isinstance(data, (tuple, list)):
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Carrega mapeamento da planilha ---
-# Supondo que a planilha seja um Excel com colunas: "original", "destino"
-planilha_path = "palavras_chave.xlsx"  # ajuste o caminho
-df_map = pd.read_excel(planilha_path)
-cargo_planilha = {row["area"].lower(): row["palavra_chave"] for idx, row in df_map.iterrows()}
-
 # --- Extração de features ponderadas ---
 def extrair_features_chave(texto, assunto=""):
     texto = texto.lower()
@@ -107,33 +100,21 @@ def extrair_features_chave(texto, assunto=""):
     return features
 
 # --- Função de análise combinada ---
-def analisar_curriculo(assunto="", corpo="", texto="", modelo=clf, word_v=word_v, char_v=char_v):
+def analisar_curriculo(assunto="", corpo="", texto=""):
     texto_completo = f"{assunto}\n{corpo}\n\n{texto}"
     clean_text = limpar_texto(texto_completo)
 
-    # --- VERIFICA MAPEAMENTO DA PLANILHA PRIMEIRO ---
-    for cargo_orig, cargo_dest in cargo_planilha.items():
-        if cargo_orig in assunto.lower() or cargo_orig in texto.lower():
-            return {
-                "success": True,
-                "prediction": cargo_dest,
-                "confidence": 100,
-                "keywords": [cargo_orig],
-                "tokens": len(texto_completo.split())
-            }
-
-    # --- SE NAO ENCONTRAR, USA O MODELO ---
     Xw = word_v.transform([clean_text])
     Xc = char_v.transform([clean_text])
     Xchaves = csr_matrix([extrair_features_chave(clean_text, assunto)])
     Xfull = hstack([Xw, Xc, Xchaves])
     Xsel = selector.transform(Xfull)
 
-    pred = modelo.predict(Xsel)[0]
-    classe = le.inverse_transform([pred])[0]
+    pred = clf.predict(Xsel)[0]
+    classe = le.inverse_transform([pred])[0]  # sempre dentro das classes treinadas
 
     try:
-        probas = modelo.predict_proba(Xsel)[0]
+        probas = clf.predict_proba(Xsel)[0]
         conf = round(float(np.max(probas)) * 100, 2)
     except Exception:
         conf = None
@@ -176,22 +157,18 @@ def predict():
         temp_path = os.path.join(temp_dir, filename)
         file.save(temp_path)
 
-        # Extrair texto
         full_text = ""
         for pfile, pext in processar_item(temp_path):
             txt = extrair_texto_arquivo(pfile)
             if txt:
                 full_text += txt + " "
 
-        # Analisar currículo
-        resultado = analisar_curriculo(assunto, corpo, full_text)
-
-        # Limpar arquivos temporários
-        shutil.rmtree(temp_dir, ignore_errors=True)
-
         if not full_text.strip():
+            shutil.rmtree(temp_dir, ignore_errors=True)
             return jsonify({"success": False, "error": "Não foi possível extrair texto."}), 400
 
+        resultado = analisar_curriculo(assunto, corpo, full_text)
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return jsonify(resultado)
 
     except Exception as e:
@@ -203,4 +180,3 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
