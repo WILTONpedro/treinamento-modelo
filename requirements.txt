@@ -9,6 +9,7 @@ numpy
 xgboost
 imbalanced-learn
 unidecode
+pandas
 
 # PDF, Word e OCR
 pdfplumber
