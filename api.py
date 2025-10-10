@@ -8,63 +8,81 @@ import docx
 import pdfplumber
 import pytesseract
 from PIL import Image
-import unicodedata
 import nltk
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 from nltk.corpus import stopwords
-import numpy as np
+import traceback
+import gzip
+import base64
 
-# --- Configuração NLTK ---
+pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
+
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Pesos configuráveis ---
-PESO_ASSUNTO = 3
-PESO_CURRICULO = 1
+# --- Regex pré-compiladas ---
+RE_EMAIL = re.compile(r"\S+@\S+")
+RE_NUM = re.compile(r"\d+")
+RE_CARACT = re.compile(r"[^a-zá-ú\s]")
 
-# --- Funções auxiliares ---
+# --- Função de limpeza de texto ---
 def limpar_texto(texto: str) -> str:
-    texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8', 'ignore')
     texto = texto.lower()
-    texto = re.sub(r'\S+@\S+', ' ', texto)
-    texto = re.sub(r'\d+', ' ', texto)
-    texto = re.sub(r'http\S+|www\S+', ' ', texto)
-    texto = re.sub(r'[^a-z\s]', ' ', texto)
-    return " ".join([w for w in texto.split() if w not in STOPWORDS and len(w) > 2])
+    texto = RE_EMAIL.sub(" ", texto)
+    texto = RE_NUM.sub(" ", texto)
+    texto = RE_CARACT.sub(" ", texto)
+    return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
+# --- Processamento de arquivos e ZIPs ---
 def processar_item(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
         with zipfile.ZipFile(filepath, "r") as z:
-            for name in z.namelist():
-                tmp_path = os.path.join(tempfile.mkdtemp(), name)
-                z.extract(name, os.path.dirname(tmp_path))
-                yield tmp_path, os.path.splitext(name)[1].lower()
+            with tempfile.TemporaryDirectory() as tmpdir:
+                z.extractall(tmpdir)
+                for name in z.namelist():
+                    yield os.path.join(tmpdir, name), os.path.splitext(name)[1].lower()
     else:
         yield filepath, ext
 
+# --- Extração de texto ---
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
-        if ext == ".pdf":
+        # Verifica tamanho da imagem antes de fazer OCR
+        if ext in (".png", ".jpg", ".jpeg", ".tiff"):
+            if os.path.getsize(filepath) > 5 * 1024 * 1024:  # 5MB
+                print(f"[AVISO] Imagem muito grande, ignorando OCR: {filepath}")
+                return ""
+            img = Image.open(filepath).convert("L")
+            img.thumbnail((1024, 1024))  # reduz memória no OCR
+            return pytesseract.image_to_string(img, lang="por", config="--psm 6")
+
+        elif ext == ".pdf":
+            texts = []
             with pdfplumber.open(filepath) as pdf:
-                return " ".join([p.extract_text() or "" for p in pdf.pages if p.extract_text()])
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        texts.append(t)
+            return " ".join(texts)
+
         elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
-            return " ".join([p.text for p in doc.paragraphs])
+            return " ".join(p.text for p in doc.paragraphs)
+
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
-        elif ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            img = Image.open(filepath).convert("L")
-            return pytesseract.image_to_string(img, lang="por", config="--psm 6")
-    except Exception as e:
-        print(f"[ERRO] Falha ao extrair texto de {filepath}: {e}")
+
+    except Exception:
+        print(f"[ERRO] Falha ao extrair texto de {filepath}:\n{traceback.format_exc()}")
         return ""
     return ""
 
@@ -84,55 +102,9 @@ elif isinstance(data, (tuple, list)):
 else:
     raise ValueError("Formato do pickle desconhecido. Esperado dict ou tuple.")
 
-# --- Extração de features ponderadas ---
-def extrair_features_chave(texto, assunto=""):
-    texto = texto.lower()
-    assunto = assunto.lower()
-    features = []
-    for palavras in palavras_chave_dict.values():
-        score = 0
-        for p in palavras:
-            if p.lower() in texto:
-                score += PESO_CURRICULO
-            if p.lower() in assunto:
-                score += PESO_ASSUNTO
-        features.append(score)
-    return features
-
-# --- Função de análise combinada ---
-def analisar_curriculo(assunto="", corpo="", texto=""):
-    texto_completo = f"{assunto}\n{corpo}\n\n{texto}"
-    clean_text = limpar_texto(texto_completo)
-
-    Xw = word_v.transform([clean_text])
-    Xc = char_v.transform([clean_text])
-    Xchaves = csr_matrix([extrair_features_chave(clean_text, assunto)])
-    Xfull = hstack([Xw, Xc, Xchaves])
-    Xsel = selector.transform(Xfull)
-
-    pred = clf.predict(Xsel)[0]
-    classe = le.inverse_transform([pred])[0]  # sempre dentro das classes treinadas
-
-    try:
-        probas = clf.predict_proba(Xsel)[0]
-        conf = round(float(np.max(probas)) * 100, 2)
-    except Exception:
-        conf = None
-
-    keywords = []
-    for categoria, palavras in palavras_chave_dict.items():
-        for p in palavras:
-            if p.lower() in texto_completo.lower() or p.lower() in assunto.lower():
-                keywords.append(p)
-    keywords = list(set(keywords))
-
-    return {
-        "success": True,
-        "prediction": classe,
-        "confidence": conf,
-        "keywords": keywords,
-        "tokens": len(texto_completo.split())
-    }
+# --- Extração de features de palavras-chave ---
+def extrair_features_chave(texto):
+    return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
 # --- Flask API ---
 app = Flask(__name__)
@@ -145,38 +117,76 @@ def allowed_file(filename):
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        file = request.files.get("file")
-        if not file:
-            return jsonify({"success": False, "error": "Nenhum arquivo enviado."}), 400
+        if "file" not in request.files:
+            return jsonify({"error": "Nenhum arquivo enviado"}), 400
 
-        assunto = request.form.get("assunto", "")
-        corpo = request.form.get("corpo", "")
+        uploaded = request.files["file"]
+        if uploaded.filename == "":
+            return jsonify({"error": "Nome de arquivo vazio"}), 400
 
-        filename = secure_filename(file.filename)
-        temp_dir = tempfile.mkdtemp()
-        temp_path = os.path.join(temp_dir, filename)
-        file.save(temp_path)
+        filename = secure_filename(uploaded.filename)
+        ext = os.path.splitext(filename)[1].lower().lstrip(".")
+        if ext not in ALLOWED_EXTENSIONS:
+            content_type_ext = uploaded.content_type.split("/")[-1].lower()
+            if content_type_ext in ALLOWED_EXTENSIONS:
+                ext = content_type_ext
+                filename = f"{filename}.{ext}"
+            else:
+                return jsonify({"error": f"Tipo de arquivo não suportado: {uploaded.filename}"}), 400
 
-        full_text = ""
-        for pfile, pext in processar_item(temp_path):
-            txt = extrair_texto_arquivo(pfile)
-            if txt:
-                full_text += txt + " "
+        # Cria diretório temporário seguro
+        with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
+            filepath = os.path.join(tmpdir, filename)
+            uploaded.save(filepath)
 
-        if not full_text.strip():
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            return jsonify({"success": False, "error": "Não foi possível extrair texto."}), 400
+            textos = []
+            for pfile, _ in processar_item(filepath):
+                txt = extrair_texto_arquivo(pfile)
+                if txt:
+                    textos.append(limpar_texto(txt))
 
-        resultado = analisar_curriculo(assunto, corpo, full_text)
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return jsonify(resultado)
+            if not textos:
+                return jsonify({"error": "Não foi possível extrair texto"}), 400
 
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)})
+            full_text = " ".join(textos)
+
+            # --- Limita tamanho do texto ---
+            if len(full_text) > 30000:
+                print(f"[AVISO] Texto muito grande ({len(full_text)} caracteres). Cortando para 30.000.")
+                full_text = full_text[:30000]
+
+            # --- Compressão opcional para payloads grandes ---
+            compressed_text = None
+            if len(full_text.encode("utf-8")) > 20000:  # ~20KB
+                compressed_text = base64.b64encode(
+                    gzip.compress(full_text.encode("utf-8"))
+                ).decode("utf-8")
+
+            # --- Vetorização ---
+            Xw = word_v.transform([full_text])
+            Xc = char_v.transform([full_text])
+            Xchaves = csr_matrix([extrair_features_chave(full_text)])
+            Xfull = hstack([Xw, Xc, Xchaves])
+
+            Xsel = selector.transform(Xfull)
+            pred = clf.predict(Xsel)[0]
+            classe = le.inverse_transform([pred])[0]
+
+            resp = {
+                "success": True,
+                "prediction": classe,
+                "tokens": len(full_text.split()),
+            }
+
+            if compressed_text:
+                resp["compressed_text"] = compressed_text[:200] + "... (compactado)"  # debug opcional
+
+            return jsonify(resp)
+
+    except Exception:
+        print(traceback.format_exc())
+        return jsonify({"error": "Falha interna no processamento"}), 500
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
-
-if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})}
