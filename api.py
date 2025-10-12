@@ -16,11 +16,12 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack, csr_matrix
 import nltk
 from nltk.corpus import stopwords
+import numpy as np
 
-# Configura tesseract
+# --- Configura Tesseract ---
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-# --- Preparar stopwords ---
+# --- Stopwords ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
@@ -58,7 +59,7 @@ def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
         if ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            if os.path.getsize(filepath) > 5 * 1024 * 1024:  # >5MB
+            if os.path.getsize(filepath) > 5 * 1024 * 1024:
                 return ""
             img = Image.open(filepath).convert("L")
             img.thumbnail((1024, 1024))
@@ -97,6 +98,14 @@ le = data["label_encoder"]
 def extrair_features_chave(texto):
     return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
 
+def detectar_keywords(texto):
+    keywords = []
+    for area, palavras in palavras_chave_dict.items():
+        for p in palavras:
+            if p.lower() in texto:
+                keywords.append(p)
+    return keywords
+
 # --- API Flask ---
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
@@ -118,6 +127,9 @@ def predict():
         if not allowed_file(filename):
             return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
+        assunto = request.form.get("assunto", "")
+        corpo = request.form.get("corpo", "")
+
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             filepath = os.path.join(tmpdir, filename)
             uploaded.save(filepath)
@@ -128,16 +140,13 @@ def predict():
                 if txt:
                     textos.append(limpar_texto(txt))
 
-            if not textos:
+            full_text = " ".join(textos + [assunto, corpo])
+            if not full_text.strip():
                 return jsonify({"error": "Não foi possível extrair texto"}), 400
 
-            full_text = " ".join(textos)
+            # Limite de tamanho
             if len(full_text) > 30000:
                 full_text = full_text[:30000]
-
-            compressed_text = None
-            if len(full_text.encode("utf-8")) > 20000:
-                compressed_text = base64.b64encode(gzip.compress(full_text.encode("utf-8"))).decode("utf-8")
 
             Xw = word_v.transform([full_text])
             Xc = char_v.transform([full_text])
@@ -145,18 +154,38 @@ def predict():
             Xfull = hstack([Xw, Xc, Xchaves])
             Xsel = selector.transform(Xfull)
 
-            pred = clf.predict(Xsel)[0]
-            classe = le.inverse_transform([pred])[0]
+            pred_idx = clf.predict(Xsel)[0]
+            classe = le.inverse_transform([pred_idx])[0]
+
+            # --- Ajuste para subpastas existentes ---
+            if "_" in classe:
+                classe = classe.split("_")[-1]
+
+            # --- Confiança ---
+            if hasattr(clf, "predict_proba"):
+                probs = clf.predict_proba(Xsel)
+                confidence = float(probs[0][pred_idx])
+            else:
+                confidence = None
+
+            # --- Palavras-chave ---
+            keywords = detectar_keywords(full_text)
 
             resp = {
                 "success": True,
                 "prediction": classe,
+                "confidence": confidence,
+                "keywords": keywords,
                 "tokens": len(full_text.split())
             }
-            if compressed_text:
+
+            # Compactação opcional do texto
+            if len(full_text.encode("utf-8")) > 20000:
+                compressed_text = base64.b64encode(gzip.compress(full_text.encode("utf-8"))).decode("utf-8")
                 resp["compressed_text"] = compressed_text[:200] + "... (compactado)"
 
             return jsonify(resp)
+
     except Exception:
         print(traceback.format_exc())
         return jsonify({"error": "Falha interna no processamento"}), 500
