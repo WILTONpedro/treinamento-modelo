@@ -1,11 +1,8 @@
 import os
-import re
 import tempfile
 import zipfile
 import pickle
 import traceback
-import base64
-import gzip
 
 import docx
 import pdfplumber
@@ -13,15 +10,14 @@ import pytesseract
 from PIL import Image
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-from scipy.sparse import hstack, csr_matrix
+from scipy.sparse import hstack
 import nltk
 from nltk.corpus import stopwords
-import numpy as np
 
 # --- Configura Tesseract ---
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-# --- Stopwords ---
+# --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
@@ -29,12 +25,12 @@ except LookupError:
 
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Regex pré-compiladas ---
+# --- Função de limpeza ---
+import re
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
 RE_CARACT = re.compile(r"[^a-zá-ú\s]")
 
-# --- Função de limpeza ---
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
     texto = RE_EMAIL.sub(" ", texto)
@@ -83,36 +79,24 @@ def extrair_texto_arquivo(filepath):
         return ""
     return ""
 
-# --- Carrega modelo ---
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
+# --- Carregar modelo XGBoost antigo ---
+with open("modelo_curriculos_otimizado.pkl", "rb") as f:
     data = pickle.load(f)
 
 clf = data["clf"]
 word_v = data["word_vectorizer"]
 char_v = data["char_vectorizer"]
-palavras_chave_dict = data["palavras_chave_dict"]
 selector = data["selector"]
 le = data["label_encoder"]
 
-# --- Features de palavras-chave ---
-def extrair_features_chave(texto):
-    return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
-
-def detectar_keywords(texto):
-    keywords = []
-    for area, palavras in palavras_chave_dict.items():
-        for p in palavras:
-            if p.lower() in texto:
-                keywords.append(p)
-    return keywords
-
-# --- API Flask ---
+# --- Configurar Flask ---
 app = Flask(__name__)
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
 def allowed_file(filename):
     return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
 
+# --- Endpoint de predição ---
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
@@ -127,9 +111,6 @@ def predict():
         if not allowed_file(filename):
             return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
-        assunto = request.form.get("assunto", "")
-        corpo = request.form.get("corpo", "")
-
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             filepath = os.path.join(tmpdir, filename)
             uploaded.save(filepath)
@@ -140,7 +121,7 @@ def predict():
                 if txt:
                     textos.append(limpar_texto(txt))
 
-            full_text = " ".join(textos + [assunto, corpo])
+            full_text = " ".join(textos)
             if not full_text.strip():
                 return jsonify({"error": "Não foi possível extrair texto"}), 400
 
@@ -148,18 +129,15 @@ def predict():
             if len(full_text) > 30000:
                 full_text = full_text[:30000]
 
+            # --- Vetorização e seleção ---
             Xw = word_v.transform([full_text])
             Xc = char_v.transform([full_text])
-            Xchaves = csr_matrix([extrair_features_chave(full_text)])
-            Xfull = hstack([Xw, Xc, Xchaves])
+            Xfull = hstack([Xw, Xc])
             Xsel = selector.transform(Xfull)
 
+            # --- Predição ---
             pred_idx = clf.predict(Xsel)[0]
             classe = le.inverse_transform([pred_idx])[0]
-
-            # --- Ajuste para subpastas existentes ---
-            if "_" in classe:
-                classe = classe.split("_")[-1]
 
             # --- Confiança ---
             if hasattr(clf, "predict_proba"):
@@ -168,21 +146,12 @@ def predict():
             else:
                 confidence = None
 
-            # --- Palavras-chave ---
-            keywords = detectar_keywords(full_text)
-
             resp = {
                 "success": True,
                 "prediction": classe,
                 "confidence": confidence,
-                "keywords": keywords,
                 "tokens": len(full_text.split())
             }
-
-            # Compactação opcional do texto
-            if len(full_text.encode("utf-8")) > 20000:
-                compressed_text = base64.b64encode(gzip.compress(full_text.encode("utf-8"))).decode("utf-8")
-                resp["compressed_text"] = compressed_text[:200] + "... (compactado)"
 
             return jsonify(resp)
 
@@ -190,9 +159,12 @@ def predict():
         print(traceback.format_exc())
         return jsonify({"error": "Falha interna no processamento"}), 500
 
+# --- Healthcheck ---
 @app.route("/", methods=["GET"])
 def healthcheck():
     return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
 
+# --- Run ---
 if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
     app.run(debug=True, host="0.0.0.0", port=5000)
