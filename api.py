@@ -1,11 +1,8 @@
 import os
-import re
 import tempfile
 import zipfile
 import pickle
 import traceback
-import base64
-import gzip
 
 import docx
 import pdfplumber
@@ -13,28 +10,26 @@ import pytesseract
 from PIL import Image
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
-from scipy.sparse import hstack, csr_matrix
+from scipy.sparse import hstack
 import nltk
 from nltk.corpus import stopwords
-import numpy as np
 
 # --- Configura Tesseract ---
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-# --- Stopwords ---
+# --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
-
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Regex pré-compiladas ---
+# --- Função de limpeza ---
+import re
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
 RE_CARACT = re.compile(r"[^a-zá-ú\s]")
 
-# --- Função de limpeza ---
 def limpar_texto(texto: str) -> str:
     texto = texto.lower()
     texto = RE_EMAIL.sub(" ", texto)
@@ -83,36 +78,49 @@ def extrair_texto_arquivo(filepath):
         return ""
     return ""
 
-# --- Carrega modelo ---
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
-    data = pickle.load(f)
+# --- Carregar dois modelos para ensemble ---
 
-clf = data["clf"]
-word_v = data["word_vectorizer"]
-char_v = data["char_vectorizer"]
-palavras_chave_dict = data["palavras_chave_dict"]
-selector = data["selector"]
-le = data["label_encoder"]
+def carregar_modelo_dict(path):
+    with open(path, "rb") as f:
+        obj = pickle.load(f)
+    return obj
 
-# --- Features de palavras-chave ---
-def extrair_features_chave(texto):
-    return [int(any(p.lower() in texto for p in palavras)) for palavras in palavras_chave_dict.values()]
+model_opt = carregar_modelo_dict("modelo_curriculos_otimizado.pkl")
+model_over = carregar_modelo_dict("modelo_curriculos_xgb_oversampling.pkl")
 
-def detectar_keywords(texto):
-    keywords = []
-    for area, palavras in palavras_chave_dict.items():
-        for p in palavras:
-            if p.lower() in texto:
-                keywords.append(p)
-    return keywords
+clf_opt = model_opt["clf"]
+clf_over = model_over["clf"]
+word_v_opt = model_opt["word_vectorizer"]
+char_v_opt = model_opt["char_vectorizer"]
+selector_opt = model_opt["selector"]
+le_opt = model_opt["label_encoder"]
 
-# --- API Flask ---
+word_v_ov = model_over["word_vectorizer"]
+char_v_ov = model_over["char_vectorizer"]
+selector_ov = model_over["selector"]
+le_ov = model_over["label_encoder"]
+
+# Verificar que os label_encoders são compatíveis
+if list(le_opt.classes_) != list(le_ov.classes_):
+    raise RuntimeError("Classes dos modelos diferentes — não é possível fazer ensemble.")
+
+# --- Função para transformar texto para cada modelo ---
+def transformar_para_modelo(model_dict, word_v, char_v, selector, texto_limpo):
+    # Extrai features
+    Xw = word_v.transform([texto_limpo])
+    Xc = char_v.transform([texto_limpo])
+    Xfull = hstack([Xw, Xc])
+    Xsel = selector.transform(Xfull)
+    return Xsel
+
+# --- Configurar Flask ---
 app = Flask(__name__)
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'doc', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
+ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
 def allowed_file(filename):
     return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
 
+# --- Endpoint de predição com ensemble ---
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
@@ -127,9 +135,6 @@ def predict():
         if not allowed_file(filename):
             return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
-        assunto = request.form.get("assunto", "")
-        corpo = request.form.get("corpo", "")
-
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             filepath = os.path.join(tmpdir, filename)
             uploaded.save(filepath)
@@ -140,7 +145,7 @@ def predict():
                 if txt:
                     textos.append(limpar_texto(txt))
 
-            full_text = " ".join(textos + [assunto, corpo])
+            full_text = " ".join(textos)
             if not full_text.strip():
                 return jsonify({"error": "Não foi possível extrair texto"}), 400
 
@@ -148,41 +153,43 @@ def predict():
             if len(full_text) > 30000:
                 full_text = full_text[:30000]
 
-            Xw = word_v.transform([full_text])
-            Xc = char_v.transform([full_text])
-            Xchaves = csr_matrix([extrair_features_chave(full_text)])
-            Xfull = hstack([Xw, Xc, Xchaves])
-            Xsel = selector.transform(Xfull)
+            # Transformar para cada modelo
+            Xsel_opt = transformar_para_modelo(model_opt, word_v_opt, char_v_opt, selector_opt, full_text)
+            Xsel_ov = transformar_para_modelo(model_over, word_v_ov, char_v_ov, selector_ov, full_text)
 
-            pred_idx = clf.predict(Xsel)[0]
-            classe = le.inverse_transform([pred_idx])[0]
-
-            # --- Ajuste para subpastas existentes ---
-            if "_" in classe:
-                classe = classe.split("_")[-1]
-
-            # --- Confiança ---
-            if hasattr(clf, "predict_proba"):
-                probs = clf.predict_proba(Xsel)
-                confidence = float(probs[0][pred_idx])
+            # Prever probabilidades
+            probs_opt = None
+            if hasattr(clf_opt, "predict_proba"):
+                probs_opt = clf_opt.predict_proba(Xsel_opt)
             else:
-                confidence = None
+                # converter predição para “probabilidade” trivial
+                pred_o = clf_opt.predict(Xsel_opt)[0]
+                probs_opt = np.zeros((1, len(le_opt.classes_)))
+                probs_opt[0, pred_o] = 1.0
 
-            # --- Palavras-chave ---
-            keywords = detectar_keywords(full_text)
+            probs_ov = None
+            if hasattr(clf_over, "predict_proba"):
+                probs_ov = clf_over.predict_proba(Xsel_ov)
+            else:
+                pred_o2 = clf_over.predict(Xsel_ov)[0]
+                probs_ov = np.zeros((1, len(le_opt.classes_)))
+                probs_ov[0, pred_o2] = 1.0
+
+            # Ensemble: média simples (soft voting)
+            # peso igual para os dois modelos — você pode ajustar pesos
+            peso1 = 0.5
+            peso2 = 0.5
+            probs_ensemble = peso1 * probs_opt + peso2 * probs_ov
+            idx = int(probs_ensemble[0].argmax())
+            classe = le_opt.inverse_transform([idx])[0]
+            confidence = float(probs_ensemble[0, idx])
 
             resp = {
                 "success": True,
                 "prediction": classe,
                 "confidence": confidence,
-                "keywords": keywords,
                 "tokens": len(full_text.split())
             }
-
-            # Compactação opcional do texto
-            if len(full_text.encode("utf-8")) > 20000:
-                compressed_text = base64.b64encode(gzip.compress(full_text.encode("utf-8"))).decode("utf-8")
-                resp["compressed_text"] = compressed_text[:200] + "... (compactado)"
 
             return jsonify(resp)
 
