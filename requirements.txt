@@ -10,6 +10,7 @@ xgboost
 imbalanced-learn
 unidecode
 pandas
+flask-cors
 openpyxl
 
 # PDF, Word e OCR
