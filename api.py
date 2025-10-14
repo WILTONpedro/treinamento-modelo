@@ -14,17 +14,14 @@ from scipy.sparse import hstack
 import nltk
 from nltk.corpus import stopwords
 
-# --- Configura Tesseract ---
+# --- Setup Tesseract e NLTK ---
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-
-# --- Preparar NLTK ---
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
     nltk.download("stopwords")
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Função de limpeza ---
 import re
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
@@ -37,7 +34,6 @@ def limpar_texto(texto: str) -> str:
     texto = RE_CARACT.sub(" ", texto)
     return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
-# --- Processamento de arquivos ---
 def processar_item(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
@@ -49,7 +45,6 @@ def processar_item(filepath):
     else:
         yield filepath
 
-# --- Extração de texto ---
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
@@ -78,59 +73,58 @@ def extrair_texto_arquivo(filepath):
         return ""
     return ""
 
-# --- Carregar dois modelos para ensemble ---
-
-def carregar_modelo_dict(path):
+def carregar_model(path):
     with open(path, "rb") as f:
-        obj = pickle.load(f)
-    return obj
+        return pickle.load(f)
 
-model_opt = carregar_modelo_dict("modelo_curriculos_otimizado.pkl")
-model_over = carregar_modelo_dict("modelo_curriculos_xgb_oversampling.pkl")
+# Carregar os dois modelos
+model_opt = carregar_model("modelo_curriculos_otimizado.pkl")
+model_over = carregar_model("modelo_curriculos_xgb_oversampling.pkl")
 
 clf_opt = model_opt["clf"]
 clf_over = model_over["clf"]
-word_v_opt = model_opt["word_vectorizer"]
-char_v_opt = model_opt["char_vectorizer"]
-selector_opt = model_opt["selector"]
+wv_opt = model_opt["word_vectorizer"]
+cv_opt = model_opt["char_vectorizer"]
+sel_opt = model_opt["selector"]
 le_opt = model_opt["label_encoder"]
 
-word_v_ov = model_over["word_vectorizer"]
-char_v_ov = model_over["char_vectorizer"]
-selector_ov = model_over["selector"]
+wv_ov = model_over["word_vectorizer"]
+cv_ov = model_over["char_vectorizer"]
+sel_ov = model_over["selector"]
 le_ov = model_over["label_encoder"]
 
-# Verificar que os label_encoders são compatíveis
-if list(le_opt.classes_) != list(le_ov.classes_):
-    raise RuntimeError("Classes dos modelos diferentes — não é possível fazer ensemble.")
+# Criar lista unificada de classes
+classes_opt = list(le_opt.classes_)
+classes_ov = list(le_ov.classes_)
+# União sem duplicatas e em ordem
+classes_unificadas = sorted(set(classes_opt) | set(classes_ov))
 
-# --- Função para transformar texto para cada modelo ---
-def transformar_para_modelo(model_dict, word_v, char_v, selector, texto_limpo):
-    # Extrai features
-    Xw = word_v.transform([texto_limpo])
-    Xc = char_v.transform([texto_limpo])
+# Mapear índice de cada classe unificada para índice em cada modelo
+map_opt_to_uni = {cls: classes_unificadas.index(cls) for cls in classes_opt}
+map_ov_to_uni = {cls: classes_unificadas.index(cls) for cls in classes_ov}
+
+def transformar(model_dict, wv, cv, sel, texto_limpo):
+    Xw = wv.transform([texto_limpo])
+    Xc = cv.transform([texto_limpo])
     Xfull = hstack([Xw, Xc])
-    Xsel = selector.transform(Xfull)
+    Xsel = sel.transform(Xfull)
     return Xsel
 
-# --- Configurar Flask ---
+# Flask API
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
-def allowed_file(filename):
-    return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
+def allowed_file(fname):
+    return os.path.splitext(fname)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
 
-# --- Endpoint de predição com ensemble ---
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         if "file" not in request.files:
             return jsonify({"error": "Nenhum arquivo enviado"}), 400
-
         uploaded = request.files["file"]
         if uploaded.filename == "":
             return jsonify({"error": "Nome de arquivo vazio"}), 400
-
         filename = secure_filename(uploaded.filename)
         if not allowed_file(filename):
             return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
@@ -138,59 +132,57 @@ def predict():
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             filepath = os.path.join(tmpdir, filename)
             uploaded.save(filepath)
-
             textos = []
-            for pfile in processar_item(filepath):
-                txt = extrair_texto_arquivo(pfile)
-                if txt:
-                    textos.append(limpar_texto(txt))
-
-            full_text = " ".join(textos)
-            if not full_text.strip():
+            for pf in processar_item(filepath):
+                t = extrair_texto_arquivo(pf)
+                if t:
+                    textos.append(limpar_texto(t))
+            full = " ".join(textos)
+            if not full.strip():
                 return jsonify({"error": "Não foi possível extrair texto"}), 400
-
-            # Limite de tamanho
-            if len(full_text) > 30000:
-                full_text = full_text[:30000]
+            if len(full) > 30000:
+                full = full[:30000]
 
             # Transformar para cada modelo
-            Xsel_opt = transformar_para_modelo(model_opt, word_v_opt, char_v_opt, selector_opt, full_text)
-            Xsel_ov = transformar_para_modelo(model_over, word_v_ov, char_v_ov, selector_ov, full_text)
+            Xopt = transformar(model_opt, wv_opt, cv_opt, sel_opt, full)
+            Xov = transformar(model_over, wv_ov, cv_ov, sel_ov, full)
 
-            # Prever probabilidades
-            probs_opt = None
-            if hasattr(clf_opt, "predict_proba"):
-                probs_opt = clf_opt.predict_proba(Xsel_opt)
-            else:
-                # converter predição para “probabilidade” trivial
-                pred_o = clf_opt.predict(Xsel_opt)[0]
-                probs_opt = np.zeros((1, len(le_opt.classes_)))
-                probs_opt[0, pred_o] = 1.0
+            # Obter probabilidades ou fallback
+            import numpy as np
+            def get_probs(clf, X, le_src, map_to_uni):
+                if hasattr(clf, "predict_proba"):
+                    p = clf.predict_proba(X)[0]  # vetor de tamanho n_classes do modelo
+                else:
+                    # fallback: probabilidade 1 para predição
+                    idx = clf.predict(X)[0]
+                    p = np.zeros(len(le_src.classes_))
+                    p[idx] = 1.0
+                # converter p (do modelo) para vetor unificado
+                p_uni = np.zeros(len(classes_unificadas))
+                for cls_src, prob_val in zip(le_src.classes_, p):
+                    tgt_idx = map_to_uni[cls_src]
+                    p_uni[tgt_idx] = prob_val
+                return p_uni
 
-            probs_ov = None
-            if hasattr(clf_over, "predict_proba"):
-                probs_ov = clf_over.predict_proba(Xsel_ov)
-            else:
-                pred_o2 = clf_over.predict(Xsel_ov)[0]
-                probs_ov = np.zeros((1, len(le_opt.classes_)))
-                probs_ov[0, pred_o2] = 1.0
+            probs_opt = get_probs(clf_opt, Xopt, le_opt, map_opt_to_uni)
+            probs_ov = get_probs(clf_over, Xov, le_ov, map_ov_to_uni)
 
-            # Ensemble: média simples (soft voting)
-            # peso igual para os dois modelos — você pode ajustar pesos
-            peso1 = 0.5
-            peso2 = 0.5
-            probs_ensemble = peso1 * probs_opt + peso2 * probs_ov
-            idx = int(probs_ensemble[0].argmax())
-            classe = le_opt.inverse_transform([idx])[0]
-            confidence = float(probs_ensemble[0, idx])
+            # Combinar (soft voting)
+            # pesos ajustáveis
+            peso_opt = 0.5
+            peso_ov = 0.5
+            ps = peso_opt * probs_opt + peso_ov * probs_ov
+
+            idx_uni = int(np.argmax(ps))
+            classe_pred = classes_unificadas[idx_uni]
+            confidence = float(ps[idx_uni])
 
             resp = {
                 "success": True,
-                "prediction": classe,
+                "prediction": classe_pred,
                 "confidence": confidence,
-                "tokens": len(full_text.split())
+                "tokens": len(full.split())
             }
-
             return jsonify(resp)
 
     except Exception:
@@ -199,7 +191,8 @@ def predict():
 
 @app.route("/", methods=["GET"])
 def healthcheck():
-    return jsonify({"status": "ok", "message": "API de Currículos rodando 🚀"})
+    return jsonify({"status": "ok", "message": "API rodando"})
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
