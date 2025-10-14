@@ -14,9 +14,18 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
 import nltk
 from nltk.corpus import stopwords
+import shutil
+import platform
 
-# --- Setup Tesseract e NLTK ---
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+else:
+    # Render (Linux) → tenta encontrar o binário do Tesseract no sistema
+    tess_path = shutil.which("tesseract")
+    if tess_path:
+        pytesseract.pytesseract.tesseract_cmd = tess_path
+    else:
+        print("⚠️ Tesseract não encontrado no ambiente. OCR não funcionará até ser instalado.")
 
 try:
     nltk.data.find("corpora/stopwords")
