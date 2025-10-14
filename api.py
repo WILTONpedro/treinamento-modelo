@@ -1,239 +1,144 @@
-import os
-import tempfile
-import zipfile
 import pickle
 import traceback
-import re
-import nltk
-import pdfplumber
-import pytesseract
-import docx
-from PIL import Image
 from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
-from scipy.sparse import hstack
-from nltk.corpus import stopwords
+from flask_cors import CORS
+import numpy as np
+import scipy.sparse as sp
 
-# =====================================
-# 🔹 CONFIGURAÇÕES INICIAIS
-# =====================================
+# === Inicialização da API ===
+app = Flask(__name__)
+CORS(app)
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+# === Carrega os modelos ===
+def carregar_modelo(caminho):
+    with open(caminho, "rb") as f:
+        return pickle.load(f)
 
-# Baixar stopwords se necessário
-try:
-    nltk.data.find("corpora/stopwords")
-except LookupError:
-    nltk.download("stopwords")
+print("🔹 Carregando modelos...")
+modelo_padrao = carregar_modelo("modelo_curriculos_xgb.pkl")
+modelo_over = carregar_modelo("modelo_curriculos_xgb_oversampling.pkl")
+print("✅ Modelos carregados com sucesso.")
 
-STOPWORDS = set(stopwords.words("portuguese"))
+# === Extrai componentes ===
+clf = modelo_padrao["clf"]
+word_vectorizer = modelo_padrao["word_vectorizer"]
+char_vectorizer = modelo_padrao["char_vectorizer"]
+selector = modelo_padrao["selector"]
+le = modelo_padrao["label_encoder"]
 
-# Expressões regulares para limpeza
-RE_EMAIL = re.compile(r"\S+@\S+")
-RE_NUM = re.compile(r"\d+")
-RE_CARACT = re.compile(r"[^a-zá-ú\s]")
+clf_over = modelo_over["clf"]
+word_vectorizer_over = modelo_over["word_vectorizer"]
+char_vectorizer_over = modelo_over["char_vectorizer"]
+selector_over = modelo_over["selector"]
+le_over = modelo_over["label_encoder"]
 
-def limpar_texto(texto: str) -> str:
+# Palavras-chave (se existirem)
+palavras_chave_dict = modelo_over.get("palavras_chave_dict", {})
+
+# === Função para processar texto ===
+def preprocessar_texto(texto):
     texto = texto.lower()
-    texto = RE_EMAIL.sub(" ", texto)
-    texto = RE_NUM.sub(" ", texto)
-    texto = RE_CARACT.sub(" ", texto)
-    return " ".join(w for w in texto.split() if w not in STOPWORDS)
+    texto = texto.replace("\n", " ").replace("\r", " ")
+    return texto
 
-# =====================================
-# 🔹 EXTRAÇÃO DE TEXTO
-# =====================================
-
-def processar_item(filepath):
-    ext = os.path.splitext(filepath)[1].lower()
-    if ext == ".zip":
-        with zipfile.ZipFile(filepath, "r") as z:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                z.extractall(tmpdir)
-                for name in z.namelist():
-                    yield os.path.join(tmpdir, name)
-    else:
-        yield filepath
-
-
-def extrair_texto_arquivo(filepath):
-    ext = os.path.splitext(filepath)[1].lower()
-    try:
-        if ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            if os.path.getsize(filepath) > 5 * 1024 * 1024:
-                return ""
-            img = Image.open(filepath).convert("L")
-            img.thumbnail((1024, 1024))
-            return pytesseract.image_to_string(img, lang="por", config="--psm 6")
-
-        elif ext == ".pdf":
-            texts = []
-            with pdfplumber.open(filepath) as pdf:
-                for page in pdf.pages:
-                    t = page.extract_text()
-                    if t:
-                        texts.append(t)
-            return " ".join(texts)
-
-        elif ext in (".docx", ".doc"):
-            doc = docx.Document(filepath)
-            return " ".join(p.text for p in doc.paragraphs)
-
-        elif ext == ".txt":
-            with open(filepath, encoding="utf-8", errors="ignore") as f:
-                return f.read()
-
-    except Exception:
-        print(f"[ERRO ao extrair texto de] {filepath}\n{traceback.format_exc()}")
-        return ""
-    return ""
-
-
-# =====================================
-# 🔹 CARREGAMENTO DOS MODELOS
-# =====================================
-
-with open("modelo_curriculos_otimizado.pkl", "rb") as f:
-    data_base = pickle.load(f)
-
-with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
-    data_over = pickle.load(f)
-
-# Componentes do modelo base
-clf_base = data_base["clf"]
-word_v_base = data_base["word_vectorizer"]
-char_v_base = data_base["char_vectorizer"]
-selector_base = data_base["selector"]
-le_base = data_base["label_encoder"]
-
-# Componentes do modelo oversampling
-clf_over = data_over["clf"]
-word_v_over = data_over["word_vectorizer"]
-char_v_over = data_over["char_vectorizer"]
-selector_over = data_over["selector"]
-le_over = data_over["label_encoder"]
-
-# =====================================
-# 🔹 PREDIÇÃO COM FUSÃO DE MODELOS
-# =====================================
-
+# === Função principal de predição ===
 def prever_fusao(texto):
-    # --- Modelo Base ---
-    Xw_b = word_v_base.transform([texto])
-    Xc_b = char_v_base.transform([texto])
-    Xsel_b = selector_base.transform(hstack([Xw_b, Xc_b]))
-    probs_base = clf_base.predict_proba(Xsel_b)
+    texto_proc = preprocessar_texto(texto)
+    
+    # Vetorização base
+    Xw = word_vectorizer.transform([texto_proc])
+    Xc = char_vectorizer.transform([texto_proc])
+    X = sp.hstack([Xw, Xc])
 
-    # --- Modelo Oversampling ---
-    Xw_o = word_v_over.transform([texto])
-    Xc_o = char_v_over.transform([texto])
-    Xover = hstack([Xw_o, Xc_o])
+    # === Modelo principal ===
+    Xsel = selector.transform(X)
+    probs_main = clf.predict_proba(Xsel)[0]
+    pred_main = np.argmax(probs_main)
+    conf_main = np.max(probs_main)
+    classe_main = le.inverse_transform([pred_main])[0]
+
+    # === Modelo oversampling ===
+    Xwo = word_vectorizer_over.transform([texto_proc])
+    Xco = char_vectorizer_over.transform([texto_proc])
+    Xover = sp.hstack([Xwo, Xco])
 
     try:
-        # tenta usar selector se for compatível
+        # tenta aplicar selector normalmente
         Xsel_o = selector_over.transform(Xover)
     except Exception as e:
-        print(f"[AVISO] Selector oversampling incompatível, usando vetor completo. Detalhes: {e}")
-        Xsel_o = Xover  # fallback
+        print(f"[AVISO] Selector oversampling incompatível, ajustando manualmente. Detalhes: {e}")
+        try:
+            expected_features = clf_over.get_booster().num_features()
+        except Exception:
+            expected_features = 5000  # fallback
 
-    probs_over = clf_over.predict_proba(Xsel_o)
+        current_features = Xover.shape[1]
 
-    # --- Validação ---
-    if list(le_base.classes_) != list(le_over.classes_):
-        raise ValueError("As classes dos modelos são diferentes! Reentreine com o mesmo label encoder.")
+        if current_features > expected_features:
+            Xsel_o = Xover[:, :expected_features]
+        elif current_features < expected_features:
+            diff = expected_features - current_features
+            zeros = sp.csr_matrix((Xover.shape[0], diff))
+            Xsel_o = sp.hstack([Xover, zeros])
+        else:
+            Xsel_o = Xover
 
-    # --- Fusão de probabilidades ---
-    probs_final = (probs_base + probs_over) / 2
+    probs_over = clf_over.predict_proba(Xsel_o)[0]
+    pred_over = np.argmax(probs_over)
+    conf_over = np.max(probs_over)
+    classe_over = le_over.inverse_transform([pred_over])[0]
 
-    idx_final = probs_final.argmax()
-    classe_final = le_base.inverse_transform([idx_final])[0]
-    confianca = float(probs_final[0, idx_final])
+    # === Fusão dos resultados ===
+    if conf_over >= 0.7:
+        classe_final = classe_over
+        conf_final = conf_over
+        origem = "oversampling"
+    else:
+        classe_final = classe_main
+        conf_final = conf_main
+        origem = "modelo_principal"
+
+    # === Palavras-chave ===
+    palavras_chave_encontradas = []
+    for classe, palavras in palavras_chave_dict.items():
+        for p in palavras:
+            if p.lower() in texto_proc:
+                palavras_chave_encontradas.append(p)
+    palavras_chave_encontradas = list(set(palavras_chave_encontradas))
 
     return {
-        "classe_final": classe_final,
-        "confianca_final": confianca,
-        "pred_base": le_base.inverse_transform([probs_base.argmax()])[0],
-        "conf_base": float(probs_base[0].max()),
-        "pred_over": le_over.inverse_transform([probs_over.argmax()])[0],
-        "conf_over": float(probs_over[0].max())
+        "prediction_main": classe_main,
+        "confidence_main": float(conf_main),
+        "prediction_over": classe_over,
+        "confidence_over": float(conf_over),
+        "prediction_final": classe_final,
+        "confidence_final": float(conf_final),
+        "origem_resultado": origem,
+        "palavras_chave": palavras_chave_encontradas
     }
 
-# =====================================
-# 🔹 FLASK CONFIG
-# =====================================
-
-app = Flask(__name__)
-ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
-
-def allowed_file(filename):
-    return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
-
-
-# =====================================
-# 🔹 ENDPOINT /predict
-# =====================================
-
+# === Rota de predição ===
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
-        if "file" not in request.files:
-            return jsonify({"error": "Nenhum arquivo enviado"}), 400
+        data = request.get_json(force=True)
+        full_text = data.get("text", "")
 
-        uploaded = request.files["file"]
-        if uploaded.filename == "":
-            return jsonify({"error": "Nome de arquivo vazio"}), 400
+        if not full_text.strip():
+            return jsonify({"error": "Texto vazio recebido."}), 400
 
-        filename = secure_filename(uploaded.filename)
-        if not allowed_file(filename):
-            return jsonify({"error": f"Tipo de arquivo não suportado: {filename}"}), 400
+        resultado = prever_fusao(full_text)
+        return jsonify(resultado)
 
-        with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
-            filepath = os.path.join(tmpdir, filename)
-            uploaded.save(filepath)
-
-            textos = []
-            for pfile in processar_item(filepath):
-                txt = extrair_texto_arquivo(pfile)
-                if txt:
-                    textos.append(limpar_texto(txt))
-
-            full_text = " ".join(textos)
-            if not full_text.strip():
-                return jsonify({"error": "Não foi possível extrair texto"}), 400
-
-            if len(full_text) > 30000:
-                full_text = full_text[:30000]
-
-            resultado = prever_fusao(full_text)
-
-            return jsonify({
-                "success": True,
-                "tokens": len(full_text.split()),
-                "prediction_final": resultado["classe_final"],
-                "confidence_final": resultado["confianca_final"],
-                "modelo_base_prediction": resultado["pred_base"],
-                "modelo_base_conf": resultado["conf_base"],
-                "modelo_oversampling_prediction": resultado["pred_over"],
-                "modelo_oversampling_conf": resultado["conf_over"]
-            })
-
-    except Exception:
-        print(traceback.format_exc())
+    except Exception as e:
+        print("❌ ERRO INTERNO:", traceback.format_exc())
         return jsonify({"error": "Falha interna no processamento"}), 500
 
-
-# =====================================
-# 🔹 HEALTHCHECK
-# =====================================
-
+# === Rota de status ===
 @app.route("/", methods=["GET"])
-def healthcheck():
-    return jsonify({"status": "ok", "message": "API de Currículos com fusão rodando 🚀"})
+def home():
+    return jsonify({"status": "API de Classificação de Currículos operacional ✅"})
 
-
-# =====================================
-# 🔹 MAIN
-# =====================================
-
+# === Execução local ===
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=10000)
