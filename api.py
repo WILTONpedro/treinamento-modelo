@@ -38,14 +38,18 @@ def limpar_texto(texto: str) -> str:
     return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
 # --- Configurar pytesseract ---
+TESSERACT_INSTALADO = True
 if platform.system() == "Windows":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+    if not os.path.isfile(pytesseract.pytesseract.tesseract_cmd):
+        TESSERACT_INSTALADO = False
 else:
     tess_path = shutil.which("tesseract")
     if tess_path:
         pytesseract.pytesseract.tesseract_cmd = tess_path
     else:
-        print("⚠️ Tesseract não encontrado no ambiente — OCR de imagens ficará desativado")
+        TESSERACT_INSTALADO = False
+        print("⚠️ Tesseract não encontrado — OCR de imagens ficará desativado")
 
 # --- Funções de processamento ---
 def processar_item(filepath):
@@ -62,11 +66,12 @@ def processar_item(filepath):
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
+        # --- Imagens ---
         if ext in (".png", ".jpg", ".jpeg", ".tiff"):
-            if not shutil.which("tesseract"):
+            if not TESSERACT_INSTALADO:
                 print(f"[IGNORADO - OCR indisponível] {filepath}")
                 return ""
-            if os.path.getsize(filepath) > 10 * 1024 * 1024:
+            if os.path.getsize(filepath) > 5 * 1024 * 1024:  # 5MB
                 print(f"[IGNORADO - imagem muito grande] {filepath}")
                 return ""
             img = Image.open(filepath).convert("L")
@@ -75,6 +80,7 @@ def extrair_texto_arquivo(filepath):
             print(f"[IMG OCR] {filepath}: {len(texto.strip())} chars extraídos")
             return texto
 
+        # --- PDFs ---
         elif ext == ".pdf":
             texts = []
             with pdfplumber.open(filepath) as pdf:
@@ -83,7 +89,8 @@ def extrair_texto_arquivo(filepath):
                     if t and len(t.strip()) > 10:
                         texts.append(t)
                         continue
-                    if shutil.which("tesseract"):
+                    # fallback OCR só se texto normal falhar
+                    if TESSERACT_INSTALADO:
                         pil_img = page.to_image(resolution=300).original.convert("L")
                         ocr_text = pytesseract.image_to_string(pil_img, lang="por", config="--psm 6")
                         if ocr_text.strip():
@@ -95,12 +102,14 @@ def extrair_texto_arquivo(filepath):
             print(f"[PDF FINAL] {len(full_text.strip())} chars totais extraídos")
             return full_text
 
+        # --- DOCX/DOC ---
         elif ext in (".docx", ".doc"):
             doc = docx.Document(filepath)
             texto = " ".join(p.text for p in doc.paragraphs)
             print(f"[DOCX] {filepath}: {len(texto.strip())} chars extraídos")
             return texto
 
+        # --- TXT ---
         elif ext == ".txt":
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 texto = f.read()
@@ -223,3 +232,4 @@ def healthcheck():
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
+
