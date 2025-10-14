@@ -14,10 +14,13 @@ from werkzeug.utils import secure_filename
 from scipy.sparse import hstack
 from nltk.corpus import stopwords
 
-# --- Configura Tesseract ---
+# =====================================
+# 🔹 CONFIGURAÇÕES INICIAIS
+# =====================================
+
 pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
-# --- Preparar NLTK ---
+# Baixar stopwords se necessário
 try:
     nltk.data.find("corpora/stopwords")
 except LookupError:
@@ -25,7 +28,7 @@ except LookupError:
 
 STOPWORDS = set(stopwords.words("portuguese"))
 
-# --- Expressões regulares para limpeza ---
+# Expressões regulares para limpeza
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
 RE_CARACT = re.compile(r"[^a-zá-ú\s]")
@@ -37,7 +40,10 @@ def limpar_texto(texto: str) -> str:
     texto = RE_CARACT.sub(" ", texto)
     return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
-# --- Função para processar arquivos ZIP e individuais ---
+# =====================================
+# 🔹 EXTRAÇÃO DE TEXTO
+# =====================================
+
 def processar_item(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     if ext == ".zip":
@@ -49,7 +55,7 @@ def processar_item(filepath):
     else:
         yield filepath
 
-# --- Função para extrair texto de vários formatos ---
+
 def extrair_texto_arquivo(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     try:
@@ -78,13 +84,14 @@ def extrair_texto_arquivo(filepath):
                 return f.read()
 
     except Exception:
-        print(f"[ERRO] {filepath}\n{traceback.format_exc()}")
+        print(f"[ERRO ao extrair texto de] {filepath}\n{traceback.format_exc()}")
         return ""
     return ""
 
-# ============================
-# 🔹 CARREGAR OS DOIS MODELOS
-# ============================
+
+# =====================================
+# 🔹 CARREGAMENTO DOS MODELOS
+# =====================================
 
 with open("modelo_curriculos_otimizado.pkl", "rb") as f:
     data_base = pickle.load(f)
@@ -92,58 +99,72 @@ with open("modelo_curriculos_otimizado.pkl", "rb") as f:
 with open("modelo_curriculos_xgb_oversampling.pkl", "rb") as f:
     data_over = pickle.load(f)
 
+# Componentes do modelo base
 clf_base = data_base["clf"]
+word_v_base = data_base["word_vectorizer"]
+char_v_base = data_base["char_vectorizer"]
+selector_base = data_base["selector"]
+le_base = data_base["label_encoder"]
+
+# Componentes do modelo oversampling
 clf_over = data_over["clf"]
+word_v_over = data_over["word_vectorizer"]
+char_v_over = data_over["char_vectorizer"]
+selector_over = data_over["selector"]
+le_over = data_over["label_encoder"]
 
-word_v = data_base["word_vectorizer"]
-char_v = data_base["char_vectorizer"]
-selector = data_base["selector"]
-le = data_base["label_encoder"]
+# =====================================
+# 🔹 PREDIÇÃO COM FUSÃO DE MODELOS
+# =====================================
 
-# --- Função para prever com fusão ---
 def prever_fusao(texto):
-    Xw = word_v.transform([texto])
-    Xc = char_v.transform([texto])
-    Xfull = hstack([Xw, Xc])
-    Xsel = selector.transform(Xfull)
+    # --- Modelo Base ---
+    Xw_b = word_v_base.transform([texto])
+    Xc_b = char_v_base.transform([texto])
+    Xsel_b = selector_base.transform(hstack([Xw_b, Xc_b]))
+    probs_base = clf_base.predict_proba(Xsel_b)
 
-    # Probabilidades individuais
-    probs_base = clf_base.predict_proba(Xsel)
-    probs_over = clf_over.predict_proba(Xsel)
+    # --- Modelo Oversampling ---
+    Xw_o = word_v_over.transform([texto])
+    Xc_o = char_v_over.transform([texto])
+    Xsel_o = selector_over.transform(hstack([Xw_o, Xc_o]))
+    probs_over = clf_over.predict_proba(Xsel_o)
 
-    # Média das probabilidades
+    # --- Validação ---
+    if list(le_base.classes_) != list(le_over.classes_):
+        raise ValueError("As classes dos modelos são diferentes! Reentreine com o mesmo label encoder.")
+
+    # --- Fusão de probabilidades ---
     probs_final = (probs_base + probs_over) / 2
 
-    # Classe final
     idx_final = probs_final.argmax()
-    classe_final = le.inverse_transform([idx_final])[0]
+    classe_final = le_base.inverse_transform([idx_final])[0]
     confianca = float(probs_final[0, idx_final])
-
-    # Também retorna previsões individuais
-    pred_base = le.inverse_transform([probs_base.argmax()])[0]
-    pred_over = le.inverse_transform([probs_over.argmax()])[0]
 
     return {
         "classe_final": classe_final,
         "confianca_final": confianca,
-        "pred_base": pred_base,
+        "pred_base": le_base.inverse_transform([probs_base.argmax()])[0],
         "conf_base": float(probs_base[0].max()),
-        "pred_over": pred_over,
+        "pred_over": le_over.inverse_transform([probs_over.argmax()])[0],
         "conf_over": float(probs_over[0].max())
     }
 
-# ============================
-# 🔹 CONFIGURAR FLASK
-# ============================
+# =====================================
+# 🔹 FLASK CONFIG
+# =====================================
+
 app = Flask(__name__)
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
 def allowed_file(filename):
     return os.path.splitext(filename)[1].lower().lstrip(".") in ALLOWED_EXTENSIONS
 
-# ============================
+
+# =====================================
 # 🔹 ENDPOINT /predict
-# ============================
+# =====================================
+
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
@@ -172,14 +193,12 @@ def predict():
             if not full_text.strip():
                 return jsonify({"error": "Não foi possível extrair texto"}), 400
 
-            # Limite de tamanho
             if len(full_text) > 30000:
                 full_text = full_text[:30000]
 
-            # --- Predição combinada ---
             resultado = prever_fusao(full_text)
 
-            resp = {
+            return jsonify({
                 "success": True,
                 "tokens": len(full_text.split()),
                 "prediction_final": resultado["classe_final"],
@@ -188,23 +207,25 @@ def predict():
                 "modelo_base_conf": resultado["conf_base"],
                 "modelo_oversampling_prediction": resultado["pred_over"],
                 "modelo_oversampling_conf": resultado["conf_over"]
-            }
-
-            return jsonify(resp)
+            })
 
     except Exception:
         print(traceback.format_exc())
         return jsonify({"error": "Falha interna no processamento"}), 500
 
-# ============================
+
+# =====================================
 # 🔹 HEALTHCHECK
-# ============================
+# =====================================
+
 @app.route("/", methods=["GET"])
 def healthcheck():
     return jsonify({"status": "ok", "message": "API de Currículos com fusão rodando 🚀"})
 
-# ============================
-# 🔹 RUN
-# ============================
+
+# =====================================
+# 🔹 MAIN
+# =====================================
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
