@@ -127,7 +127,15 @@ def prever_fusao(texto):
     # --- Modelo Oversampling ---
     Xw_o = word_v_over.transform([texto])
     Xc_o = char_v_over.transform([texto])
-    Xsel_o = selector_over.transform(hstack([Xw_o, Xc_o]))
+    Xover = hstack([Xw_o, Xc_o])
+
+    try:
+        # tenta usar selector se for compatível
+        Xsel_o = selector_over.transform(Xover)
+    except Exception as e:
+        print(f"[AVISO] Selector oversampling incompatível, usando vetor completo. Detalhes: {e}")
+        Xsel_o = Xover  # fallback
+
     probs_over = clf_over.predict_proba(Xsel_o)
 
     # --- Validação ---
