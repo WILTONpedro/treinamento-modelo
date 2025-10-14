@@ -38,18 +38,22 @@ def limpar_texto(texto: str) -> str:
     return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
 # --- Configurar pytesseract ---
-TESSERACT_INSTALADO = True
 if platform.system() == "Windows":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
     if not os.path.isfile(pytesseract.pytesseract.tesseract_cmd):
+        print("⚠️ Tesseract não encontrado no Windows")
         TESSERACT_INSTALADO = False
-else:
-    tess_path = shutil.which("tesseract")
-    if tess_path:
-        pytesseract.pytesseract.tesseract_cmd = tess_path
     else:
+        TESSERACT_INSTALADO = True
+else:
+    # Linux
+    tesseract_path = shutil.which("tesseract")
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+        TESSERACT_INSTALADO = True
+    else:
+        print("⚠️ Tesseract não encontrado no Linux/Render")
         TESSERACT_INSTALADO = False
-        print("⚠️ Tesseract não encontrado — OCR de imagens ficará desativado")
 
 # --- Funções de processamento ---
 def processar_item(filepath):
