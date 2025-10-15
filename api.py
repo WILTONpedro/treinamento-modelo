@@ -15,7 +15,7 @@ def carregar_modelo(caminho):
         return pickle.load(f)
 
 print("🔹 Carregando modelos...")
-modelo_padrao = carregar_modelo("modelo_curriculos_xgb.pkl")
+modelo_padrao = carregar_modelo("modelo_curriculos_otimizado.pkl")
 modelo_over = carregar_modelo("modelo_curriculos_xgb_oversampling.pkl")
 print("✅ Modelos carregados com sucesso.")
 
