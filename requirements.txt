@@ -9,3 +9,4 @@ pytesseract
 pillow
 pdfplumber
 python-docx
+gunicorn
