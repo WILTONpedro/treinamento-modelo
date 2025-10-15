@@ -1,26 +1,11 @@
-# Web
-Flask
-gunicorn
-
-# NLP e Machine Learning
-nltk
-scikit-learn
-numpy
-xgboost
-imbalanced-learn
-unidecode
-pandas
+flask
 flask-cors
-openpyxl
-
-# PDF, Word e OCR
+numpy
+scipy
+scikit-learn
+xgboost
+nltk
+pytesseract
+pillow
 pdfplumber
 python-docx
-pillow
-pytesseract
-pdf2image
-
-# Utilitários
-requests
-regex
-tqdm
