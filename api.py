@@ -43,7 +43,7 @@ def limpar_texto(texto: str) -> str:
     return " ".join(w for w in texto.split() if w not in STOPWORDS)
 
 # ---------------------------
-# Leitura/extracao arquivos
+# Entrada / extração de arquivo
 # ---------------------------
 ALLOWED_EXTENSIONS = {'pdf', 'docx', 'doc', 'txt', 'zip', 'png', 'jpg', 'jpeg', 'tiff'}
 
@@ -88,13 +88,13 @@ def extrair_texto_arquivo(filepath):
             with open(filepath, encoding="utf-8", errors="ignore") as f:
                 return f.read()
     except Exception:
+        traceback.print_exc()
         return ""
     return ""
 
 # ---------------------------
-# Carregar modelos
+# Carregar modelos (.pkl)
 # ---------------------------
-# Ajuste os nomes dos arquivos conforme estão no seu repositório
 MODEL_BASE_PATH = "modelo_curriculos_otimizado.pkl"
 MODEL_OVER_PATH = "modelo_curriculos_xgb_oversampling.pkl"
 
@@ -123,15 +123,23 @@ le_over = model_over["label_encoder"]
 palavras_chave_dict = model_over.get("palavras_chave_dict", {})
 
 # ---------------------------
-# Helpers: mapear probabilidades para classes comuns
+# Utils
 # ---------------------------
+def _adjust_sparse_cols(X_sparse, expected_features):
+    """Corta ou preenche colunas da sparse matrix X_sparse até expected_features."""
+    X = X_sparse.tocsr()
+    n_rows, n_cols = X.shape
+    if n_cols == expected_features:
+        return X
+    if n_cols > expected_features:
+        return X[:, :expected_features].tocsr()
+    # n_cols < expected_features -> pad zeros
+    diff = expected_features - n_cols
+    zeros = sp.csr_matrix((n_rows, diff))
+    return sp.hstack([X, zeros]).tocsr()
+
 def align_probs_to_common_classes(probs, model_le, common_classes):
-    """
-    probs: 1D numpy array of probabilities for model_le.classes_
-    model_le: label encoder (has .classes_)
-    common_classes: list/array of target classes order
-    returns: 1D numpy array of length len(common_classes)
-    """
+    """Alinha vetor de probabilidades de model_le.classes_ para common_classes order."""
     aligned = np.zeros(len(common_classes), dtype=float)
     model_classes = list(model_le.classes_)
     for i, c in enumerate(model_classes):
@@ -141,105 +149,106 @@ def align_probs_to_common_classes(probs, model_le, common_classes):
     return aligned
 
 # ---------------------------
-# Função de predição / fusão
+# Predição e fusão
 # ---------------------------
-def prever_fusao_texto(texto_raw):
-    texto = limpar_texto(texto_raw or "")
+def prever_fusao_texto(full_text_raw):
+    texto = limpar_texto(full_text_raw or "")
     if not texto.strip():
         raise ValueError("Texto vazio após extração/limpeza.")
 
-    # Vetorização e seleção para cada modelo (uso separado)
-    # MODEL BASE
+    # MODEL BASE pipeline
     Xw_b = word_v_base.transform([texto])
     Xc_b = char_v_base.transform([texto])
     X_b = hstack([Xw_b, Xc_b])
-
+    # aplica selector_base se existir, senão ajusta para o esperado
     if selector_base is not None:
         try:
             Xsel_b = selector_base.transform(X_b)
         except Exception:
-            # fallback: if transform fails, try to trim/pad to expected features for clf_base
             try:
                 expected_b = clf_base.get_booster().num_features()
             except Exception:
                 expected_b = X_b.shape[1]
             Xsel_b = _adjust_sparse_cols(X_b, expected_b)
     else:
-        Xsel_b = X_b
+        try:
+            expected_b = clf_base.get_booster().num_features()
+        except Exception:
+            expected_b = X_b.shape[1]
+        Xsel_b = _adjust_sparse_cols(X_b, expected_b)
 
-    probs_b = clf_base.predict_proba(Xsel_b)[0]  # shape (n_classes_base,)
-    # MODEL OVER
+    probs_b = clf_base.predict_proba(Xsel_b)[0]
+
+    # MODEL OVER pipeline
     Xw_o = word_v_over.transform([texto])
     Xc_o = char_v_over.transform([texto])
     X_o = hstack([Xw_o, Xc_o])
 
-    Xsel_o = None
     if selector_over is not None:
         try:
             Xsel_o = selector_over.transform(X_o)
         except Exception as e:
-            # selector incompatible -> fallback to adjust raw vector dims to what clf_over expects
+            # selector incompatível -> ajustar cols para o que clf_over espera
             try:
                 expected_over = clf_over.get_booster().num_features()
             except Exception:
-                expected_over = X_o.shape[1]  # fallback
+                expected_over = X_o.shape[1]
             Xsel_o = _adjust_sparse_cols(X_o, expected_over)
     else:
-        # no selector saved for over, but clf expects certain number of features:
         try:
             expected_over = clf_over.get_booster().num_features()
         except Exception:
             expected_over = X_o.shape[1]
         Xsel_o = _adjust_sparse_cols(X_o, expected_over)
 
-    probs_o = clf_over.predict_proba(Xsel_o)[0]  # shape (n_classes_over,)
+    probs_o = clf_over.predict_proba(Xsel_o)[0]
 
-    # --- Align classes to a common class list (union) ---
+    # --- Common classes (união preservando ordem do base)
     classes_base = list(le_base.classes_)
     classes_over = list(le_over.classes_)
-    # Build union while preserving order: prefer base order then add missing from over
     common_classes = classes_base[:]
     for c in classes_over:
         if c not in common_classes:
             common_classes.append(c)
 
+    # align
     probs_b_al = align_probs_to_common_classes(probs_b, le_base, common_classes)
     probs_o_al = align_probs_to_common_classes(probs_o, le_over, common_classes)
 
-    # If both produce zeros for some classes, fine — fusion will handle.
-    # Fusion weights: use relative confidence (max prob) as dynamic weight.
+    # confidences
     conf_b = float(np.max(probs_b_al))
     conf_o = float(np.max(probs_o_al))
-    # Avoid zero-sum
+
+    # pesos dinâmicos pela confiança (se soma zero, pesos iguais)
     w_b = conf_b
     w_o = conf_o
     if w_b + w_o <= 0:
         w_b = w_o = 0.5
     else:
-        w_b = w_b / (w_b + w_o)
-        w_o = w_o / (w_b + w_o) if (w_b + w_o) != 0 else 0.5  # normalized (note: formula re-normalizes w_b, but ok)
+        # normalize so w_b + w_o == 1
+        s = w_b + w_o
+        w_b = w_b / s
+        w_o = w_o / s
 
-    # Simpler robust weighting: if one model has strong confidence >> other, give it weight boost
-    # compute final probs
+    # fusão final
     probs_final = probs_b_al * w_b + probs_o_al * w_o
-
     idx_final = int(np.argmax(probs_final))
     class_final = common_classes[idx_final]
     conf_final = float(probs_final[idx_final])
 
-    # Individual best predictions (map back to original model's label if needed)
+    # preds individuais (origem)
     idx_b = int(np.argmax(probs_b))
     pred_b = classes_base[idx_b] if idx_b < len(classes_base) else None
     idx_o = int(np.argmax(probs_o))
     pred_o = classes_over[idx_o] if idx_o < len(classes_over) else None
 
-    # Detect keywords from palavras_chave_dict (oversampling)
+    # palavras-chave encontradas (somente as que aparecem no texto)
     keywords_found = []
     for area, palavras in palavras_chave_dict.items():
         for p in palavras:
             if p and p.lower() in texto:
                 keywords_found.append(p)
-    keywords_found = list(dict.fromkeys(keywords_found))  # unique, preserve order
+    keywords_found = list(dict.fromkeys(keywords_found))  # unique preserve order
 
     return {
         "prediction_base": pred_b,
@@ -249,28 +258,11 @@ def prever_fusao_texto(texto_raw):
         "prediction_final": class_final,
         "confidence_final": conf_final,
         "common_classes": common_classes,
-        "keywords": keywords_found
+        "palavras_chave": keywords_found
     }
 
 # ---------------------------
-# Util helper para ajuste de colunas de sparse matrix
-# ---------------------------
-def _adjust_sparse_cols(X_sparse, expected_features):
-    """Corta ou preenche colunas da sparse matrix X_sparse até expected_features.
-       Retorna uma csr_matrix com shape (n_rows, expected_features).
-    """
-    n_rows, n_cols = X_sparse.shape
-    if n_cols == expected_features:
-        return X_sparse.tocsr()
-    if n_cols > expected_features:
-        return X_sparse[:, :expected_features].tocsr()
-    # n_cols < expected_features -> pad zeros
-    diff = expected_features - n_cols
-    zeros = sp.csr_matrix((n_rows, diff))
-    return sp.hstack([X_sparse, zeros]).tocsr()
-
-# ---------------------------
-# Flask app + endpoint /predict (recebe multipart file)
+# Flask app + endpoint /predict
 # ---------------------------
 app = Flask(__name__)
 
@@ -288,7 +280,7 @@ def predict():
         if not allowed_file(filename):
             return jsonify({"success": False, "error": f"Tipo de arquivo não suportado: {filename}"}), 400
 
-        # opcional: receber assunto e corpo via form
+        # opcional: receber assunto e corpo via form-data
         assunto = request.form.get("assunto", "") or ""
         corpo = request.form.get("corpo", "") or ""
 
@@ -302,28 +294,38 @@ def predict():
                 if txt:
                     textos.append(txt)
 
-            # inclui assunto e corpo (se houver)
             full_text_raw = " ".join(textos + [assunto, corpo]).strip()
             if not full_text_raw:
                 return jsonify({"success": False, "error": "Não foi possível extrair texto do arquivo."}), 400
 
-            # limite de caracteres
             if len(full_text_raw) > 30000:
                 full_text_raw = full_text_raw[:30000]
 
             resultado = prever_fusao_texto(full_text_raw)
 
-            return jsonify({"success": True, **resultado})
+            # For compatibility with your Apps Script, return top-level fields 'prediction' and 'confidence'
+            response = {
+                "success": True,
+                "prediction": resultado["prediction_final"],
+                "confidence": resultado["confidence_final"],
+                # extras useful for debug/reporting
+                "prediction_base": resultado["prediction_base"],
+                "confidence_base": resultado["confidence_base"],
+                "prediction_over": resultado["prediction_over"],
+                "confidence_over": resultado["confidence_over"],
+                "palavras_chave": resultado["palavras_chave"],
+                "common_classes": resultado["common_classes"]
+            }
 
-    except Exception as e:
-        # Não vaza trace para o cliente em produção, mas registra no stdout (Render / logs)
+            return jsonify(response)
+
+    except Exception:
         traceback.print_exc()
         return jsonify({"success": False, "error": "Falha interna no processamento"}), 500
 
 @app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "message": "API de Currículos (ensemble temporário) ativa"})
+    return jsonify({"status": "ok", "message": "API de Currículos (ensemble) ativa"})
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
