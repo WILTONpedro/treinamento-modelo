@@ -11,25 +11,25 @@ from werkzeug.utils import secure_filename
 import numpy as np
 from scipy.sparse import hstack, csr_matrix
 
-# text extraction
+# Text extraction
 import pdfplumber
 import docx
 from PIL import Image, ImageEnhance
 import pytesseract
 
-# CONFIG
-MODEL_PATH = "modelo_unificado.pkl"   # coloque seu pickle aqui
+# ---------------- CONFIG ----------------
+MODEL_PATH = "modelo_unificado.pkl"  # caminho para seu modelo
 PORT = int(os.environ.get("PORT", 5000))
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
-# Tesseract path (ajusta entre Windows / Linux automaticamente)
+# Tesseract OCR
 TESSERACT_WIN = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 TESSERACT_LINUX = "/usr/bin/tesseract"
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_WIN if os.name == "nt" else TESSERACT_LINUX
 
 app = Flask(__name__)
 
-# ----------------- helpers OCR / extraction -----------------
+# ---------------- Helpers OCR / Extraction ----------------
 def melhorar_imagem_para_ocr(img):
     try:
         img = img.convert("L")
@@ -51,7 +51,6 @@ def extrair_texto_imagem(path):
         return ""
 
 def extrair_texto_pdf(path):
-    # tenta texto digital
     try:
         with pdfplumber.open(path) as pdf:
             paginas = [p.extract_text() or "" for p in pdf.pages]
@@ -60,7 +59,7 @@ def extrair_texto_pdf(path):
                 return texto
     except Exception:
         traceback.print_exc()
-    # fallback OCR via pdf2image (se disponível)
+    # fallback OCR se PDF for scan
     try:
         from pdf2image import convert_from_path
         images = convert_from_path(path, dpi=200, first_page=1, last_page=2)
@@ -100,7 +99,7 @@ def extrair_texto_arquivo(path):
         return extrair_texto_txt(path)
     return ""
 
-# ----------------- limpeza simples -----------------
+# ---------------- Limpeza simples ----------------
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
 RE_CARACT = re.compile(r"[^a-zá-úçâêîôûãõ0-9\s]")
@@ -113,14 +112,13 @@ def limpar_texto(texto: str) -> str:
     t = " ".join(t.split())
     return t
 
-# ----------------- carregar modelo -----------------
+# ---------------- Carregar modelo ----------------
 if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(f"Modelo não encontrado: {MODEL_PATH}")
 
 with open(MODEL_PATH, "rb") as f:
     MODEL = pickle.load(f)
 
-# extrai componentes treinados
 clf = MODEL.get("clf")
 wv = MODEL.get("word_vectorizer")
 cv = MODEL.get("char_vectorizer")
@@ -131,101 +129,75 @@ le = MODEL.get("label_encoder")
 palavras_chave = MODEL.get("palavras_chave_dict", {})
 feature_dim = int(MODEL.get("feature_dim", 0))
 
-# ----------------- montagem de features (MUST match treino) -----------------
+# ---------------- Funções utilitárias ----------------
 def ensure_feature_dim(X, expected_dim):
     if expected_dim is None or expected_dim == 0:
         return X
     if X.shape[1] == expected_dim:
         return X
     if X.shape[1] < expected_dim:
-        n_extra = expected_dim - X.shape[1]
-        zeros = csr_matrix((X.shape[0], n_extra))
+        zeros = csr_matrix((X.shape[0], expected_dim - X.shape[1]))
         return hstack([X, zeros]).tocsr()
-    # truncar colunas extras (mantém primeiras expected_dim)
     return X[:, :expected_dim]
 
 def montar_features_na_ordem_do_treino(texto_limpo):
-    """
-    Ordem do treino (MUITO IMPORTANTE):
-     1) word_vectorizer (max_features=5000)
-     2) char_vectorizer (max_features=3000)
-     3) vect_cursos (max_features=1000)
-     4) vect_exp (max_features=1500)
-     5) tempo_dummy (1)
-    """
-    # transforma cada bloco (usa csr sparse)
     Xw = wv.transform([texto_limpo]) if wv is not None else csr_matrix((1,0))
     Xc = cv.transform([texto_limpo]) if cv is not None else csr_matrix((1,0))
     Xcu = vect_cursos.transform([texto_limpo]) if vect_cursos is not None else csr_matrix((1,0))
     Xex = vect_exp.transform([texto_limpo]) if vect_exp is not None else csr_matrix((1,0))
     Xtime = csr_matrix(np.zeros((1,1)))
+
+    def pad_trunc(X_block, expected_dim):
+        if expected_dim is None: return X_block
+        n = X_block.shape[1]
+        if n == expected_dim: return X_block
+        elif n < expected_dim:
+            zeros = csr_matrix((1, expected_dim - n))
+            return hstack([X_block, zeros])
+        else:
+            return X_block[:, :expected_dim]
+
+    Xw = pad_trunc(Xw, wv.max_features if hasattr(wv, "max_features") else None)
+    Xc = pad_trunc(Xc, cv.max_features if hasattr(cv, "max_features") else None)
+    Xcu = pad_trunc(Xcu, vect_cursos.max_features if hasattr(vect_cursos, "max_features") else None)
+    Xex = pad_trunc(Xex, vect_exp.max_features if hasattr(vect_exp, "max_features") else None)
+
     X_full = hstack([Xw, Xc, Xcu, Xex, Xtime])
-    return X_full
+    return X_full.tocsr()
 
 def predict_with_text(texto):
     texto_limpo = limpar_texto(texto)
     if not texto_limpo or len(texto_limpo.split()) < 3:
         return None
-    # montar features com mesma ordem do treino
+
     X_full = montar_features_na_ordem_do_treino(texto_limpo)
-    # aplicar selector (espera N_features == somatorio dos max_features + 1)
-    try:
-        X_sel = selector.transform(X_full) if selector is not None else X_full
-    except Exception:
-        # se transform falhar por shape mismatch, tenta garantir pad/trunc antes de aplicar selector
-        X_full_fixed = ensure_feature_dim(X_full, (wv.transform(["a"]).shape[1] if wv is not None else 0) +
-                                                (cv.transform(["a"]).shape[1] if cv is not None else 0) +
-                                                (vect_cursos.transform(["a"]).shape[1] if vect_cursos is not None else 0) +
-                                                (vect_exp.transform(["a"]).shape[1] if vect_exp is not None else 0) + 1)
-        try:
-            X_sel = selector.transform(X_full_fixed) if selector is not None else X_full_fixed
-        except Exception:
-            # fallback: use X_full (não ideal)
-            X_sel = X_full
-    # garantir dimensão final que o clf espera (usando feature_dim salvo — este é o número de colunas depois do selector)
+
+    if selector is not None:
+        X_full = ensure_feature_dim(X_full, selector.n_features_in_)
+        X_sel = selector.transform(X_full)
+    else:
+        X_sel = X_full
+
     if feature_dim:
         X_sel = ensure_feature_dim(X_sel, feature_dim)
-    # prever
+
     probs = clf.predict_proba(X_sel)[0]
     pred_pos = int(np.argmax(probs))
-    # mapear a label corretamente (treinamos usando label_encoder -> y_enc)
-    try:
-        # Se clf.classes_ é um array de ints (0..n-1), mapeia via label encoder
-        if hasattr(clf, "classes_") and clf.classes_ is not None:
-            try:
-                arr = np.array(clf.classes_, dtype=int)
-                mapped = int(arr[pred_pos])
-                label = le.inverse_transform([mapped])[0]
-            except Exception:
-                # fallback direto via label encoder index
-                label = le.inverse_transform([pred_pos])[0]
-        else:
-            label = le.inverse_transform([pred_pos])[0]
-    except Exception:
-        # fallback simples
-        label = str(pred_pos)
-    # probs map
-    prob_map = {}
-    try:
-        # se label encoder tem classe igual ao tamanho dos probs, use-a
-        if le is not None and len(le.classes_) == len(probs):
-            prob_map = {lab: float(p) for lab, p in zip(le.classes_, probs)}
-        else:
-            # fallback usar clf.classes_
-            prob_map = {str(c): float(p) for c, p in zip(getattr(clf, "classes_", list(range(len(probs)))), probs)}
-    except Exception:
-        prob_map = {f"class_{i}": float(p) for i, p in enumerate(probs)}
-    top = float(probs[pred_pos]) if len(probs) > 0 else 0.0
+    label = le.inverse_transform([pred_pos])[0] if le is not None else str(pred_pos)
+
+    prob_map = {lab: float(p) for lab, p in zip(le.classes_, probs)} if le is not None else {str(i): float(p) for i,p in enumerate(probs)}
+    top = float(probs[pred_pos])
     second = float(sorted(probs, reverse=True)[1]) if len(probs) > 1 else 0.0
+
     return {"pred_label": label, "top_prob": top, "gap": top-second, "probs": prob_map}
 
-# ----------------- endpoints -----------------
+# ---------------- Endpoints ----------------
 @app.route("/", methods=["GET"])
 def health():
     return jsonify({
         "status": "ok",
         "feature_dim": feature_dim,
-        "n_classes": len(le.classes_) if le is not None else None
+        "n_classes": len(le.classes_) if le else None
     })
 
 @app.route("/predict", methods=["POST"])
@@ -249,16 +221,11 @@ def predict_endpoint():
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             tmp_path = os.path.join(tmpdir, filename)
             uploaded.save(tmp_path)
-
             texto_extraido = extrair_texto_arquivo(tmp_path)
             combined = " ".join([subject, body, texto_extraido]).strip()
 
             if not combined or len(combined.split()) < 6:
-                return jsonify({
-                    "success": False,
-                    "error": "conteúdo insuficiente para classificar",
-                    "extracted_length": len(texto_extraido)
-                }), 422
+                return jsonify({"success": False, "error": "conteúdo insuficiente para classificar"}), 422
 
             res = predict_with_text(combined)
             if res is None:
@@ -268,16 +235,11 @@ def predict_endpoint():
                 "success": True,
                 "prediction": res["pred_label"],
                 "confidence": round(res["top_prob"], 4),
-                "detail": {
-                    "gap": round(res["gap"], 4),
-                    "probs": res["probs"]
-                }
+                "detail": {"gap": round(res["gap"], 4), "probs": res["probs"]}
             }
 
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+            try: os.remove(tmp_path)
+            except Exception: pass
             gc.collect()
             return jsonify(response)
 
