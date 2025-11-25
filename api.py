@@ -1,271 +1,233 @@
 import os
 import re
-import tempfile
-import traceback
 import pickle
-import time
-import gc
-from flask import Flask, request, jsonify
-from werkzeug.utils import secure_filename
-
+import shutil
 import numpy as np
-from scipy.sparse import hstack, csr_matrix
+import pandas as pd
+from datetime import datetime
+import warnings
 
-# Text extraction
+# --- SERVER & API ---
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+# --- PROCESSAMENTO ---
 import pdfplumber
 import docx
-from PIL import Image, ImageEnhance
+from PIL import Image
 import pytesseract
+import nltk
+from nltk.corpus import stopwords
+from nltk.stem import RSLPStemmer
 
-# ---------------- CONFIG ----------------
-MODEL_PATH = "modelo_unificado.pkl"  # caminho para seu modelo
-PORT = int(os.environ.get("PORT", 5000))
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
+# --- MACHINE LEARNING (Necessário para carregar o pickle) ---
+from sklearn.base import BaseEstimator, TransformerMixin
+from xgboost import XGBClassifier
 
-# Tesseract OCR
-TESSERACT_WIN = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
-TESSERACT_LINUX = "/usr/bin/tesseract"
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_WIN if os.name == "nt" else TESSERACT_LINUX
+# Configurações Iniciais
+warnings.filterwarnings("ignore")
 
-app = Flask(__name__)
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download("stopwords", quiet=True)
+    nltk.download("rslp", quiet=True)
 
-# ---------------- Helpers OCR / Extraction ----------------
-def melhorar_imagem_para_ocr(img):
+STEMMER = RSLPStemmer()
+STOPWORDS = set(stopwords.words("portuguese"))
+
+class TextCleaner:
+    @staticmethod
+    def clean(text, stem=True):
+        if not isinstance(text, str): return ""
+        text = text.lower()
+        text = re.sub(r'\S*@\S*\s?', '', text) 
+        text = re.sub(r'http\S+', '', text)    
+        text = re.sub(r'[^\w\s]', ' ', text)   
+        text = re.sub(r'\d+', ' ', text)       
+        tokens = [t for t in text.split() if t not in STOPWORDS and len(t) > 2]
+        if stem:
+            tokens = [STEMMER.stem(t) for t in tokens]
+        return " ".join(tokens)
+
+class FolderIntelligence:
+    # Mesmo não usando no predict, precisa estar aqui se foi salvo no pickle
+    pass 
+
+class FeatureEngineer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y=None): return self
+    def transform(self, X):
+        df = pd.DataFrame({'texto': X})
+        df['tempo_carreira'] = df['texto'].apply(self._extract_career_years)
+        df['last_exp_text'] = df['texto'].apply(self._extract_last_exp).apply(lambda x: TextCleaner.clean(x))
+        df['cursos_text'] = df['texto'].apply(self._extract_courses).apply(lambda x: TextCleaner.clean(x))
+        return df[['tempo_carreira', 'last_exp_text', 'cursos_text']]
+
+    def _extract_career_years(self, text):
+        matches = re.findall(r"(\d{4})\s*(?:-|at[ée]|presente|atual)", text, re.IGNORECASE)
+        if not matches: return 0
+        try:
+            years = sorted([int(m) for m in matches if 1980 < int(m) <= datetime.now().year])
+            if len(years) >= 2: return min(years[-1] - years[0], 40)
+        except: pass
+        return 0
+
+    def _extract_last_exp(self, text):
+        split = re.split(r"experi[êe]ncia|profissional", text, flags=re.IGNORECASE)
+        return split[1][:800] if len(split) > 1 else ""
+
+    def _extract_courses(self, text):
+        matches = re.findall(r".{0,40}(?:curso|certificação|formação).{0,80}", text, flags=re.IGNORECASE)
+        return " ".join(matches)
+
+class SpreadsheetEnforcer(BaseEstimator, TransformerMixin):
+    def __init__(self, excel_path=None):
+        self.excel_path = excel_path
+        self.keywords_map = {} 
+    def fit(self, X, y=None): return self
+    def transform(self, X):
+        # A mágica: O keywords_map já vem preenchido de dentro do pickle!
+        if not self.keywords_map:
+            return pd.DataFrame(np.zeros((len(X), 1)), columns=['dummy_score'])
+        data = []
+        for text in X:
+            text_lower = text.lower()
+            row = {}
+            for setor, palavras in self.keywords_map.items():
+                score = sum(1 for p in palavras if p in text_lower)
+                row[f'score_manual_{setor}'] = score
+            data.append(row)
+        return pd.DataFrame(data)
+
+# ==============================================================================
+# 2. FUNÇÃO DE EXTRAÇÃO DE TEXTO (Para ler o arquivo que chega)
+# ==============================================================================
+def extract_text_robust(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    text = ""
     try:
-        img = img.convert("L")
-        enhancer = ImageEnhance.Contrast(img); img = enhancer.enhance(1.8)
-        enhancer = ImageEnhance.Sharpness(img); img = enhancer.enhance(1.3)
-    except Exception:
-        pass
-    return img
+        if ext == ".pdf":
+            with pdfplumber.open(filepath) as pdf:
+                text = " ".join([p.extract_text() or "" for p in pdf.pages])
+        elif ext in [".docx", ".doc"]:
+            doc = docx.Document(filepath)
+            text = " ".join([p.text for p in doc.paragraphs])
+        elif ext in [".jpg", ".png", ".jpeg"]:
+            img = Image.open(filepath)
+            text = pytesseract.image_to_string(img, lang="por")
+        elif ext == ".txt":
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+    except Exception as e:
+        print(f"Erro leitura: {e}")
+    return text
 
-def extrair_texto_imagem(path):
-    try:
-        img = Image.open(path)
-        img = melhorar_imagem_para_ocr(img)
-        txt = pytesseract.image_to_string(img, lang="por", config="--psm 6")
-        img.close()
-        return txt or ""
-    except Exception:
-        traceback.print_exc()
-        return ""
+# ==============================================================================
+# 3. CONFIGURAÇÃO DA API FASTAPI
+# ==============================================================================
 
-def extrair_texto_pdf(path):
-    try:
-        with pdfplumber.open(path) as pdf:
-            paginas = [p.extract_text() or "" for p in pdf.pages]
-            texto = "\n".join(paginas).strip()
-            if texto:
-                return texto
-    except Exception:
-        traceback.print_exc()
-    # fallback OCR se PDF for scan
-    try:
-        from pdf2image import convert_from_path
-        images = convert_from_path(path, dpi=200, first_page=1, last_page=2)
-        partes = []
-        for im in images:
-            im = melhorar_imagem_para_ocr(im)
-            partes.append(pytesseract.image_to_string(im, lang="por"))
-        return "\n".join(partes).strip()
-    except Exception:
-        return ""
+app = FastAPI(title="API Triagem de Currículos")
 
-def extrair_texto_docx(path):
-    try:
-        doc = docx.Document(path)
-        return "\n".join(p.text for p in doc.paragraphs)
-    except Exception:
-        traceback.print_exc()
-        return ""
+# Permitir conexões de qualquer lugar (útil para AppScript)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def extrair_texto_txt(path):
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            return f.read()
-    except Exception:
-        traceback.print_exc()
-        return ""
+# Variáveis globais para o modelo
+MODEL = None
+PREPROCESSOR = None
+ENCODER = None
+ENGINEER = None
 
-def extrair_texto_arquivo(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext in {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}:
-        return extrair_texto_imagem(path)
-    if ext == ".pdf":
-        return extrair_texto_pdf(path)
-    if ext in {".docx", ".doc"}:
-        return extrair_texto_docx(path)
-    if ext == ".txt":
-        return extrair_texto_txt(path)
-    return ""
-
-# ---------------- Limpeza simples ----------------
-RE_EMAIL = re.compile(r"\S+@\S+")
-RE_NUM = re.compile(r"\d+")
-RE_CARACT = re.compile(r"[^a-zá-úçâêîôûãõ0-9\s]")
-
-def limpar_texto(texto: str) -> str:
-    t = (texto or "").lower()
-    t = RE_EMAIL.sub(" ", t)
-    t = RE_NUM.sub(" ", t)
-    t = RE_CARACT.sub(" ", t)
-    t = " ".join(t.split())
-    return t
-
-# ---------------- Carregar modelo ----------------
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Modelo não encontrado: {MODEL_PATH}")
-
-with open(MODEL_PATH, "rb") as f:
-    MODEL = pickle.load(f)
-
-clf = MODEL.get("clf")
-wv = MODEL.get("word_vectorizer")
-cv = MODEL.get("char_vectorizer")
-vect_cursos = MODEL.get("vect_cursos")
-vect_exp = MODEL.get("vect_exp")
-selector = MODEL.get("selector")
-le = MODEL.get("label_encoder")
-palavras_chave = MODEL.get("palavras_chave_dict", {})
-feature_dim = int(MODEL.get("feature_dim", 0))
-
-# ---------------- Funções utilitárias ----------------
-def ensure_feature_dim(X, expected_dim):
-    if expected_dim is None or expected_dim == 0:
-        return X
-    if X.shape[1] == expected_dim:
-        return X
-    if X.shape[1] < expected_dim:
-        zeros = csr_matrix((X.shape[0], expected_dim - X.shape[1]))
-        return hstack([X, zeros]).tocsr()
-    return X[:, :expected_dim]
-
-def montar_features_na_ordem_do_treino(texto_limpo):
-    Xw = wv.transform([texto_limpo]) if wv is not None else csr_matrix((1,0))
-    Xc = cv.transform([texto_limpo]) if cv is not None else csr_matrix((1,0))
-    Xcu = vect_cursos.transform([texto_limpo]) if vect_cursos is not None else csr_matrix((1,0))
-    Xex = vect_exp.transform([texto_limpo]) if vect_exp is not None else csr_matrix((1,0))
-    Xtime = csr_matrix(np.zeros((1,1)))
-
-    def pad_trunc(X_block, expected_dim):
-        if expected_dim is None: return X_block
-        n = X_block.shape[1]
-        if n == expected_dim: return X_block
-        elif n < expected_dim:
-            zeros = csr_matrix((1, expected_dim - n))
-            return hstack([X_block, zeros])
-        else:
-            return X_block[:, :expected_dim]
-
-    Xw = pad_trunc(Xw, wv.max_features if hasattr(wv, "max_features") else None)
-    Xc = pad_trunc(Xc, cv.max_features if hasattr(cv, "max_features") else None)
-    Xcu = pad_trunc(Xcu, vect_cursos.max_features if hasattr(vect_cursos, "max_features") else None)
-    Xex = pad_trunc(Xex, vect_exp.max_features if hasattr(vect_exp, "max_features") else None)
-
-    X_full = hstack([Xw, Xc, Xcu, Xex, Xtime])
-    return X_full.tocsr()
-
-def predict_with_text(texto):
-    texto_limpo = limpar_texto(texto)
-    if not texto_limpo or len(texto_limpo.split()) < 3:
-        return None
-
-    X_full = montar_features_na_ordem_do_treino(texto_limpo)
-
-    if selector is not None:
-        X_full = ensure_feature_dim(X_full, selector.n_features_in_)
-        X_sel = selector.transform(X_full)
+@app.on_event("startup")
+def load_brain():
+    """Carrega o cérebro na memória quando a API liga."""
+    global MODEL, PREPROCESSOR, ENCODER, ENGINEER
+    
+    pickle_path = "cerebro_final.pkl" # O arquivo gerado pelo brain_auto.py
+    
+    if os.path.exists(pickle_path):
+        with open(pickle_path, "rb") as f:
+            artifacts = pickle.load(f)
+        
+        MODEL = artifacts['model']
+        PREPROCESSOR = artifacts['preprocessor']
+        ENCODER = artifacts['encoder']
+        # Instancia a classe de engenharia
+        ENGINEER = FeatureEngineer()
+        
+        print("✅ Cérebro carregado com sucesso! Pronto para triagem.")
     else:
-        X_sel = X_full
+        print("❌ ERRO: 'cerebro_final.pkl' não encontrado. Treine o modelo primeiro!")
 
-    if feature_dim:
-        X_sel = ensure_feature_dim(X_sel, feature_dim)
+@app.post("/triagem")
+async def triar_curriculo(file: UploadFile = File(...)):
+    """Recebe um arquivo e retorna a qual setor ele pertence."""
+    
+    if not MODEL:
+        raise HTTPException(status_code=500, detail="Modelo não carregado.")
 
-    probs = clf.predict_proba(X_sel)[0]
-    pred_pos = int(np.argmax(probs))
-    label = le.inverse_transform([pred_pos])[0] if le is not None else str(pred_pos)
-
-    prob_map = {lab: float(p) for lab, p in zip(le.classes_, probs)} if le is not None else {str(i): float(p) for i,p in enumerate(probs)}
-    top = float(probs[pred_pos])
-    second = float(sorted(probs, reverse=True)[1]) if len(probs) > 1 else 0.0
-
-    return {"pred_label": label, "top_prob": top, "gap": top-second, "probs": prob_map}
-
-# ---------------- Endpoints ----------------
-@app.route("/", methods=["GET"])
-def health():
-    return jsonify({
-        "status": "ok",
-        "feature_dim": feature_dim,
-        "n_classes": len(le.classes_) if le else None
-    })
-
-@app.route("/predict", methods=["POST"])
-def predict_endpoint():
+    # 1. Salvar arquivo temporariamente
+    temp_filename = f"temp_{file.filename}"
     try:
-        if "file" not in request.files:
-            return jsonify({"success": False, "error": "campo 'file' ausente"}), 400
+        with open(temp_filename, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # 2. Extrair Texto
+        raw_text = extract_text_robust(temp_filename)
+        clean_text = TextCleaner.clean(raw_text)
+        
+        if len(raw_text) < 10:
+             return {"status": "erro", "mensagem": "Arquivo vazio ou ilegível (Imagem ruim? PDF protegido?)"}
 
-        uploaded = request.files["file"]
-        if uploaded.filename == "":
-            return jsonify({"success": False, "error": "arquivo sem nome"}), 400
-
-        filename = secure_filename(uploaded.filename)
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in ALLOWED_EXTENSIONS:
-            return jsonify({"success": False, "error": f"extensão não permitida: {ext}"}), 400
-
-        subject = request.form.get("subject") or request.form.get("assunto") or ""
-        body = request.form.get("body") or request.form.get("corpo") or ""
-
-        with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
-            tmp_path = os.path.join(tmpdir, filename)
-            uploaded.save(tmp_path)
-            texto_extraido = extrair_texto_arquivo(tmp_path)
-            combined = " ".join([subject, body, texto_extraido]).strip()
-
-            if not combined or len(combined.split()) < 6:
-                return jsonify({"success": False, "error": "conteúdo insuficiente para classificar"}), 422
-
-            res = predict_with_text(combined)
-            if res is None:
-                return jsonify({"success": False, "error": "falha na predição"}), 500
-
-            response = {
-                "success": True,
-                "prediction": res["pred_label"],
-                "confidence": round(res["top_prob"], 4),
-                "detail": {"gap": round(res["gap"], 4), "probs": res["probs"]}
+        # 3. Engenharia de Features (Exatamente como no treino)
+        # O engineer extrai as colunas auxiliares (exp, cursos, tempo)
+        features_df = ENGINEER.transform([raw_text])
+        
+        # 4. Montar o DataFrame Final para o Preprocessor
+        # A ordem e nome das colunas devem ser IDÊNTICOS ao treino
+        input_df = pd.DataFrame({
+            'main_text': [clean_text],          
+            'raw_text_for_excel': [raw_text], # O Enforcer usa isso para buscar palavras-chave
+            'last_exp': features_df['last_exp_text'],
+            'courses': features_df['cursos_text'],
+            'career_time': features_df['tempo_carreira']
+        })
+        
+        # 5. Transformação e Predição
+        X_input = PREPROCESSOR.transform(input_df)
+        
+        # Pega a probabilidade de cada classe
+        probs = MODEL.predict_proba(X_input)[0]
+        # Pega o índice da maior probabilidade
+        pred_idx = np.argmax(probs)
+        # Pega o nome da classe usando o Encoder
+        setor_sugerido = ENCODER.inverse_transform([pred_idx])[0]
+        confianca = float(probs[pred_idx])
+        
+        # 6. Resultado
+        return {
+            "arquivo": file.filename,
+            "setor_sugerido": setor_sugerido,
+            "confianca": f"{confianca:.2%}",
+            "detalhes": {
+                "tempo_estimado": int(features_df['tempo_carreira'][0]),
+                "tem_cursos": bool(features_df['cursos_text'][0])
             }
-
-            try: os.remove(tmp_path)
-            except Exception: pass
-            gc.collect()
-            return jsonify(response)
+        }
 
     except Exception as e:
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route("/admin/reload-model", methods=["POST"])
-def reload_model():
-    try:
-        global MODEL, clf, wv, cv, vect_cursos, vect_exp, selector, le, palavras_chave, feature_dim
-        with open(MODEL_PATH, "rb") as f:
-            MODEL = pickle.load(f)
-        clf = MODEL.get("clf")
-        wv = MODEL.get("word_vectorizer")
-        cv = MODEL.get("char_vectorizer")
-        vect_cursos = MODEL.get("vect_cursos")
-        vect_exp = MODEL.get("vect_exp")
-        selector = MODEL.get("selector")
-        le = MODEL.get("label_encoder")
-        palavras_chave = MODEL.get("palavras_chave_dict", {})
-        feature_dim = int(MODEL.get("feature_dim", 0))
-        return jsonify({"success": True, "message": "modelo recarregado"})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"status": "erro", "mensagem": str(e)}
+    
+    finally:
+        # Limpa o arquivo temporário para não encher o disco
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT, threaded=True)
+    # Roda o servidor localmente na porta 8000
+    uvicorn.run(app, host="0.0.0.0", port=8000)
