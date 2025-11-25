@@ -1,30 +1,22 @@
-# Imagem base com Python
-FROM python:3.13-slim
+FROM python:3.11-slim
 
-# Instalar dependências do sistema (Tesseract + poppler para pdfplumber)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        tesseract-ocr \
-        tesseract-ocr-por \
-        poppler-utils \
-        libsm6 libxext6 libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-por \
+    poppler-utils \
+    && apt-get clean
 
-# Definir diretório de trabalho
+# Criar diretório de trabalho
 WORKDIR /app
 
-# Copiar arquivos do projeto
+# Copiar requisitos e instalar
 COPY requirements.txt .
-COPY api.py .
-
-# Instalar dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Variável para pytesseract encontrar o executável
-ENV TESSDATA_PREFIX=/usr/share/tesseract-ocr/4.00/tessdata/
+# Copiar sua aplicação
+COPY . .
 
-# Expor porta
+# Expor porta e rodar Flask
 EXPOSE 5000
-
-# Comando para rodar a API
 CMD ["python", "api.py"]
