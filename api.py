@@ -3,36 +3,34 @@ import re
 import tempfile
 import traceback
 import pickle
-import json
 import time
 import gc
-
 from flask import Flask, request, jsonify
 from werkzeug.utils import secure_filename
 
 import numpy as np
-from scipy.sparse import hstack, csr_matrix, issparse
+from scipy.sparse import hstack, csr_matrix
 
-# text extraction libs
+# text extraction
 import pdfplumber
 import docx
 from PIL import Image, ImageEnhance
 import pytesseract
 
-# Config
-MODEL_PATH = "modelo_unificado.pkl"   # coloque aqui seu pickle gerado
+# CONFIG
+MODEL_PATH = "modelo_unificado.pkl"   # coloque seu pickle aqui
 PORT = int(os.environ.get("PORT", 5000))
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
-# Tesseract: ajusta automaticamente entre Windows/Linux
+# Tesseract path (ajusta entre Windows / Linux automaticamente)
 TESSERACT_WIN = r"C:\Users\Usuario\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 TESSERACT_LINUX = "/usr/bin/tesseract"
 pytesseract.pytesseract.tesseract_cmd = TESSERACT_WIN if os.name == "nt" else TESSERACT_LINUX
 
 app = Flask(__name__)
 
-# ----------------- util imagem / ocr -----------------
-def melhorar_imagem_para_ocr(img: Image.Image) -> Image.Image:
+# ----------------- helpers OCR / extraction -----------------
+def melhorar_imagem_para_ocr(img):
     try:
         img = img.convert("L")
         enhancer = ImageEnhance.Contrast(img); img = enhancer.enhance(1.8)
@@ -41,7 +39,7 @@ def melhorar_imagem_para_ocr(img: Image.Image) -> Image.Image:
         pass
     return img
 
-def extrair_texto_imagem(path: str) -> str:
+def extrair_texto_imagem(path):
     try:
         img = Image.open(path)
         img = melhorar_imagem_para_ocr(img)
@@ -52,7 +50,8 @@ def extrair_texto_imagem(path: str) -> str:
         traceback.print_exc()
         return ""
 
-def extrair_texto_pdf(path: str) -> str:
+def extrair_texto_pdf(path):
+    # tenta texto digital
     try:
         with pdfplumber.open(path) as pdf:
             paginas = [p.extract_text() or "" for p in pdf.pages]
@@ -61,8 +60,7 @@ def extrair_texto_pdf(path: str) -> str:
                 return texto
     except Exception:
         traceback.print_exc()
-
-    # fallback simples: tenta o OCR nas primeiras 2 páginas se pdf2image disponível
+    # fallback OCR via pdf2image (se disponível)
     try:
         from pdf2image import convert_from_path
         images = convert_from_path(path, dpi=200, first_page=1, last_page=2)
@@ -72,26 +70,25 @@ def extrair_texto_pdf(path: str) -> str:
             partes.append(pytesseract.image_to_string(im, lang="por"))
         return "\n".join(partes).strip()
     except Exception:
-        # se não houver pdf2image ou falhar, retorna ""
         return ""
 
-def extrair_texto_docx(path: str) -> str:
+def extrair_texto_docx(path):
     try:
         doc = docx.Document(path)
-        return "\n".join([p.text for p in doc.paragraphs])
+        return "\n".join(p.text for p in doc.paragraphs)
     except Exception:
         traceback.print_exc()
         return ""
 
-def extrair_texto_txt(path: str) -> str:
+def extrair_texto_txt(path):
     try:
-        with open(path, encoding="utf-8", errors="ignore") as f:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
             return f.read()
     except Exception:
         traceback.print_exc()
         return ""
 
-def extrair_texto_arquivo(path: str) -> str:
+def extrair_texto_arquivo(path):
     ext = os.path.splitext(path)[1].lower()
     if ext in {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}:
         return extrair_texto_imagem(path)
@@ -103,7 +100,7 @@ def extrair_texto_arquivo(path: str) -> str:
         return extrair_texto_txt(path)
     return ""
 
-# ----------------- limpeza de texto leve -----------------
+# ----------------- limpeza simples -----------------
 RE_EMAIL = re.compile(r"\S+@\S+")
 RE_NUM = re.compile(r"\d+")
 RE_CARACT = re.compile(r"[^a-zá-úçâêîôûãõ0-9\s]")
@@ -113,18 +110,17 @@ def limpar_texto(texto: str) -> str:
     t = RE_EMAIL.sub(" ", t)
     t = RE_NUM.sub(" ", t)
     t = RE_CARACT.sub(" ", t)
-    # normaliza espaços
     t = " ".join(t.split())
     return t
 
 # ----------------- carregar modelo -----------------
 if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Arquivo de modelo não encontrado: {MODEL_PATH}")
+    raise FileNotFoundError(f"Modelo não encontrado: {MODEL_PATH}")
 
 with open(MODEL_PATH, "rb") as f:
     MODEL = pickle.load(f)
 
-# extrai componentes (nomes conforme seu treino)
+# extrai componentes treinados
 clf = MODEL.get("clf")
 wv = MODEL.get("word_vectorizer")
 cv = MODEL.get("char_vectorizer")
@@ -135,9 +131,8 @@ le = MODEL.get("label_encoder")
 palavras_chave = MODEL.get("palavras_chave_dict", {})
 feature_dim = int(MODEL.get("feature_dim", 0))
 
-# ---------- helpers para features e predição ----------
+# ----------------- montagem de features (MUST match treino) -----------------
 def ensure_feature_dim(X, expected_dim):
-    """Pad (com zeros) ou trunc columns para expected_dim. X é sparse."""
     if expected_dim is None or expected_dim == 0:
         return X
     if X.shape[1] == expected_dim:
@@ -146,73 +141,80 @@ def ensure_feature_dim(X, expected_dim):
         n_extra = expected_dim - X.shape[1]
         zeros = csr_matrix((X.shape[0], n_extra))
         return hstack([X, zeros]).tocsr()
-    # truncar
+    # truncar colunas extras (mantém primeiras expected_dim)
     return X[:, :expected_dim]
 
-def normalize_probs(probs):
-    """Retorna dict class_name -> prob. Usa label_encoder quando possível."""
-    # probs correspondem à ordem de classes do clf (clf.classes_) ou 0..n-1
-    try:
-        if hasattr(clf, "classes_") and clf.classes_ is not None:
-            model_classes = list(clf.classes_)
-            # se classes_ são índices numéricos (0..n-1), mapeia via label encoder
-            if le is not None:
-                try:
-                    # converter model_classes (p.ex [0,1,2]) para labels
-                    model_classes_int = [int(x) for x in model_classes]
-                    human = list(le.inverse_transform(model_classes_int))
-                    return {lab: float(p) for lab, p in zip(human, probs)}
-                except Exception:
-                    # fallback: usar str(classes_)
-                    return {str(c): float(p) for c, p in zip(model_classes, probs)}
-            else:
-                return {str(c): float(p) for c, p in zip(model_classes, probs)}
-        else:
-            # fallback: usar label_encoder.classes_ if exists and length matches
-            if le is not None and len(le.classes_) == len(probs):
-                return {lab: float(p) for lab, p in zip(le.classes_, probs)}
-            return {f"class_{i}": float(p) for i, p in enumerate(probs)}
-    except Exception:
-        return {f"class_{i}": float(p) for i, p in enumerate(probs)}
-
-def predict_with_text(texto: str):
-    text_clean = limpar_texto(texto)
-    if not text_clean.strip():
-        return None
-    # transformar
-    Xw = wv.transform([text_clean]) if wv is not None else csr_matrix((1,0))
-    Xc = cv.transform([text_clean]) if cv is not None else csr_matrix((1,0))
-    Xcu = vect_cursos.transform([text_clean]) if vect_cursos is not None else csr_matrix((1,0))
-    Xex = vect_exp.transform([text_clean]) if vect_exp is not None else csr_matrix((1,0))
+def montar_features_na_ordem_do_treino(texto_limpo):
+    """
+    Ordem do treino (MUITO IMPORTANTE):
+     1) word_vectorizer (max_features=5000)
+     2) char_vectorizer (max_features=3000)
+     3) vect_cursos (max_features=1000)
+     4) vect_exp (max_features=1500)
+     5) tempo_dummy (1)
+    """
+    # transforma cada bloco (usa csr sparse)
+    Xw = wv.transform([texto_limpo]) if wv is not None else csr_matrix((1,0))
+    Xc = cv.transform([texto_limpo]) if cv is not None else csr_matrix((1,0))
+    Xcu = vect_cursos.transform([texto_limpo]) if vect_cursos is not None else csr_matrix((1,0))
+    Xex = vect_exp.transform([texto_limpo]) if vect_exp is not None else csr_matrix((1,0))
     Xtime = csr_matrix(np.zeros((1,1)))
-    Xfull = hstack([Xw, Xc, Xcu, Xex, Xtime])
-    # aplicar selector se houver
+    X_full = hstack([Xw, Xc, Xcu, Xex, Xtime])
+    return X_full
+
+def predict_with_text(texto):
+    texto_limpo = limpar_texto(texto)
+    if not texto_limpo or len(texto_limpo.split()) < 3:
+        return None
+    # montar features com mesma ordem do treino
+    X_full = montar_features_na_ordem_do_treino(texto_limpo)
+    # aplicar selector (espera N_features == somatorio dos max_features + 1)
     try:
-        Xsel = selector.transform(Xfull) if selector is not None else Xfull
+        X_sel = selector.transform(X_full) if selector is not None else X_full
     except Exception:
-        # tentativa segura: sem selector
-        Xsel = Xfull
-    # garantir dimensões esperadas
+        # se transform falhar por shape mismatch, tenta garantir pad/trunc antes de aplicar selector
+        X_full_fixed = ensure_feature_dim(X_full, (wv.transform(["a"]).shape[1] if wv is not None else 0) +
+                                                (cv.transform(["a"]).shape[1] if cv is not None else 0) +
+                                                (vect_cursos.transform(["a"]).shape[1] if vect_cursos is not None else 0) +
+                                                (vect_exp.transform(["a"]).shape[1] if vect_exp is not None else 0) + 1)
+        try:
+            X_sel = selector.transform(X_full_fixed) if selector is not None else X_full_fixed
+        except Exception:
+            # fallback: use X_full (não ideal)
+            X_sel = X_full
+    # garantir dimensão final que o clf espera (usando feature_dim salvo — este é o número de colunas depois do selector)
     if feature_dim:
-        Xsel = ensure_feature_dim(Xsel, feature_dim)
+        X_sel = ensure_feature_dim(X_sel, feature_dim)
     # prever
-    probs = clf.predict_proba(Xsel)[0]
+    probs = clf.predict_proba(X_sel)[0]
     pred_pos = int(np.argmax(probs))
-    # mapear para label humano via clf.classes_ -> le.inverse_transform
+    # mapear a label corretamente (treinamos usando label_encoder -> y_enc)
     try:
+        # Se clf.classes_ é um array de ints (0..n-1), mapeia via label encoder
         if hasattr(clf, "classes_") and clf.classes_ is not None:
-            clf_classes = np.array(clf.classes_, dtype=int)
-            mapped = int(clf_classes[pred_pos])
-            label = le.inverse_transform([mapped])[0]
+            try:
+                arr = np.array(clf.classes_, dtype=int)
+                mapped = int(arr[pred_pos])
+                label = le.inverse_transform([mapped])[0]
+            except Exception:
+                # fallback direto via label encoder index
+                label = le.inverse_transform([pred_pos])[0]
         else:
             label = le.inverse_transform([pred_pos])[0]
     except Exception:
-        # fallback: usar ordem de le.classes_
-        try:
-            label = le.inverse_transform([pred_pos])[0]
-        except Exception:
-            label = str(pred_pos)
-    prob_map = normalize_probs(probs)
+        # fallback simples
+        label = str(pred_pos)
+    # probs map
+    prob_map = {}
+    try:
+        # se label encoder tem classe igual ao tamanho dos probs, use-a
+        if le is not None and len(le.classes_) == len(probs):
+            prob_map = {lab: float(p) for lab, p in zip(le.classes_, probs)}
+        else:
+            # fallback usar clf.classes_
+            prob_map = {str(c): float(p) for c, p in zip(getattr(clf, "classes_", list(range(len(probs)))), probs)}
+    except Exception:
+        prob_map = {f"class_{i}": float(p) for i, p in enumerate(probs)}
     top = float(probs[pred_pos]) if len(probs) > 0 else 0.0
     second = float(sorted(probs, reverse=True)[1]) if len(probs) > 1 else 0.0
     return {"pred_label": label, "top_prob": top, "gap": top-second, "probs": prob_map}
@@ -244,7 +246,6 @@ def predict_endpoint():
         subject = request.form.get("subject") or request.form.get("assunto") or ""
         body = request.form.get("body") or request.form.get("corpo") or ""
 
-        # save temporário
         with tempfile.TemporaryDirectory(prefix="cv_api_") as tmpdir:
             tmp_path = os.path.join(tmpdir, filename)
             uploaded.save(tmp_path)
@@ -273,7 +274,6 @@ def predict_endpoint():
                 }
             }
 
-            # cleanup e gc
             try:
                 os.remove(tmp_path)
             except Exception:
@@ -285,7 +285,6 @@ def predict_endpoint():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-# rota opcional para recarregar modelo (útil em deploy)
 @app.route("/admin/reload-model", methods=["POST"])
 def reload_model():
     try:
@@ -307,5 +306,4 @@ def reload_model():
         return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
-    # threaded para aceitar múltiplas requisições simultâneas
     app.run(host="0.0.0.0", port=PORT, threaded=True)
