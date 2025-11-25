@@ -143,8 +143,20 @@ PREPROCESSOR = None
 ENCODER = None
 ENGINEER = None
 
-@app.on_event("startup")
-def load_brain():
+    @app.on_event("startup")
+    def load_brain():
+    """Carrega o cérebro na memória quando a API liga."""
+    global MODEL, PREPROCESSOR, ENCODER, ENGINEER
+    
+    # --- INICIO DA CORREÇÃO ---
+    import sys
+    # Truque: Faz o Pickle achar que este arquivo (api.py) é o criador original (__main__)
+    sys.modules['__main__'] = sys.modules[__name__]
+    # --- FIM DA CORREÇÃO ---
+
+    pickle_path = "cerebro_final.pkl" 
+    
+    if os.path.exists(pickle_path):
     """Carrega o cérebro na memória quando a API liga."""
     global MODEL, PREPROCESSOR, ENCODER, ENGINEER
     
