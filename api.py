@@ -22,7 +22,7 @@ import nltk
 # CONFIGURAÇÕES
 # -------------------------
 MODEL_UNIFICADO_PATH = "modelo_unificado.pkl"
-MODEL_HASHING_PATH = "modelo_hashing_foco.pkl"
+MODEL_HASHING_PATH = "modelo_triagem.pkl"
 PORT = int(os.environ.get("PORT", 5000))
 
 # Tesseract: Windows (default) or Linux path
