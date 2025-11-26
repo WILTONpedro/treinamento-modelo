@@ -156,6 +156,8 @@ def analisar_com_gemini(texto_curriculo):
 
     16. **MECANICA INDUSTRIAL**: Aqui não são só colocados currículos de mecânicos, mas de tudo que envolve essa área, como eletricistas
 
+    17. **QUALIDADE**: A vaga aqui pode ser alocada o pessoal que tenha experiência ou tenha feito alguma especialização mais laboral, como biomedicina e áreas da saúde.
+
     TEXTO DO CURRÍCULO:
     {texto_curriculo[:9000]}
 
