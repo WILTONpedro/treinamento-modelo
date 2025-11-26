@@ -18,7 +18,6 @@ import pytesseract
 
 # --- IA (GOOGLE GEMINI) ---
 import google.generativeai as genai
-import requests # Para chamar o Google
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÃO E LOGS
@@ -31,9 +30,7 @@ logger = logging.getLogger("uvicorn")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
-WEBHOOK_GOOGLE = "https://script.google.com/macros/s/AKfycbwTnLzBaJW8ns7n8crh78bJkKH5tIAFy4VavKkCbIO8lC3s7y2eU6136wqi-rxWTz_u/exec"
-
-# ⚠️ ALTERAÇÃO AQUI: Atualizado para a versão que apareceu no seu Log
+# Modelo atualizado
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
 # LISTA EXATA DE PASTAS DO DRIVE
@@ -105,34 +102,6 @@ def extract_text_from_memory(file_bytes, filename):
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
         logger.error(f"Erro leitura arquivo ({filename}): {e}")
-        setor = analise.get("setor", "OUTROS")
-        
-        # --- NOVO: REPASSE PARA O GOOGLE DRIVE ---
-        link_drive = None
-        try:
-            # Se o request veio da extensão pedindo para salvar
-            # Extraímos o nome do arquivo para usar como nome do candidato (limpeza básica)
-            nome_candidato = file.filename.replace("perfil_linkedin_auto.txt", "Candidato").replace(".txt", "")
-            
-            # Envia para o Webhook do Google
-            dados_google = {
-                "nome": nome_candidato,
-                "texto": raw_text,
-                "setor": setor,
-                "confianca": f"{conf_val:.2%}",
-                "url_perfil": "Via Extensão Chrome" 
-            }
-            
-            # Envia POST para o Google Apps Script
-            requests.post(WEBHOOK_GOOGLE, json=dados_google)
-            logger.info("✅ Enviado para o Google Drive com sucesso!")
-            
-        except Exception as eg:
-            logger.error(f"Erro ao salvar no Drive: {eg}")
-        # -----------------------------------------
-
-        return {
-            "arquivo": file.filename,
     return text
 
 # ==============================================================================
@@ -201,7 +170,7 @@ def analisar_com_gemini(texto_curriculo):
         "setor": "NOME_DA_PASTA_ESCOLHIDA",
         "confianca": "ALTA",
         "anos_experiencia": 0,
-        "resumo": "Explique em 1 frase por que escolheu essa pasta baseado nas regras acima"
+        "resumo": "Explique em 1 frase por que escolheu essa pasta"
     }}
     """
 
