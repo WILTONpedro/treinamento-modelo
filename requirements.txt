@@ -11,4 +11,4 @@ python-docx
 pytesseract
 Pillow
 nltk
-google-generativeai
+google-generativeai>=0.7.2
