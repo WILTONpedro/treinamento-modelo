@@ -24,7 +24,7 @@ import google.generativeai as genai
 # ==============================================================================
 
 # Tenta pegar a chave do Render, senão usa a local (para testes)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDhoW9xcIr2Rr6hnhWfWr09wr4BfP_JLLw")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyA1NfTrf8VJxLNYJDB6bG10cx8hw4ydBRk")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # SUA LISTA EXATA DE PASTAS NO DRIVE
