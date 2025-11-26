@@ -16,18 +16,25 @@ import docx
 from PIL import Image
 import pytesseract
 
-# --- IA ---
+# --- IA (GOOGLE GEMINI) ---
 import google.generativeai as genai
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO
+# ⚙️ CONFIGURAÇÃO E LOGS
 # ==============================================================================
 
-# Tenta pegar a chave do Render, senão usa a local (para testes)
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyA1NfTrf8VJxLNYJDB6bG10cx8hw4ydBRk")
+# Configura logs para aparecerem detalhados no painel do Render
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("uvicorn")
+
+# Tenta pegar a chave do Render. Se não achar, usa a string vazia (vai dar erro no log se tentar usar)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# SUA LISTA EXATA DE PASTAS NO DRIVE
+# Nome do modelo oficial e estável
+NOME_MODELO_GEMINI = "gemini-1.5-flash"
+
+# LISTA EXATA DE PASTAS DO DRIVE
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO",
     "ALMOXARIFADO",
@@ -60,10 +67,10 @@ CATEGORIAS_DISPONIVEIS = [
     "MERCHANDISING",
     "MOTORISTA",
     "PCD",
-    "PROMOTOR DE VENDAS",
     "PCP",
     "PRODUÇÃO",
     "PROJETOS",
+    "PROMOTOR DE VENDAS",
     "QUALIDADE",
     "RECURSOS HUMANOS",
     "SUPERVISOR DE MERCHANDISING",
@@ -73,16 +80,15 @@ CATEGORIAS_DISPONIVEIS = [
     "OUTROS"
 ]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
-
 # ==============================================================================
-# 1. LEITURA DE ARQUIVOS (Em memória RAM)
+# 1. LEITURA DE ARQUIVOS (MEMÓRIA RAM)
 # ==============================================================================
 def extract_text_from_memory(file_bytes, filename):
+    """Extrai texto de PDF, DOCX, TXT ou Imagens diretamente da memória."""
     ext = os.path.splitext(filename)[1].lower()
     text = ""
     file_stream = io.BytesIO(file_bytes)
+    
     try:
         if ext == ".pdf":
             with pdfplumber.open(file_stream) as pdf:
@@ -96,15 +102,16 @@ def extract_text_from_memory(file_bytes, filename):
         elif ext == ".txt":
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        logger.error(f"Erro leitura: {e}")
+        logger.error(f"Erro leitura arquivo ({filename}): {e}")
     return text
 
 # ==============================================================================
 # 2. CÉREBRO (GEMINI COM REGRAS DE NEGÓCIO)
 # ==============================================================================
 def analisar_com_gemini(texto_curriculo):
+    # Validação básica de conteúdo
     if not texto_curriculo or len(texto_curriculo) < 20:
-        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente"}
+        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente/Arquivo vazio"}
 
     # --- O PROMPT REFINADO ---
     prompt = f"""
@@ -157,40 +164,88 @@ def analisar_com_gemini(texto_curriculo):
     """
 
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel(NOME_MODELO_GEMINI)
         response = model.generate_content(prompt)
+        # Limpeza do markdown json que o Gemini às vezes coloca
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
     except Exception as e:
-        logger.error(f"Erro Gemini: {e}")
+        logger.error(f"Erro na chamada do Gemini: {e}")
         return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
 
 # ==============================================================================
-# 3. API
+# 3. CICLO DE VIDA (DIAGNÓSTICO DE INICIALIZAÇÃO)
 # ==============================================================================
-app = FastAPI(title="API Triagem Inteligente")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Executa ao ligar a API. Faz diagnóstico dos modelos disponíveis."""
+    
+    logger.info("🚀 INICIANDO SERVIDOR... VERIFICANDO MODELOS GOOGLE...")
+    
+    try:
+        if not GEMINI_API_KEY:
+            logger.warning("⚠️ AVISO CRÍTICO: Variável GEMINI_API_KEY não encontrada!")
+        
+        # Lista modelos disponíveis para confirmar que a chave funciona e o modelo existe
+        modelos_disponiveis = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                modelos_disponiveis.append(m.name)
+                logger.info(f"   ✅ Modelo disponível: {m.name}")
+        
+        # Verifica se o modelo escolhido está na lista
+        target_model = f"models/{NOME_MODELO_GEMINI}"
+        if target_model in modelos_disponiveis:
+            logger.info(f"🎉 SUCESSO: O modelo '{NOME_MODELO_GEMINI}' foi encontrado e está pronto!")
+        else:
+            logger.warning(f"⚠️ ATENÇÃO: O modelo '{NOME_MODELO_GEMINI}' não apareceu na lista padrão. Pode dar erro 404.")
+            
+    except Exception as e:
+        logger.error(f"❌ ERRO AO LISTAR MODELOS (Verifique sua API KEY): {e}")
+
+    yield # A API roda aqui
+    logger.info("🛑 Desligando servidor...")
+
+# ==============================================================================
+# 4. APLICAÇÃO API
+# ==============================================================================
+
+app = FastAPI(title="API Triagem Inteligente", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # Validação de Tamanho (5MB)
+    # 1. Validação de Tamanho (Máx 5MB para não travar o Render Free)
     file.file.seek(0, 2)
-    if file.file.tell() > 5 * 1024 * 1024:
-        return {"status": "erro", "mensagem": "Arquivo > 5MB"}
+    tamanho = file.file.tell()
     file.file.seek(0)
+    
+    if tamanho > 5 * 1024 * 1024:
+        return {"status": "erro", "mensagem": "Arquivo muito grande (>5MB)"}
 
     try:
+        # 2. Leitura
         content = file.file.read()
         raw_text = extract_text_from_memory(content, file.filename)
         
-        # Análise IA
+        # 3. Análise IA
         analise = analisar_com_gemini(raw_text)
         
         setor = analise.get("setor", "OUTROS")
         
-        # Tratamento para o AppScript
+        # 4. Mapeamento de confiança para o AppScript entender
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
+        # Se a IA mandou algo diferente, tenta converter ou usa 50%
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
+
+        logger.info(f"Processado: {file.filename} -> {setor} ({analise.get('resumo')})")
 
         return {
             "arquivo": file.filename,
@@ -204,7 +259,7 @@ def triar_curriculo(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        logger.error(f"Erro fatal: {e}")
+        logger.error(f"Erro fatal no processamento: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
