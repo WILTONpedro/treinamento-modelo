@@ -158,6 +158,10 @@ def analisar_com_gemini(texto_curriculo):
 
     17. **QUALIDADE**: A vaga aqui pode ser alocada o pessoal que tenha experiência ou tenha feito alguma especialização mais laboral, como biomedicina e áreas da saúde.
 
+    18. **ANTI-ESPELHO (O PRÓPRIO ANÚNCIO)**: 
+        - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
+        - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
+
     TEXTO DO CURRÍCULO:
     {texto_curriculo[:9000]}
 
