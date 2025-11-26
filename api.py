@@ -1,15 +1,11 @@
 import os
+import io
+import json
+import logging
 import re
-import pickle
-import io  # <--- Para manipular arquivos na memória
-import sys
-import numpy as np
-import pandas as pd
-from datetime import datetime
-import warnings
-from contextlib import asynccontextmanager # <--- Para o novo ciclo de vida
+from contextlib import asynccontextmanager
 
-# --- SERVER & API ---
+# --- SERVER ---
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -19,108 +15,79 @@ import pdfplumber
 import docx
 from PIL import Image
 import pytesseract
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import RSLPStemmer
 
-# --- MACHINE LEARNING ---
-from sklearn.base import BaseEstimator, TransformerMixin
-from xgboost import XGBClassifier
-
-warnings.filterwarnings("ignore")
-
-# Configuração NLTK
-try:
-    nltk.data.find('corpora/stopwords')
-except LookupError:
-    nltk.download("stopwords", quiet=True)
-    nltk.download("rslp", quiet=True)
-
-STEMMER = RSLPStemmer()
-STOPWORDS = set(stopwords.words("portuguese"))
+# --- IA ---
+import google.generativeai as genai
 
 # ==============================================================================
-# 1. CLASSES (CÉREBRO)
+# ⚙️ CONFIGURAÇÃO
 # ==============================================================================
-# Mantivemos idêntico para não quebrar o pickle
 
-class TextCleaner:
-    @staticmethod
-    def clean(text, stem=True):
-        if not isinstance(text, str): return ""
-        text = text.lower()
-        text = re.sub(r'\S*@\S*\s?', '', text) 
-        text = re.sub(r'http\S+', '', text)    
-        text = re.sub(r'[^\w\s]', ' ', text)   
-        text = re.sub(r'\d+', ' ', text)       
-        tokens = [t for t in text.split() if t not in STOPWORDS and len(t) > 2]
-        if stem:
-            tokens = [STEMMER.stem(t) for t in tokens]
-        return " ".join(tokens)
+# Tenta pegar a chave do Render, senão usa a local (para testes)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDhoW9xcIr2Rr6hnhWfWr09wr4BfP_JLLwL")
+genai.configure(api_key=GEMINI_API_KEY)
 
-class FolderIntelligence:
-    pass 
+# SUA LISTA EXATA DE PASTAS NO DRIVE
+CATEGORIAS_DISPONIVEIS = [
+    "ADMINISTRITIVO",
+    "ALMOXARIFADO",
+    "AREA INDUSTRIAL",
+    "COMERCIAL",
+    "COMERCIO EXTERIOR",
+    "COMPRAS",
+    "CONTABILIDADE",
+    "COORDENADOR DE EXPEDIÇÃO",
+    "COORDENADOR DE MERCHANDISING",
+    "EMPILHADEIRA",
+    "EVENTOS",
+    "FINANCEIRO",
+    "GERENTE COMERCIAL",
+    "GERENTE FINANCEIRO",
+    "GERENTE GRANDES CONTAS",
+    "GERENTE LOGISTICA",
+    "GERENTE MARKETING",
+    "GERENTE PRODUÇÃO",
+    "GERENTE QUALIDADE",
+    "GERENTE DE RH",
+    "GERENTE VENDAS",
+    "HIGIENIZAÇÃO",
+    "JOVEM APRENDIZ",
+    "KEY ACCOUNT",
+    "LIDER DE PRODUÇÃO",
+    "LOGÍSTICA",
+    "MARKETING",
+    "MECANICA INDUSTRIAL",
+    "MERCHANDISING",
+    "MOTORISTA",
+    "PCD",
+    "PROMOTOR DE VENDAS",
+    "PCP",
+    "PRODUÇÃO",
+    "PROJETOS",
+    "QUALIDADE",
+    "RECURSOS HUMANOS",
+    "SUPERVISOR DE MERCHANDISING",
+    "TI",
+    "VENDAS",
+    "VIGIA",
+    "OUTROS"
+]
 
-class FeatureEngineer(BaseEstimator, TransformerMixin):
-    def fit(self, X, y=None): return self
-    def transform(self, X):
-        df = pd.DataFrame({'texto': X})
-        df['tempo_carreira'] = df['texto'].apply(self._extract_career_years)
-        df['last_exp_text'] = df['texto'].apply(self._extract_last_exp).apply(lambda x: TextCleaner.clean(x))
-        df['cursos_text'] = df['texto'].apply(self._extract_courses).apply(lambda x: TextCleaner.clean(x))
-        return df[['tempo_carreira', 'last_exp_text', 'cursos_text']]
-
-    def _extract_career_years(self, text):
-        matches = re.findall(r"(\d{4})\s*(?:-|at[ée]|presente|atual)", text, re.IGNORECASE)
-        if not matches: return 0
-        try:
-            years = sorted([int(m) for m in matches if 1980 < int(m) <= datetime.now().year])
-            if len(years) >= 2: return min(years[-1] - years[0], 40)
-        except: pass
-        return 0
-
-    def _extract_last_exp(self, text):
-        split = re.split(r"experi[êe]ncia|profissional", text, flags=re.IGNORECASE)
-        return split[1][:800] if len(split) > 1 else ""
-
-    def _extract_courses(self, text):
-        matches = re.findall(r".{0,40}(?:curso|certificação|formação).{0,80}", text, flags=re.IGNORECASE)
-        return " ".join(matches)
-
-class SpreadsheetEnforcer(BaseEstimator, TransformerMixin):
-    def __init__(self, excel_path=None):
-        self.excel_path = excel_path
-        self.keywords_map = {} 
-    def fit(self, X, y=None): return self
-    def transform(self, X):
-        if not self.keywords_map:
-            return pd.DataFrame(np.zeros((len(X), 1)), columns=['dummy_score'])
-        data = []
-        for text in X:
-            text_lower = text.lower()
-            row = {}
-            for setor, palavras in self.keywords_map.items():
-                score = sum(1 for p in palavras if p in text_lower)
-                row[f'score_manual_{setor}'] = score
-            data.append(row)
-        return pd.DataFrame(data)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# 2. LEITURA DE ARQUIVOS (Versão em Memória - Sem Disco)
+# 1. LEITURA DE ARQUIVOS (Em memória RAM)
 # ==============================================================================
 def extract_text_from_memory(file_bytes, filename):
-    """Lê o arquivo direto da memória RAM, sem salvar no disco."""
     ext = os.path.splitext(filename)[1].lower()
     text = ""
-    
-    # Cria um objeto de arquivo na memória
     file_stream = io.BytesIO(file_bytes)
-    
     try:
         if ext == ".pdf":
             with pdfplumber.open(file_stream) as pdf:
                 text = " ".join([p.extract_text() or "" for p in pdf.pages])
-        elif ext in [".docx", ".doc"]:
+        elif ext == ".docx":
             doc = docx.Document(file_stream)
             text = " ".join([p.text for p in doc.paragraphs])
         elif ext in [".jpg", ".png", ".jpeg"]:
@@ -129,112 +96,115 @@ def extract_text_from_memory(file_bytes, filename):
         elif ext == ".txt":
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        print(f"Erro leitura memória: {e}")
+        logger.error(f"Erro leitura: {e}")
     return text
 
 # ==============================================================================
-# 3. CONFIGURAÇÃO DA API (Ciclo de Vida Moderno)
+# 2. CÉREBRO (GEMINI COM REGRAS DE NEGÓCIO)
 # ==============================================================================
+def analisar_com_gemini(texto_curriculo):
+    if not texto_curriculo or len(texto_curriculo) < 20:
+        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente"}
 
-# Dicionário global para guardar o modelo
-ml_models = {}
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Executa ao ligar e desligar a API."""
-    # --- 1. Carregar Modelo ---
-    sys.modules['__main__'] = sys.modules[__name__] # Correção do Pickle
-    pickle_path = "cerebro_final.pkl"
+    # --- O PROMPT REFINADO ---
+    prompt = f"""
+    Você é um Recrutador Sênior Especialista da empresa Baly. Sua missão é triar currículos para as pastas corretas.
     
-    if os.path.exists(pickle_path):
-        try:
-            with open(pickle_path, "rb") as f:
-                artifacts = pickle.load(f)
-            ml_models['model'] = artifacts['model']
-            ml_models['preprocessor'] = artifacts['preprocessor']
-            ml_models['encoder'] = artifacts['encoder']
-            ml_models['engineer'] = FeatureEngineer() # Instancia limpa
-            print("✅ CÉREBRO CARREGADO NA MEMÓRIA!")
-        except Exception as e:
-            print(f"❌ Erro ao carregar pickle: {e}")
-    else:
-        print("❌ Pickle não encontrado.")
+    LISTA DE PASTAS DISPONÍVEIS (Escolha apenas uma):
+    {json.dumps(CATEGORIAS_DISPONIVEIS)}
+
+    ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
     
-    yield # A API roda aqui
+    1. **EMPILHADEIRA**: O candidato SÓ vai para esta pasta se citar explicitamente "Curso de Empilhadeira", "Operador de Empilhadeira" ou "NR-11". Se tiver experiência em logística mas não tiver o curso, jogue em "LOGÍSTICA" ou "ALMOXARIFADO".
     
-    # --- 2. Limpeza (ao desligar) ---
-    ml_models.clear()
+    2. **MOTORISTA**: Exige CNH categorias C, D ou E (Caminhão/Carreta). Se tiver apenas CNH B ou Moto, NÃO coloque aqui (jogue em LOGÍSTICA ou OUTROS).
+    
+    3. **VIGIA**: Obrigatório ter "Curso de Vigilante", "Reciclagem em dia" ou experiência comprovada em segurança patrimonial.
+    
+    4. **COMERCIO EXTERIOR**: O candidato deve ter experiência com Importação/Exportação, trâmites aduaneiros ou vendas internacionais.
+    
+    5. **PCP**: Significa "Planejamento e Controle da Produção". Se o currículo falar de planejar fábrica, cronograma de produção ou ordens de serviço, é aqui.
+    
+    6. **HIERARQUIA (GERENTES vs OPERACIONAIS)**:
+       - Se o cargo for de Liderança Estratégica (Gerente, Head, Diretor), use as pastas que começam com "GERENTE ...".
+       - Exemplo: Um "Gerente de Marketing" vai para "GERENTE MARKETING". Um "Analista de Marketing" vai para "MARKETING".
+       - Exemplo: "Coordenador" e "Supervisor" têm pastas específicas na lista (ex: SUPERVISOR DE MERCHANDISING). Se não tiver pasta específica de coordenação, jogue na área geral.
 
-app = FastAPI(title="API Triagem PRO", lifespan=lifespan)
+    7. **PROMOTOR DE VENDAS**: Só será colocado nesta pasta caso a pessoa já tenha experiência como promotor antes.
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    8. **LIXO/INVALIDO**: Se o arquivo for foto de pessoa, print de tela, boleto ou não for um currículo, responda "ARQUIVO_INVALIDO".
 
-# ==============================================================================
-# 4. ROTA DE TRIAGEM (Sem 'async' para não travar CPU)
-# ==============================================================================
+    9. **ADMINISTRATIVO**: Essa pasta é para aqueles currículos de pessoas jovens que sejam acima dos 18 e que não tenham nenhuma experiência, mas tenham cursos de áreas importantes.
 
-@app.post("/triagem")
-def triar_curriculo(file: UploadFile = File(...)): # Tirei o 'async' propositalmente
+    10. **PCD**: Só será enviado para esta pasta caso no currículo enviado esteja algo relacionado a pessoa ser PCD e que tenha laudo medico que comprove.
+
+    11. **JOVEM APRENDIZ**: Só será enviado para esta pasta currículos de pessoas menores de 18 anos, todas que forem menos de 18 OBRIGATORIAMENTE será jogado aqui.
+
+    12. **AREA INDUSTRIAL**: Essa pasta são os Técnicos em segurança do trabalho, então técnicos e engenheiros de segurança do trabalho é aqui.
+
+    13. **MECANICA INDUSTRIAL**: Aqui não são só colocados currículos de mecânicos, mas de tudo que envolve essa área, como eletricistas
+
+    TEXTO DO CURRÍCULO:
+    {texto_curriculo[:9000]}
+
+    Responda APENAS um JSON neste formato:
+    {{
+        "setor": "NOME_DA_PASTA_ESCOLHIDA",
+        "confianca": "ALTA",
+        "anos_experiencia": 0,
+        "resumo": "Explique em 1 frase por que escolheu essa pasta baseado nas regras acima"
+    }}
     """
-    Processa o currículo. 
-    Nota: Função síncrona (def) roda em ThreadPool para não bloquear o servidor.
-    """
-    
-    if 'model' not in ml_models:
-        raise HTTPException(status_code=500, detail="Cérebro não está ativo.")
 
     try:
-        # 1. Lê bytes da memória (rápido)
-        content = file.file.read()
-        
-        # 2. Extrai texto sem criar arquivo temp
-        raw_text = extract_text_from_memory(content, file.filename)
-        clean_text = TextCleaner.clean(raw_text)
-        
-        if len(raw_text) < 10:
-             return {"status": "erro", "mensagem": "Arquivo ilegível ou vazio."}
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt)
+        clean_json = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_json)
+    except Exception as e:
+        logger.error(f"Erro Gemini: {e}")
+        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
 
-        # 3. Engenharia de Features
-        engineer = ml_models['engineer']
-        features_df = engineer.transform([raw_text])
+# ==============================================================================
+# 3. API
+# ==============================================================================
+app = FastAPI(title="API Triagem Inteligente")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+@app.post("/triagem")
+def triar_curriculo(file: UploadFile = File(...)):
+    # Validação de Tamanho (5MB)
+    file.file.seek(0, 2)
+    if file.file.tell() > 5 * 1024 * 1024:
+        return {"status": "erro", "mensagem": "Arquivo > 5MB"}
+    file.file.seek(0)
+
+    try:
+        content = file.file.read()
+        raw_text = extract_text_from_memory(content, file.filename)
         
-        # 4. DataFrame
-        input_df = pd.DataFrame({
-            'main_text': [clean_text],          
-            'raw_text_for_excel': [raw_text], 
-            'last_exp': features_df['last_exp_text'],
-            'courses': features_df['cursos_text'],
-            'career_time': features_df['tempo_carreira']
-        })
+        # Análise IA
+        analise = analisar_com_gemini(raw_text)
         
-        # 5. Predição
-        preprocessor = ml_models['preprocessor']
-        model = ml_models['model']
-        encoder = ml_models['encoder']
+        setor = analise.get("setor", "OUTROS")
         
-        X_input = preprocessor.transform(input_df)
-        probs = model.predict_proba(X_input)[0]
-        pred_idx = np.argmax(probs)
-        
-        setor = encoder.inverse_transform([pred_idx])[0]
-        confianca = float(probs[pred_idx])
-        
+        # Tratamento para o AppScript
+        conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
+        conf_val = conf_map.get(analise.get("confianca"), 0.5)
+
         return {
             "arquivo": file.filename,
             "setor_sugerido": setor,
-            "confianca": f"{confianca:.2%}",
+            "confianca": f"{conf_val:.2%}",
             "detalhes": {
-                "tempo_estimado": int(features_df['tempo_carreira'][0]),
-                "tem_cursos": bool(features_df['cursos_text'][0])
+                "tempo_estimado": analise.get("anos_experiencia", 0),
+                "tem_cursos": True,
+                "motivo_rejeicao": analise.get("resumo")
             }
         }
 
     except Exception as e:
+        logger.error(f"Erro fatal: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
