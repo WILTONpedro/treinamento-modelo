@@ -23,16 +23,15 @@ import google.generativeai as genai
 # ⚙️ CONFIGURAÇÃO E LOGS
 # ==============================================================================
 
-# Configura logs para aparecerem detalhados no painel do Render
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("uvicorn")
 
-# Tenta pegar a chave do Render. Se não achar, usa a string vazia (vai dar erro no log se tentar usar)
+# Pega a chave do Render
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Nome do modelo oficial e estável
-NOME_MODELO_GEMINI = "gemini-1.5-flash"
+# ⚠️ ALTERAÇÃO AQUI: Atualizado para a versão que apareceu no seu Log
+NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
 # LISTA EXATA DE PASTAS DO DRIVE
 CATEGORIAS_DISPONIVEIS = [
@@ -166,7 +165,6 @@ def analisar_com_gemini(texto_curriculo):
     try:
         model = genai.GenerativeModel(NOME_MODELO_GEMINI)
         response = model.generate_content(prompt)
-        # Limpeza do markdown json que o Gemini às vezes coloca
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_json)
     except Exception as e:
@@ -242,7 +240,6 @@ def triar_curriculo(file: UploadFile = File(...)):
         
         # 4. Mapeamento de confiança para o AppScript entender
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
-        # Se a IA mandou algo diferente, tenta converter ou usa 50%
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
         logger.info(f"Processado: {file.filename} -> {setor} ({analise.get('resumo')})")
