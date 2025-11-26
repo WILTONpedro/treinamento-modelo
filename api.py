@@ -136,11 +136,11 @@ def analisar_com_gemini(texto_curriculo):
 
     9. **ADMINISTRATIVO**: Essa pasta é para aqueles currículos de pessoas jovens que sejam acima dos 18 e que não tenham nenhuma experiência, mas tenham cursos de áreas importantes.
 
-    10. **PCD**: Só será enviado para esta pasta caso no currículo enviado esteja algo relacionado a pessoa ser PCD e que tenha laudo medico que comprove.
+    10. **PCD**: Se o currículo mencionar explicitamente "PCD", "Deficiência", "CID" ou "Laudo Médico", jogue aqui.
 
-    11. **JOVEM APRENDIZ**: Só será enviado para esta pasta currículos de pessoas menores de 18 anos, todas que forem menos de 18 OBRIGATORIAMENTE será jogado aqui.
+    11. **JOVEM APRENDIZ (Prioridade Máxima)**: Se o candidato tiver MENOS de 18 anos (ex: 14, 15, 16, 17 anos), OBRIGATORIAMENTE jogue nesta pasta, independente da experiência.
 
-    12. **AREA INDUSTRIAL**: Essa pasta são os Técnicos em segurança do trabalho, então técnicos e engenheiros de segurança do trabalho é aqui.
+    12. **AREA INDUSTRIAL**: ATENÇÃO! Nesta empresa, esta pasta é EXCLUSIVA para "Técnico em Segurança do Trabalho", "Engenheiro de Segurança" ou "SESMT". Não jogue operadores de máquina aqui (jogue em PRODUÇÃO).
 
     13. **MECANICA INDUSTRIAL**: Aqui não são só colocados currículos de mecânicos, mas de tudo que envolve essa área, como eletricistas
 
