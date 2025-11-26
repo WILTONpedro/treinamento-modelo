@@ -1,11 +1,13 @@
 import os
 import re
 import pickle
-import shutil
+import io  # <--- Para manipular arquivos na memória
+import sys
 import numpy as np
 import pandas as pd
 from datetime import datetime
 import warnings
+from contextlib import asynccontextmanager # <--- Para o novo ciclo de vida
 
 # --- SERVER & API ---
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -21,13 +23,13 @@ import nltk
 from nltk.corpus import stopwords
 from nltk.stem import RSLPStemmer
 
-# --- MACHINE LEARNING (Necessário para carregar o pickle) ---
+# --- MACHINE LEARNING ---
 from sklearn.base import BaseEstimator, TransformerMixin
 from xgboost import XGBClassifier
 
-# Configurações Iniciais
 warnings.filterwarnings("ignore")
 
+# Configuração NLTK
 try:
     nltk.data.find('corpora/stopwords')
 except LookupError:
@@ -36,6 +38,11 @@ except LookupError:
 
 STEMMER = RSLPStemmer()
 STOPWORDS = set(stopwords.words("portuguese"))
+
+# ==============================================================================
+# 1. CLASSES (CÉREBRO)
+# ==============================================================================
+# Mantivemos idêntico para não quebrar o pickle
 
 class TextCleaner:
     @staticmethod
@@ -52,7 +59,6 @@ class TextCleaner:
         return " ".join(tokens)
 
 class FolderIntelligence:
-    # Mesmo não usando no predict, precisa estar aqui se foi salvo no pickle
     pass 
 
 class FeatureEngineer(BaseEstimator, TransformerMixin):
@@ -87,7 +93,6 @@ class SpreadsheetEnforcer(BaseEstimator, TransformerMixin):
         self.keywords_map = {} 
     def fit(self, X, y=None): return self
     def transform(self, X):
-        # A mágica: O keywords_map já vem preenchido de dentro do pickle!
         if not self.keywords_map:
             return pd.DataFrame(np.zeros((len(X), 1)), columns=['dummy_score'])
         data = []
@@ -101,35 +106,67 @@ class SpreadsheetEnforcer(BaseEstimator, TransformerMixin):
         return pd.DataFrame(data)
 
 # ==============================================================================
-# 2. FUNÇÃO DE EXTRAÇÃO DE TEXTO (Para ler o arquivo que chega)
+# 2. LEITURA DE ARQUIVOS (Versão em Memória - Sem Disco)
 # ==============================================================================
-def extract_text_robust(filepath):
-    ext = os.path.splitext(filepath)[1].lower()
+def extract_text_from_memory(file_bytes, filename):
+    """Lê o arquivo direto da memória RAM, sem salvar no disco."""
+    ext = os.path.splitext(filename)[1].lower()
     text = ""
+    
+    # Cria um objeto de arquivo na memória
+    file_stream = io.BytesIO(file_bytes)
+    
     try:
         if ext == ".pdf":
-            with pdfplumber.open(filepath) as pdf:
+            with pdfplumber.open(file_stream) as pdf:
                 text = " ".join([p.extract_text() or "" for p in pdf.pages])
         elif ext in [".docx", ".doc"]:
-            doc = docx.Document(filepath)
+            doc = docx.Document(file_stream)
             text = " ".join([p.text for p in doc.paragraphs])
         elif ext in [".jpg", ".png", ".jpeg"]:
-            img = Image.open(filepath)
+            img = Image.open(file_stream)
             text = pytesseract.image_to_string(img, lang="por")
         elif ext == ".txt":
-            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-                text = f.read()
+            text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        print(f"Erro leitura: {e}")
+        print(f"Erro leitura memória: {e}")
     return text
 
 # ==============================================================================
-# 3. CONFIGURAÇÃO DA API FASTAPI
+# 3. CONFIGURAÇÃO DA API (Ciclo de Vida Moderno)
 # ==============================================================================
 
-app = FastAPI(title="API Triagem de Currículos")
+# Dicionário global para guardar o modelo
+ml_models = {}
 
-# Permitir conexões de qualquer lugar (útil para AppScript)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Executa ao ligar e desligar a API."""
+    # --- 1. Carregar Modelo ---
+    sys.modules['__main__'] = sys.modules[__name__] # Correção do Pickle
+    pickle_path = "cerebro_final.pkl"
+    
+    if os.path.exists(pickle_path):
+        try:
+            with open(pickle_path, "rb") as f:
+                artifacts = pickle.load(f)
+            ml_models['model'] = artifacts['model']
+            ml_models['preprocessor'] = artifacts['preprocessor']
+            ml_models['encoder'] = artifacts['encoder']
+            ml_models['engineer'] = FeatureEngineer() # Instancia limpa
+            print("✅ CÉREBRO CARREGADO NA MEMÓRIA!")
+        except Exception as e:
+            print(f"❌ Erro ao carregar pickle: {e}")
+    else:
+        print("❌ Pickle não encontrado.")
+    
+    yield # A API roda aqui
+    
+    # --- 2. Limpeza (ao desligar) ---
+    ml_models.clear()
+
+app = FastAPI(title="API Triagem PRO", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -137,92 +174,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Variáveis globais para o modelo
-MODEL = None
-PREPROCESSOR = None
-ENCODER = None
-ENGINEER = None
-
-@app.on_event("startup")
-def load_brain():
-    """Carrega o cérebro na memória quando a API liga."""
-    global MODEL, PREPROCESSOR, ENCODER, ENGINEER
-    import sys
-    # Truque: Faz o Pickle achar que este arquivo (api.py) é o criador original (__main__)
-    sys.modules['__main__'] = sys.modules[__name__]
-    # --- FIM DA CORREÇÃO ---
-
-    pickle_path = "cerebro_final.pkl" 
-    
-    if os.path.exists(pickle_path):
-    """Carrega o cérebro na memória quando a API liga."""
-    global MODEL, PREPROCESSOR, ENCODER, ENGINEER
-    
-    pickle_path = "cerebro_final.pkl" # O arquivo gerado pelo brain_auto.py
-    
-    if os.path.exists(pickle_path):
-        with open(pickle_path, "rb") as f:
-            artifacts = pickle.load(f)
-        
-        MODEL = artifacts['model']
-        PREPROCESSOR = artifacts['preprocessor']
-        ENCODER = artifacts['encoder']
-        # Instancia a classe de engenharia
-        ENGINEER = FeatureEngineer()
-        
-        print("✅ Cérebro carregado com sucesso! Pronto para triagem.")
-    else:
-        print("❌ ERRO: 'cerebro_final.pkl' não encontrado. Treine o modelo primeiro!")
+# ==============================================================================
+# 4. ROTA DE TRIAGEM (Sem 'async' para não travar CPU)
+# ==============================================================================
 
 @app.post("/triagem")
-async def triar_curriculo(file: UploadFile = File(...)):
-    """Recebe um arquivo e retorna a qual setor ele pertence."""
+def triar_curriculo(file: UploadFile = File(...)): # Tirei o 'async' propositalmente
+    """
+    Processa o currículo. 
+    Nota: Função síncrona (def) roda em ThreadPool para não bloquear o servidor.
+    """
     
-    if not MODEL:
-        raise HTTPException(status_code=500, detail="Modelo não carregado.")
+    if 'model' not in ml_models:
+        raise HTTPException(status_code=500, detail="Cérebro não está ativo.")
 
-    # 1. Salvar arquivo temporariamente
-    temp_filename = f"temp_{file.filename}"
     try:
-        with open(temp_filename, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # 1. Lê bytes da memória (rápido)
+        content = file.file.read()
         
-        # 2. Extrair Texto
-        raw_text = extract_text_robust(temp_filename)
+        # 2. Extrai texto sem criar arquivo temp
+        raw_text = extract_text_from_memory(content, file.filename)
         clean_text = TextCleaner.clean(raw_text)
         
         if len(raw_text) < 10:
-             return {"status": "erro", "mensagem": "Arquivo vazio ou ilegível (Imagem ruim? PDF protegido?)"}
+             return {"status": "erro", "mensagem": "Arquivo ilegível ou vazio."}
 
-        # 3. Engenharia de Features (Exatamente como no treino)
-        # O engineer extrai as colunas auxiliares (exp, cursos, tempo)
-        features_df = ENGINEER.transform([raw_text])
+        # 3. Engenharia de Features
+        engineer = ml_models['engineer']
+        features_df = engineer.transform([raw_text])
         
-        # 4. Montar o DataFrame Final para o Preprocessor
-        # A ordem e nome das colunas devem ser IDÊNTICOS ao treino
+        # 4. DataFrame
         input_df = pd.DataFrame({
             'main_text': [clean_text],          
-            'raw_text_for_excel': [raw_text], # O Enforcer usa isso para buscar palavras-chave
+            'raw_text_for_excel': [raw_text], 
             'last_exp': features_df['last_exp_text'],
             'courses': features_df['cursos_text'],
             'career_time': features_df['tempo_carreira']
         })
         
-        # 5. Transformação e Predição
-        X_input = PREPROCESSOR.transform(input_df)
+        # 5. Predição
+        preprocessor = ml_models['preprocessor']
+        model = ml_models['model']
+        encoder = ml_models['encoder']
         
-        # Pega a probabilidade de cada classe
-        probs = MODEL.predict_proba(X_input)[0]
-        # Pega o índice da maior probabilidade
+        X_input = preprocessor.transform(input_df)
+        probs = model.predict_proba(X_input)[0]
         pred_idx = np.argmax(probs)
-        # Pega o nome da classe usando o Encoder
-        setor_sugerido = ENCODER.inverse_transform([pred_idx])[0]
+        
+        setor = encoder.inverse_transform([pred_idx])[0]
         confianca = float(probs[pred_idx])
         
-        # 6. Resultado
         return {
             "arquivo": file.filename,
-            "setor_sugerido": setor_sugerido,
+            "setor_sugerido": setor,
             "confianca": f"{confianca:.2%}",
             "detalhes": {
                 "tempo_estimado": int(features_df['tempo_carreira'][0]),
@@ -232,12 +236,6 @@ async def triar_curriculo(file: UploadFile = File(...)):
 
     except Exception as e:
         return {"status": "erro", "mensagem": str(e)}
-    
-    finally:
-        # Limpa o arquivo temporário para não encher o disco
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
 
 if __name__ == "__main__":
-    # Roda o servidor localmente na porta 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)
