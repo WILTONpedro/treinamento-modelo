@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import re
+import requests # <--- NOVA BIBLIOTECA NECESSÁRIA
 from contextlib import asynccontextmanager
 
 # --- SERVER ---
@@ -16,18 +17,18 @@ import docx
 from PIL import Image
 import pytesseract
 
-# --- IA (GOOGLE GEMINI) ---
+# --- IA ---
 import google.generativeai as genai
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO E LOGS
+# ⚙️ CONFIGURAÇÃO
 # ==============================================================================
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("uvicorn")
-
-# Pega a chave do Render
+# Tenta pegar a chave do Render. (Removi a chave fixa por segurança)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# 👇 URL DO SEU APPS SCRIPT (Configure no Environment do Render)
+WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
+
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Modelo atualizado
@@ -79,8 +80,11 @@ CATEGORIAS_DISPONIVEIS = [
     "OUTROS"
 ]
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 # ==============================================================================
-# 1. LEITURA DE ARQUIVOS (MEMÓRIA RAM)
+# 1. LEITURA DE ARQUIVOS (Em memória RAM)
 # ==============================================================================
 def extract_text_from_memory(file_bytes, filename):
     """Extrai texto de PDF, DOCX, TXT ou Imagens diretamente da memória."""
@@ -174,7 +178,7 @@ def analisar_com_gemini(texto_curriculo):
         "setor": "NOME_DA_PASTA_ESCOLHIDA",
         "confianca": "ALTA",
         "anos_experiencia": 0,
-        "resumo": "Explique em 1 frase por que escolheu essa pasta"
+        "resumo": "Explique em 1 frase por que escolheu essa pasta baseado nas regras acima"
     }}
     """
 
@@ -257,6 +261,33 @@ def triar_curriculo(file: UploadFile = File(...)):
         # 4. Mapeamento de confiança para o AppScript entender
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
+
+        # --- NOVO BLOCO: REPASSE PARA O GOOGLE DRIVE (EXTENSÃO) ---
+        # Se a API receber uma URL de Webhook (configurada no Render) 
+        # E o arquivo não for inválido, ela manda para o Google salvar.
+        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO":
+            try:
+                logger.info(f"📤 Enviando para Apps Script: {file.filename}")
+                
+                # Tenta limpar o nome se vier do LinkedIn (ex: perfil_linkedin.txt -> NomePessoa)
+                nome_candidato = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
+                if not nome_candidato: nome_candidato = "Candidato LinkedIn"
+
+                payload_google = {
+                    "nome": nome_candidato,
+                    "texto": raw_text,
+                    "setor": setor,
+                    "confianca": f"{conf_val:.2%}",
+                    "url_perfil": "Via Extensão Chrome"
+                }
+                
+                # Envia POST para o Google Apps Script (Timeout curto para não travar)
+                requests.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=5)
+                logger.info("✅ Enviado com sucesso para o Google Drive!")
+                
+            except Exception as eg:
+                logger.error(f"⚠️ Erro ao enviar para Google (mas a triagem funcionou): {eg}")
+        # -----------------------------------------------------------
 
         logger.info(f"Processado: {file.filename} -> {setor} ({analise.get('resumo')})")
 
