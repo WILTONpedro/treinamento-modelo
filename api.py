@@ -2,6 +2,7 @@ import os
 import io
 import json
 import logging
+import sys
 import re
 import requests # <--- NOVA BIBLIOTECA NECESSÁRIA
 from contextlib import asynccontextmanager
