@@ -3,38 +3,24 @@ import io
 import json
 import logging
 import re
-import requests # <--- NOVA BIBLIOTECA NECESSÁRIA
+import requests
 from contextlib import asynccontextmanager
-
-# --- SERVER ---
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-
-# --- PROCESSAMENTO ---
 import pdfplumber
 import docx
 from PIL import Image
 import pytesseract
-
-# --- IA ---
 import google.generativeai as genai
 
-# ==============================================================================
-# ⚙️ CONFIGURAÇÃO
-# ==============================================================================
-
-# Tenta pegar a chave do Render. (Removi a chave fixa por segurança)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# 👇 URL DO SEU APPS SCRIPT (Configure no Environment do Render)
 WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Modelo atualizado
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
-# LISTA EXATA DE PASTAS DO DRIVE
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO",
     "ALMOXARIFADO",
@@ -83,9 +69,6 @@ CATEGORIAS_DISPONIVEIS = [
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# 1. LEITURA DE ARQUIVOS (Em memória RAM)
-# ==============================================================================
 def extract_text_from_memory(file_bytes, filename):
     """Extrai texto de PDF, DOCX, TXT ou Imagens diretamente da memória."""
     ext = os.path.splitext(filename)[1].lower()
@@ -108,15 +91,10 @@ def extract_text_from_memory(file_bytes, filename):
         logger.error(f"Erro leitura arquivo ({filename}): {e}")
     return text
 
-# ==============================================================================
-# 2. CÉREBRO (GEMINI COM REGRAS DE NEGÓCIO)
-# ==============================================================================
 def analisar_com_gemini(texto_curriculo):
-    # Validação básica de conteúdo
     if not texto_curriculo or len(texto_curriculo) < 20:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente/Arquivo vazio"}
 
-    # --- O PROMPT REFINADO ---
     prompt = f"""
     Você é um Recrutador Sênior Especialista da empresa Baly. Sua missão é triar currículos para as pastas corretas.
     
@@ -191,10 +169,6 @@ def analisar_com_gemini(texto_curriculo):
         logger.error(f"Erro na chamada do Gemini: {e}")
         return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
 
-# ==============================================================================
-# 3. CICLO DE VIDA (DIAGNÓSTICO DE INICIALIZAÇÃO)
-# ==============================================================================
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Executa ao ligar a API. Faz diagnóstico dos modelos disponíveis."""
@@ -205,14 +179,12 @@ async def lifespan(app: FastAPI):
         if not GEMINI_API_KEY:
             logger.warning("⚠️ AVISO CRÍTICO: Variável GEMINI_API_KEY não encontrada!")
         
-        # Lista modelos disponíveis para confirmar que a chave funciona e o modelo existe
         modelos_disponiveis = []
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 modelos_disponiveis.append(m.name)
                 logger.info(f"   ✅ Modelo disponível: {m.name}")
         
-        # Verifica se o modelo escolhido está na lista
         target_model = f"models/{NOME_MODELO_GEMINI}"
         if target_model in modelos_disponiveis:
             logger.info(f"🎉 SUCESSO: O modelo '{NOME_MODELO_GEMINI}' foi encontrado e está pronto!")
@@ -222,12 +194,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ ERRO AO LISTAR MODELOS (Verifique sua API KEY): {e}")
 
-    yield # A API roda aqui
+    yield
     logger.info("🛑 Desligando servidor...")
-
-# ==============================================================================
-# 4. APLICAÇÃO API
-# ==============================================================================
 
 app = FastAPI(title="API Triagem Inteligente", lifespan=lifespan)
 
@@ -240,7 +208,6 @@ app.add_middleware(
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # 1. Validação de Tamanho (Máx 5MB para não travar o Render Free)
     file.file.seek(0, 2)
     tamanho = file.file.tell()
     file.file.seek(0)
@@ -249,27 +216,19 @@ def triar_curriculo(file: UploadFile = File(...)):
         return {"status": "erro", "mensagem": "Arquivo muito grande (>5MB)"}
 
     try:
-        # 2. Leitura
         content = file.file.read()
         raw_text = extract_text_from_memory(content, file.filename)
         
-        # 3. Análise IA
         analise = analisar_com_gemini(raw_text)
         
         setor = analise.get("setor", "OUTROS")
         
-        # 4. Mapeamento de confiança para o AppScript entender
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # --- NOVO BLOCO: REPASSE PARA O GOOGLE DRIVE (EXTENSÃO) ---
-        # Se a API receber uma URL de Webhook (configurada no Render) 
-        # E o arquivo não for inválido, ela manda para o Google salvar.
         if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO":
             try:
                 logger.info(f"📤 Enviando para Apps Script: {file.filename}")
-                
-                # Tenta limpar o nome se vier do LinkedIn (ex: perfil_linkedin.txt -> NomePessoa)
                 nome_candidato = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
                 if not nome_candidato: nome_candidato = "Candidato LinkedIn"
 
@@ -280,14 +239,11 @@ def triar_curriculo(file: UploadFile = File(...)):
                     "confianca": f"{conf_val:.2%}",
                     "url_perfil": "Via Extensão Chrome"
                 }
-                
-                # Envia POST para o Google Apps Script (Timeout curto para não travar)
                 requests.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=5)
                 logger.info("✅ Enviado com sucesso para o Google Drive!")
                 
             except Exception as eg:
                 logger.error(f"⚠️ Erro ao enviar para Google (mas a triagem funcionou): {eg}")
-        # -----------------------------------------------------------
 
         logger.info(f"Processado: {file.filename} -> {setor} ({analise.get('resumo')})")
 
