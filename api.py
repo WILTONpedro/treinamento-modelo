@@ -196,56 +196,24 @@ def analisar_com_gemini(texto_curriculo):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Executa ao ligar a API. Faz diagnóstico dos modelos disponíveis."""
-    
-    logger.info("🚀 INICIANDO SERVIDOR... VERIFICANDO MODELOS GOOGLE...")
-    
-    try:
-        if not GEMINI_API_KEY:
-            logger.warning("⚠️ AVISO CRÍTICO: Variável GEMINI_API_KEY não encontrada!")
-        
-        # Lista modelos disponíveis para confirmar que a chave funciona e o modelo existe
-        modelos_disponiveis = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                modelos_disponiveis.append(m.name)
-                logger.info(f"   ✅ Modelo disponível: {m.name}")
-        
-        # Verifica se o modelo escolhido está na lista
-        target_model = f"models/{NOME_MODELO_GEMINI}"
-        if target_model in modelos_disponiveis:
-            logger.info(f"🎉 SUCESSO: O modelo '{NOME_MODELO_GEMINI}' foi encontrado e está pronto!")
-        else:
-            logger.warning(f"⚠️ ATENÇÃO: O modelo '{NOME_MODELO_GEMINI}' não apareceu na lista padrão. Pode dar erro 404.")
-            
-    except Exception as e:
-        logger.error(f"❌ ERRO AO LISTAR MODELOS (Verifique sua API KEY): {e}")
-
-    yield # A API roda aqui
-    logger.info("🛑 Desligando servidor...")
+    logger.info("🚀 INICIANDO SERVIDOR...")
+    sys.modules['__main__'] = sys.modules[__name__]
+    yield
+    logger.info("🛑 DESLIGANDO...")
 
 # ==============================================================================
-# 4. APLICAÇÃO API
+# 4. API E INTEGRAÇÃO
 # ==============================================================================
-
-app = FastAPI(title="API Triagem Inteligente", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="API Triagem", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # 1. Validação de Tamanho (Máx 5MB para não travar o Render Free)
+    # 1. Validação de Tamanho (5MB)
     file.file.seek(0, 2)
-    tamanho = file.file.tell()
+    if file.file.tell() > 5 * 1024 * 1024:
+        return {"status": "erro", "mensagem": "Arquivo > 5MB"}
     file.file.seek(0)
-    
-    if tamanho > 5 * 1024 * 1024:
-        return {"status": "erro", "mensagem": "Arquivo muito grande (>5MB)"}
 
     try:
         # 2. Leitura
@@ -254,41 +222,47 @@ def triar_curriculo(file: UploadFile = File(...)):
         
         # 3. Análise IA
         analise = analisar_com_gemini(raw_text)
-        
         setor = analise.get("setor", "OUTROS")
         
-        # 4. Mapeamento de confiança para o AppScript entender
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # --- NOVO BLOCO: REPASSE PARA O GOOGLE DRIVE (EXTENSÃO) ---
-        # Se a API receber uma URL de Webhook (configurada no Render) 
-        # E o arquivo não for inválido, ela manda para o Google salvar.
-        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO":
+        # -----------------------------------------------------------
+        # LÓGICA DE ORIGEM (CORREÇÃO DE DUPLICIDADE)
+        # -----------------------------------------------------------
+        
+        # Verifica se veio da Extensão (pela marca d'água no texto)
+        is_from_extension = "FONTE: LINKEDIN" in raw_text or "FONTE: LINKEDIN" in raw_text.upper()
+        
+        # Só aciona o Webhook do Google se for da Extensão E não for lixo
+        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
             try:
-                logger.info(f"📤 Enviando para Apps Script: {file.filename}")
+                logger.info(f"📤 Origem LinkedIn detectada. Enviando para Webhook...")
                 
-                # Tenta limpar o nome se vier do LinkedIn (ex: perfil_linkedin.txt -> NomePessoa)
-                nome_candidato = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
-                if not nome_candidato: nome_candidato = "Candidato LinkedIn"
+                # Limpa nome do arquivo para usar como nome do candidato
+                nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
+                if not nome_limpo: nome_limpo = "Candidato LinkedIn"
 
                 payload_google = {
-                    "nome": nome_candidato,
+                    "nome": nome_limpo,
                     "texto": raw_text,
                     "setor": setor,
                     "confianca": f"{conf_val:.2%}",
-                    "url_perfil": "Via Extensão Chrome"
+                    "url_perfil": "Via Extensão Chrome",
+                    "detalhes": analise
                 }
                 
-                # Envia POST para o Google Apps Script (Timeout curto para não travar)
                 requests.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=5)
-                logger.info("✅ Enviado com sucesso para o Google Drive!")
+                logger.info("✅ Webhook acionado com sucesso!")
                 
             except Exception as eg:
-                logger.error(f"⚠️ Erro ao enviar para Google (mas a triagem funcionou): {eg}")
+                logger.error(f"⚠️ Erro Webhook: {eg}")
+        else:
+            logger.info(f"ℹ️ Origem Gmail/Upload (Webhook ignorado para evitar loop).")
+
         # -----------------------------------------------------------
 
-        logger.info(f"Processado: {file.filename} -> {setor} ({analise.get('resumo')})")
+        logger.info(f"🏁 Finalizado: {file.filename} -> {setor}")
 
         return {
             "arquivo": file.filename,
@@ -302,7 +276,7 @@ def triar_curriculo(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        logger.error(f"Erro fatal no processamento: {e}")
+        logger.error(f"Erro fatal: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
