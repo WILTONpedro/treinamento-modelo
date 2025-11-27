@@ -2,9 +2,9 @@ import os
 import io
 import json
 import logging
-import sys
 import re
-import requests # <--- NOVA BIBLIOTECA NECESSÁRIA
+import sys
+import requests
 from contextlib import asynccontextmanager
 
 # --- SERVER ---
@@ -22,71 +22,44 @@ import pytesseract
 import google.generativeai as genai
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO
+# ⚙️ CONFIGURAÇÃO E CONSTANTES
 # ==============================================================================
 
-# Tenta pegar a chave do Render. (Removi a chave fixa por segurança)
+# Configuração de Logs
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - [%(levelname)s] - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("uvicorn")
+
+# Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# 👇 URL DO SEU APPS SCRIPT (Configure no Environment do Render)
 WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
 
+# Configuração da IA
 genai.configure(api_key=GEMINI_API_KEY)
-
-# Modelo atualizado
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
-# LISTA EXATA DE PASTAS DO DRIVE
+# Sessão HTTP Global (Para otimizar conexões com o Webhook)
+http_session = requests.Session()
+
+# Definição de Categorias (Sua lista original intacta)
 CATEGORIAS_DISPONIVEIS = [
-    "ADMINISTRITIVO",
-    "ALMOXARIFADO",
-    "AREA INDUSTRIAL",
-    "COMERCIAL",
-    "COMERCIO EXTERIOR",
-    "COMPRAS",
-    "CONTABILIDADE",
-    "COORDENADOR DE EXPEDIÇÃO",
-    "COORDENADOR DE MERCHANDISING",
-    "EMPILHADEIRA",
-    "EVENTOS",
-    "FINANCEIRO",
-    "GERENTE COMERCIAL",
-    "GERENTE FINANCEIRO",
-    "GERENTE GRANDES CONTAS",
-    "GERENTE LOGISTICA",
-    "GERENTE MARKETING",
-    "GERENTE PRODUÇÃO",
-    "GERENTE QUALIDADE",
-    "GERENTE DE RH",
-    "GERENTE VENDAS",
-    "HIGIENIZAÇÃO",
-    "JOVEM APRENDIZ",
-    "KEY ACCOUNT",
-    "LIDER DE PRODUÇÃO",
-    "LOGÍSTICA",
-    "MARKETING",
-    "MECANICA INDUSTRIAL",
-    "MERCHANDISING",
-    "MOTORISTA",
-    "PCD",
-    "PCP",
-    "PRODUÇÃO",
-    "PROJETOS",
-    "PROMOTOR DE VENDAS",
-    "QUALIDADE",
-    "RECURSOS HUMANOS",
-    "SUPERVISOR DE MERCHANDISING",
-    "TI",
-    "VENDAS",
-    "VIGIA",
-    "OUTROS"
+    "ADMINISTRITIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
+    "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
+    "EMPILHADEIRA", "EVENTOS", "FINANCEIRO", "GERENTE COMERCIAL", "GERENTE FINANCEIRO",
+    "GERENTE GRANDES CONTAS", "GERENTE LOGISTICA", "GERENTE MARKETING", "GERENTE PRODUÇÃO",
+    "GERENTE QUALIDADE", "GERENTE DE RH", "GERENTE VENDAS", "HIGIENIZAÇÃO", "JOVEM APRENDIZ",
+    "KEY ACCOUNT", "LIDER DE PRODUÇÃO", "LOGÍSTICA", "MARKETING", "MECANICA INDUSTRIAL",
+    "MERCHANDISING", "MOTORISTA", "PCD", "PCP", "PRODUÇÃO", "PROJETOS", "PROMOTOR DE VENDAS",
+    "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "TI", "VENDAS", "VIGIA", "OUTROS"
 ]
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
-logger = logging.getLogger(__name__)
+# ==============================================================================
+# 1. FUNÇÕES DE LEITURA E PROCESSAMENTO
+# ==============================================================================
 
-# ==============================================================================
-# 1. LEITURA DE ARQUIVOS (Em memória RAM)
-# ==============================================================================
 def extract_text_from_memory(file_bytes, filename):
     """Extrai texto de PDF, DOCX, TXT ou Imagens diretamente da memória."""
     ext = os.path.splitext(filename)[1].lower()
@@ -96,27 +69,33 @@ def extract_text_from_memory(file_bytes, filename):
     try:
         if ext == ".pdf":
             with pdfplumber.open(file_stream) as pdf:
-                text = " ".join([p.extract_text() or "" for p in pdf.pages])
+                # Otimização: List comprehension é mais rápida que loop for
+                text = "\n".join([p.extract_text() or "" for p in pdf.pages])
         elif ext == ".docx":
             doc = docx.Document(file_stream)
-            text = " ".join([p.text for p in doc.paragraphs])
-        elif ext in [".jpg", ".png", ".jpeg"]:
+            text = "\n".join([p.text for p in doc.paragraphs])
+        elif ext in [".jpg", ".png", ".jpeg", ".tiff", ".bmp"]:
             img = Image.open(file_stream)
             text = pytesseract.image_to_string(img, lang="por")
         elif ext == ".txt":
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        logger.error(f"Erro leitura arquivo ({filename}): {e}")
-    return text
+        logger.error(f"❌ Erro de leitura no arquivo '{filename}': {e}")
+        return ""
+    
+    # Limpeza básica de caracteres nulos que podem quebrar APIs
+    return text.replace("\x00", "")
 
 # ==============================================================================
-# 2. CÉREBRO (GEMINI COM REGRAS DE NEGÓCIO)
+# 2. CÉREBRO (IA)
 # ==============================================================================
+
 def analisar_com_gemini(texto_curriculo):
-    # Validação básica de conteúdo
-    if not texto_curriculo or len(texto_curriculo) < 20:
+    # Validação rápida
+    if not texto_curriculo or len(texto_curriculo.strip()) < 20:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente/Arquivo vazio"}
 
+    # --- SEU PROMPT ORIGINAL (INTACTO) ---
     prompt = f"""
     Você é um Recrutador Sênior Especialista da empresa Baly. Sua missão é triar currículos para as pastas corretas.
     
@@ -170,7 +149,7 @@ def analisar_com_gemini(texto_curriculo):
         - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
         - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
 
-   TEXTO DO CURRÍCULO:
+    TEXTO DO CURRÍCULO:
     {texto_curriculo[:9000]}
 
     Responda APENAS um JSON neste formato:
@@ -185,67 +164,94 @@ def analisar_com_gemini(texto_curriculo):
     try:
         model = genai.GenerativeModel(NOME_MODELO_GEMINI)
         response = model.generate_content(prompt)
+        
+        # Limpeza robusta do JSON retornado (remove markdown e espaços extras)
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
+        
         return json.loads(clean_json)
+        
+    except json.JSONDecodeError:
+        logger.error("❌ Erro ao decodificar JSON do Gemini.")
+        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "IA não retornou formato válido"}
     except Exception as e:
-        logger.error(f"Erro na chamada do Gemini: {e}")
+        logger.error(f"❌ Erro na chamada do Gemini: {e}")
         return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
 
 # ==============================================================================
-# 3. CICLO DE VIDA (DIAGNÓSTICO DE INICIALIZAÇÃO)
+# 3. CICLO DE VIDA (LIFESPAN)
 # ==============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 INICIANDO SERVIDOR...")
+    
+    # Fix para compatibilidade de algumas libs no ambiente Render
     sys.modules['__main__'] = sys.modules[__name__]
+    
+    # Verificação de Saúde da API Key
+    if not GEMINI_API_KEY:
+        logger.warning("⚠️ AVISO: Variável GEMINI_API_KEY não configurada!")
+    
     yield
-    logger.info("🛑 DESLIGANDO...")
+    
+    logger.info("🛑 DESLIGANDO SERVIDOR...")
+    http_session.close() # Fecha a sessão HTTP ao desligar
 
 # ==============================================================================
-# 4. API E INTEGRAÇÃO
+# 4. API ENDPOINTS
 # ==============================================================================
-app = FastAPI(title="API Triagem", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+app = FastAPI(title="API Triagem Inteligente", lifespan=lifespan)
+
+# Configuração de CORS (Permite acesso de qualquer lugar: Extensão, Google Scripts, etc)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # 1. Validação de Tamanho (5MB)
+    # 1. Validação de Tamanho (Limite 5MB para evitar estouro de memória no plano Free)
     file.file.seek(0, 2)
-    if file.file.tell() > 5 * 1024 * 1024:
-        return {"status": "erro", "mensagem": "Arquivo > 5MB"}
+    file_size = file.file.tell()
     file.file.seek(0)
+    
+    if file_size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Arquivo muito grande (>5MB). Compacte antes de enviar.")
 
     try:
-        # 2. Leitura
+        # 2. Leitura do Arquivo
         content = file.file.read()
         raw_text = extract_text_from_memory(content, file.filename)
         
-        # 3. Análise IA
+        # 3. Análise IA (Cérebro)
         analise = analisar_com_gemini(raw_text)
         setor = analise.get("setor", "OUTROS")
         
+        # 4. Mapeamento de Confiança
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
         # -----------------------------------------------------------
-        # LÓGICA DE ORIGEM (CORREÇÃO DE DUPLICIDADE)
+        # LÓGICA DE INTEGRAÇÃO (WEBHOOK)
         # -----------------------------------------------------------
         
-        # Verifica se veio da Extensão (pela marca d'água no texto)
+        # Verifica marca d'água da extensão do Chrome
         is_from_extension = "FONTE: LINKEDIN" in raw_text or "FONTE: LINKEDIN" in raw_text.upper()
         
-        # Só aciona o Webhook do Google se for da Extensão E não for lixo
+        # Condição de disparo: Tem URL configurada + Não é Lixo + Veio da Extensão
         if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
             try:
-                logger.info(f"📤 Origem LinkedIn detectada. Enviando para Webhook...")
+                logger.info(f"📤 Origem LinkedIn detectada. Preparando webhook...")
                 
-                # Limpa nome do arquivo para usar como nome do candidato
-                nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
-                if not nome_limpo: nome_limpo = "Candidato LinkedIn"
+                # Limpeza do nome do candidato baseado no nome do arquivo
+                nome_candidato = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
+                if not nome_candidato: nome_candidato = "Candidato LinkedIn"
 
                 payload_google = {
-                    "nome": nome_limpo,
+                    "nome": nome_candidato,
                     "texto": raw_text,
                     "setor": setor,
                     "confianca": f"{conf_val:.2%}",
@@ -253,13 +259,21 @@ def triar_curriculo(file: UploadFile = File(...)):
                     "detalhes": analise
                 }
                 
-                requests.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=5)
-                logger.info("✅ Webhook acionado com sucesso!")
+                # Envia POST usando a sessão otimizada
+                response = http_session.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=8)
+                
+                if response.status_code == 200:
+                    logger.info("✅ Webhook Google: Sucesso!")
+                else:
+                    logger.warning(f"⚠️ Webhook Google retornou erro: {response.status_code} - {response.text}")
                 
             except Exception as eg:
-                logger.error(f"⚠️ Erro Webhook: {eg}")
+                logger.error(f"❌ Falha crítica no Webhook: {eg}")
         else:
-            logger.info(f"ℹ️ Origem Gmail/Upload (Webhook ignorado para evitar loop).")
+            if not is_from_extension:
+                logger.info(f"ℹ️ Origem: Gmail/Upload Direto (Webhook ignorado).")
+            elif setor == "ARQUIVO_INVALIDO":
+                logger.info(f"🗑️ Arquivo Inválido detectado (Webhook ignorado).")
 
         # -----------------------------------------------------------
 
@@ -277,7 +291,8 @@ def triar_curriculo(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        logger.error(f"Erro fatal: {e}")
+        logger.error(f"❌ Erro fatal no processamento da requisição: {e}")
+        # Retorna 200 com erro no JSON para não quebrar o cliente (AppScript/Extensão)
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
