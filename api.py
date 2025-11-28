@@ -22,29 +22,19 @@ import pytesseract
 import google.generativeai as genai
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO E CONSTANTES
+# ⚙️ CONFIGURAÇÃO
 # ==============================================================================
 
-# Configuração de Logs
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - [%(levelname)s] - %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [%(levelname)s] - %(message)s')
 logger = logging.getLogger("uvicorn")
 
-# Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
 
-# Configuração da IA
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
-
-# Sessão HTTP Global (Para otimizar conexões com o Webhook)
 http_session = requests.Session()
 
-# Definição de Categorias (Sua lista original intacta)
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
     "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
@@ -57,50 +47,48 @@ CATEGORIAS_DISPONIVEIS = [
 ]
 
 # ==============================================================================
-# 1. FUNÇÕES DE LEITURA E PROCESSAMENTO
+# 1. LEITURA
 # ==============================================================================
-
 def extract_text_from_memory(file_bytes, filename):
-    """Extrai texto de PDF, DOCX, TXT ou Imagens diretamente da memória."""
     ext = os.path.splitext(filename)[1].lower()
     text = ""
     file_stream = io.BytesIO(file_bytes)
-    
     try:
         if ext == ".pdf":
             with pdfplumber.open(file_stream) as pdf:
-                # Otimização: List comprehension é mais rápida que loop for
                 text = "\n".join([p.extract_text() or "" for p in pdf.pages])
         elif ext == ".docx":
             doc = docx.Document(file_stream)
             text = "\n".join([p.text for p in doc.paragraphs])
-        elif ext in [".jpg", ".png", ".jpeg", ".tiff", ".bmp"]:
+        elif ext in [".jpg", ".png", ".jpeg"]:
             img = Image.open(file_stream)
             text = pytesseract.image_to_string(img, lang="por")
         elif ext == ".txt":
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        logger.error(f"❌ Erro de leitura no arquivo '{filename}': {e}")
+        logger.error(f"Erro leitura: {e}")
         return ""
-    
-    # Limpeza básica de caracteres nulos que podem quebrar APIs
     return text.replace("\x00", "")
 
 # ==============================================================================
-# 2. CÉREBRO (IA)
+# 2. CÉREBRO (AGORA TAMBÉM FORMATA O CURRÍCULO)
 # ==============================================================================
-
 def analisar_com_gemini(texto_curriculo):
-    # Validação rápida
     if not texto_curriculo or len(texto_curriculo.strip()) < 20:
-        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente/Arquivo vazio"}
+        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Vazio", "cv_limpo": ""}
 
-    # --- SEU PROMPT ORIGINAL (INTACTO) ---
+    # --- O PROMPT MÁGICO ---
     prompt = f"""
-    Você é um Recrutador Sênior Especialista da empresa Baly. Sua missão é triar currículos para as pastas corretas.
+    Você é um Recrutador Sênior da Baly.
     
-    LISTA DE PASTAS DISPONÍVEIS (Escolha apenas uma):
+    TAREFA 1: Classificar o candidato na melhor categoria abaixo:
     {json.dumps(CATEGORIAS_DISPONIVEIS)}
+    
+    TAREFA 2 (CRUCIAL): O texto abaixo veio de uma extração bruta do LinkedIn ou PDF e está sujo.
+    Você deve REESCREVER e ESTRUTURAR as informações em formato de Currículo Profissional Limpo.
+    - Remova: Botões ("Conectar", "Enviar mensagem"), propagandas, menus, "Pessoas também viram", textos de interface.
+    - Mantenha: Nome, Resumo, Experiência (Empresas, Cargos, Datas), Formação, Idiomas e Competências.
+    - Formato: Texto corrido bem organizado (Markdown simples).
 
     ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
 
@@ -149,135 +137,94 @@ def analisar_com_gemini(texto_curriculo):
         - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
         - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
 
-    TEXTO DO CURRÍCULO:
-    {texto_curriculo[:9000]}
+    ENTRADA BRUTA:
+    {texto_curriculo[:12000]}
 
-    Responda APENAS um JSON neste formato:
+    RESPONDA APENAS ESTE JSON:
     {{
-        "setor": "NOME_DA_PASTA_ESCOLHIDA",
+        "setor": "NOME_DA_CATEGORIA",
         "confianca": "ALTA",
         "anos_experiencia": 0,
-        "resumo": "Explique em 1 frase por que escolheu essa pasta baseado nas regras acima"
+        "resumo": "Motivo da escolha",
+        "cv_limpo": "AQUI VAI O TEXTO DO CURRÍCULO REESCRITO E ORGANIZADO POR VOCÊ..."
     }}
     """
 
     try:
         model = genai.GenerativeModel(NOME_MODELO_GEMINI)
         response = model.generate_content(prompt)
-        
-        # Limpeza robusta do JSON retornado (remove markdown e espaços extras)
         clean_json = response.text.replace("```json", "").replace("```", "").strip()
-        
         return json.loads(clean_json)
-        
-    except json.JSONDecodeError:
-        logger.error("❌ Erro ao decodificar JSON do Gemini.")
-        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "IA não retornou formato válido"}
     except Exception as e:
-        logger.error(f"❌ Erro na chamada do Gemini: {e}")
-        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
+        logger.error(f"Erro Gemini: {e}")
+        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "cv_limpo": texto_curriculo}
 
 # ==============================================================================
-# 3. CICLO DE VIDA (LIFESPAN)
+# 3. LIFESPAN
 # ==============================================================================
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 INICIANDO SERVIDOR...")
-    
-    # Fix para compatibilidade de algumas libs no ambiente Render
+    logger.info("🚀 SERVIDOR INICIADO")
     sys.modules['__main__'] = sys.modules[__name__]
-    
-    # Verificação de Saúde da API Key
-    if not GEMINI_API_KEY:
-        logger.warning("⚠️ AVISO: Variável GEMINI_API_KEY não configurada!")
-    
     yield
-    
-    logger.info("🛑 DESLIGANDO SERVIDOR...")
-    http_session.close() # Fecha a sessão HTTP ao desligar
+    logger.info("🛑 SERVIDOR DESLIGADO")
+    http_session.close()
 
 # ==============================================================================
-# 4. API ENDPOINTS
+# 4. API
 # ==============================================================================
-
-app = FastAPI(title="API Triagem Inteligente", lifespan=lifespan)
-
-# Configuração de CORS (Permite acesso de qualquer lugar: Extensão, Google Scripts, etc)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="API Triagem", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # 1. Validação de Tamanho (Limite 5MB para evitar estouro de memória no plano Free)
     file.file.seek(0, 2)
-    file_size = file.file.tell()
+    if file.file.tell() > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Arquivo muito grande (>5MB)")
     file.file.seek(0)
-    
-    if file_size > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Arquivo muito grande (>5MB). Compacte antes de enviar.")
 
     try:
-        # 2. Leitura do Arquivo
         content = file.file.read()
+        # Se for TXT vindo da extensão, usamos ele como base bruta
+        # Se for PDF, extraímos o texto
         raw_text = extract_text_from_memory(content, file.filename)
         
-        # 3. Análise IA (Cérebro)
+        # 1. Análise + Limpeza IA
         analise = analisar_com_gemini(raw_text)
         setor = analise.get("setor", "OUTROS")
         
-        # 4. Mapeamento de Confiança
+        # Se a IA gerou um currículo limpo, usamos ele. Se falhou, usa o original.
+        texto_para_salvar = analise.get("cv_limpo")
+        if not texto_para_salvar or len(texto_para_salvar) < 50:
+            texto_para_salvar = raw_text
+
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # -----------------------------------------------------------
-        # LÓGICA DE INTEGRAÇÃO (WEBHOOK)
-        # -----------------------------------------------------------
-        
-        # Verifica marca d'água da extensão do Chrome
+        # 2. Envio para Webhook (Google Drive)
         is_from_extension = "FONTE: LINKEDIN" in raw_text or "FONTE: LINKEDIN" in raw_text.upper()
         
-        # Condição de disparo: Tem URL configurada + Não é Lixo + Veio da Extensão
         if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
             try:
-                logger.info(f"📤 Origem LinkedIn detectada. Preparando webhook...")
-                
-                # Limpeza do nome do candidato baseado no nome do arquivo
-                nome_candidato = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
-                if not nome_candidato: nome_candidato = "Candidato LinkedIn"
+                nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
+                if not nome_limpo: nome_limpo = "Candidato LinkedIn"
 
                 payload_google = {
-                    "nome": nome_candidato,
-                    "texto": raw_text,
+                    "nome": nome_limpo,
+                    "texto": texto_para_salvar, # <--- AQUI VAI O CV LIMPINHO
                     "setor": setor,
                     "confianca": f"{conf_val:.2%}",
                     "url_perfil": "Via Extensão Chrome",
                     "detalhes": analise
                 }
                 
-                # Envia POST usando a sessão otimizada
-                response = http_session.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=8)
-                
-                if response.status_code == 200:
-                    logger.info("✅ Webhook Google: Sucesso!")
-                else:
-                    logger.warning(f"⚠️ Webhook Google retornou erro: {response.status_code} - {response.text}")
+                http_session.post(WEBHOOK_GOOGLE_URL, json=payload_google, timeout=8)
+                logger.info(f"✅ Webhook enviado: {nome_limpo}")
                 
             except Exception as eg:
-                logger.error(f"❌ Falha crítica no Webhook: {eg}")
-        else:
-            if not is_from_extension:
-                logger.info(f"ℹ️ Origem: Gmail/Upload Direto (Webhook ignorado).")
-            elif setor == "ARQUIVO_INVALIDO":
-                logger.info(f"🗑️ Arquivo Inválido detectado (Webhook ignorado).")
+                logger.error(f"⚠️ Erro Webhook: {eg}")
 
-        # -----------------------------------------------------------
-
-        logger.info(f"🏁 Finalizado: {file.filename} -> {setor}")
+        logger.info(f"Processado: {file.filename} -> {setor}")
 
         return {
             "arquivo": file.filename,
@@ -291,8 +238,7 @@ def triar_curriculo(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        logger.error(f"❌ Erro fatal no processamento da requisição: {e}")
-        # Retorna 200 com erro no JSON para não quebrar o cliente (AppScript/Extensão)
+        logger.error(f"Erro fatal: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
