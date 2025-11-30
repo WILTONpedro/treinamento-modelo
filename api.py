@@ -20,34 +20,36 @@ import docx
 from PIL import Image
 import pytesseract
 
-# --- IA ---
+# --- IA & INTEGRAÇÕES ---
 import google.generativeai as genai
+from notion_client import Client # <--- Importante
 
 # ==============================================================================
-# ⚙️ CONFIGURAÇÃO AVANÇADA
+# ⚙️ CONFIGURAÇÃO
 # ==============================================================================
 
-# Logs estruturados com timestamp
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("api")
 
-# Configuração de Ambiente
+# Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
+NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 
+# Configuração IA
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
-# Sessão HTTP com Retry Automático (Resiliência contra falhas do Google)
+# Configuração HTTP (Sessão Otimizada)
 http_session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
 http_session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# Lista de Categorias (Sua lista de negócio)
+# Cliente Notion
+notion = Client(auth=NOTION_TOKEN) if NOTION_TOKEN else None
+
+# Categorias
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
     "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
@@ -60,12 +62,10 @@ CATEGORIAS_DISPONIVEIS = [
 ]
 
 # ==============================================================================
-# 1. FUNÇÕES AUXILIARES OTIMIZADAS
+# 1. FUNÇÕES AUXILIARES
 # ==============================================================================
 
 def sanitize_filename(filename):
-    """Remove caracteres perigosos e emojis do nome do arquivo."""
-    # Mantém apenas letras, números, espaços, traços e pontos
     clean = re.sub(r'[^a-zA-Z0-9 \-\.]', '', filename)
     return clean.strip() or "arquivo_sem_nome"
 
@@ -73,33 +73,48 @@ def extract_text_from_memory(file_bytes, filename):
     ext = os.path.splitext(filename)[1].lower()
     text = ""
     file_stream = io.BytesIO(file_bytes)
-    
     try:
         if ext == ".pdf":
             with pdfplumber.open(file_stream) as pdf:
-                # Otimização: Pega apenas as primeiras 5 páginas (Currículos > 5 pags são raros e lentos)
                 pages = pdf.pages[:5]
                 text = "\n".join([p.extract_text() or "" for p in pages])
         elif ext == ".docx":
             doc = docx.Document(file_stream)
             text = "\n".join([p.text for p in doc.paragraphs])
-        elif ext in [".jpg", ".png", ".jpeg", ".tiff"]:
+        elif ext in [".jpg", ".png", ".jpeg"]:
             img = Image.open(file_stream)
-            # Otimização: Reduz imagem gigante antes do OCR para economizar RAM
-            if img.width > 2000:
-                img.thumbnail((2000, 2000))
+            if img.width > 2000: img.thumbnail((2000, 2000))
             text = pytesseract.image_to_string(img, lang="por")
         elif ext == ".txt":
             text = file_bytes.decode("utf-8", errors="ignore")
     except Exception as e:
-        logger.error(f"Erro leitura arquivo ({filename}): {e}")
+        logger.error(f"Erro leitura: {e}")
         return ""
-    
-    # Limpeza final de caracteres nulos
     return text.replace("\x00", "")
 
+def salvar_no_notion(dados, link_drive):
+    """Cria um card no Notion com as informações"""
+    if not notion or not NOTION_DATABASE_ID:
+        return
+    
+    try:
+        notion.pages.create(
+            parent={"database_id": NOTION_DATABASE_ID},
+            properties={
+                "Nome": {"title": [{"text": {"content": dados['nome'][:100]}}]},
+                "Setor": {"select": {"name": dados['setor']}},
+                "Confiança": {"rich_text": [{"text": {"content": dados['confianca']}}]},
+                "Resumo IA": {"rich_text": [{"text": {"content": dados['detalhes']['motivo_rejeicao'][:2000]}}]},
+                "Status": {"select": {"name": "Novo"}},
+                "Link Currículo": {"url": link_drive if link_drive else "https://drive.google.com"} 
+            }
+        )
+        logger.info("✅ Salvo no Notion!")
+    except Exception as e:
+        logger.error(f"⚠️ Erro Notion: {e}")
+
 # ==============================================================================
-# 2. CÉREBRO (IA)
+# 2. CÉREBRO (GEMINI)
 # ==============================================================================
 
 def analisar_com_gemini(texto_curriculo):
@@ -163,107 +178,112 @@ def analisar_com_gemini(texto_curriculo):
         - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
         - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
 
-    ENTRADA BRUTA:
-    {texto_curriculo[:12000]}
+    ENTRADA: {texto_curriculo[:12000]}
 
     RESPONDA JSON:
     {{
-        "setor": "NOME_DA_CATEGORIA",
-        "confianca": "ALTA",
-        "anos_experiencia": 0,
-        "resumo": "Motivo",
-        "cv_limpo": "TEXTO DO CV REESCRITO..."
+        "setor": "NOME", "confianca": "ALTA", "anos_experiencia": 0, "resumo": "Motivo", 
+        "cv_limpo": "TEXTO REESCRITO..."
     }}
     """
-
     try:
         model = genai.GenerativeModel(NOME_MODELO_GEMINI)
-        # Generation Config para forçar JSON (Melhor que regex)
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(response.text)
     except Exception as e:
         logger.error(f"Erro Gemini: {e}")
-        # Fallback seguro
         return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "cv_limpo": texto_curriculo}
 
 # ==============================================================================
-# 3. LIFESPAN
+# 3. API
 # ==============================================================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 INICIANDO SERVIDOR...")
+    logger.info("🚀 SERVIDOR INICIADO")
     sys.modules['__main__'] = sys.modules[__name__]
     yield
-    logger.info("🛑 DESLIGANDO SERVIDOR...")
+    logger.info("🛑 SERVIDOR DESLIGADO")
     http_session.close()
 
-# ==============================================================================
-# 4. API
-# ==============================================================================
 app = FastAPI(title="API Triagem", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    # 1. Validação Rápida
     file.file.seek(0, 2)
     if file.file.tell() > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Arquivo muito grande (>5MB)")
+        raise HTTPException(status_code=413, detail="Arquivo muito grande")
     file.file.seek(0)
 
     try:
         content = file.file.read()
         raw_text = extract_text_from_memory(content, file.filename)
-        
-        # 2. IA
         analise = analisar_com_gemini(raw_text)
         setor = analise.get("setor", "OUTROS")
-        
-        # Texto final: Usa o limpo da IA se existir, senão o bruto
         cv_final = analise.get("cv_limpo") if analise.get("cv_limpo") and len(analise.get("cv_limpo")) > 50 else raw_text
 
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # 3. Webhook (LinkedIn)
-        is_extension = "FONTE: LINKEDIN" in raw_text.upper()
-        
-        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_extension:
-            try:
-                # Nome vindo do arquivo (limpo pela extensão, mas garantimos aqui)
-                nome_base = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
-                nome_candidato = sanitize_filename(nome_base) or "Candidato LinkedIn"
+        # Dados estruturados
+        dados_candidato = {
+            "nome": "Candidato", # Será atualizado abaixo
+            "texto": cv_final,
+            "setor": setor,
+            "confianca": f"{conf_val:.2%}",
+            "detalhes": analise
+        }
 
-                payload = {
-                    "nome": nome_candidato,
-                    "texto": cv_final, # Manda o CV limpo!
-                    "setor": setor,
-                    "confianca": f"{conf_val:.2%}",
-                    "url_perfil": "Via Extensão Chrome",
-                    "detalhes": analise
-                }
+        # --- LÓGICA DE INTEGRAÇÃO ---
+        link_drive_gerado = "" # Vai guardar o link se for salvo no drive
+        
+        is_from_extension = "FONTE: LINKEDIN" in raw_text.upper()
+        
+        # 1. Se vier da Extensão -> Manda pro Google Drive (Webhook)
+        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
+            try:
+                nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
+                nome_candidato = sanitize_filename(nome_limpo) or "Candidato LinkedIn"
                 
-                http_session.post(WEBHOOK_GOOGLE_URL, json=payload, timeout=10)
-                logger.info(f"✅ Webhook enviado: {nome_candidato}")
+                dados_candidato['nome'] = nome_candidato
+                dados_candidato['url_perfil'] = "Via Extensão Chrome"
+
+                # Envia e espera resposta para pegar o Link do Drive
+                resp = http_session.post(WEBHOOK_GOOGLE_URL, json=dados_candidato, timeout=10)
                 
-            except Exception as w_err:
-                logger.error(f"⚠️ Erro Webhook: {w_err}")
+                if resp.status_code == 200:
+                    resp_json = resp.json()
+                    link_drive_gerado = resp_json.get("link", "") # O AppScript precisa retornar {link: "..."}
+                    logger.info("✅ Salvo no Drive via Webhook")
+            except Exception as e:
+                logger.error(f"Erro Webhook: {e}")
+
+        # 2. Se tiver configurado Notion -> Salva no Notion também
+        # (Salva se tiver link do drive OU se for um arquivo que não veio da extensão mas foi processado)
+        if NOTION_TOKEN and setor != "ARQUIVO_INVALIDO":
+             # Se veio do Gmail, o nome é o nome do arquivo
+             if not is_from_extension:
+                 dados_candidato['nome'] = sanitize_filename(file.filename)
+                 # Nota: Se veio do Gmail, o link do drive já existe no AppScript, mas a API Python não sabe qual é.
+                 # O ideal para Notion + Gmail é o AppScript mandar direto pro Notion, não o Python.
+                 # Mas para LinkedIn -> Notion, funciona aqui:
+             
+             if is_from_extension and link_drive_gerado:
+                 dados_candidato['link_drive'] = link_drive_gerado
+                 salvar_no_notion(dados_candidato, link_drive_gerado)
 
         logger.info(f"🏁 {file.filename} -> {setor}")
 
         return {
             "arquivo": file.filename,
             "setor_sugerido": setor,
-            "confianca": f"{conf_val:.2%}",
-            "detalhes": {
-                "tempo_estimado": analise.get("anos_experiencia", 0),
-                "tem_cursos": True,
-                "motivo_rejeicao": analise.get("resumo")
-            }
+            "confianca": dados_candidato['confianca'],
+            "detalhes": analise
         }
 
     except Exception as e:
-        logger.critical(f"🔥 Erro Fatal: {e}")
+        logger.error(f"Erro fatal: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
