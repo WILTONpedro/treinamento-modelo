@@ -13,3 +13,4 @@ Pillow
 nltk
 google-generativeai>=0.8.3
 requests
+notion-client
