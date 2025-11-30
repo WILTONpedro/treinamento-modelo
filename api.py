@@ -226,21 +226,27 @@ def triar_curriculo(file: UploadFile = File(...)):
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # Dados estruturados
+        # --- CRIAÇÃO DO OBJETO DETALHES PADRONIZADO ---
+        # Isso garante que 'motivo_rejeicao' exista tanto para Gmail quanto para Webhook
+        detalhes_padrao = {
+            "tempo_estimado": analise.get("anos_experiencia", 0),
+            "tem_cursos": True,
+            "motivo_rejeicao": analise.get("resumo"), # <--- AQUI ESTÁ A CORREÇÃO
+            "resumo": analise.get("resumo") # Mantemos os dois para garantir compatibilidade
+        }
+
         dados_candidato = {
-            "nome": "Candidato", # Será atualizado abaixo
+            "nome": "Candidato",
             "texto": cv_final,
             "setor": setor,
             "confianca": f"{conf_val:.2%}",
-            "detalhes": analise
+            "detalhes": detalhes_padrao
         }
 
-        # --- LÓGICA DE INTEGRAÇÃO ---
-        link_drive_gerado = "" # Vai guardar o link se for salvo no drive
-        
+        link_drive_gerado = "" 
         is_from_extension = "FONTE: LINKEDIN" in raw_text.upper()
         
-        # 1. Se vier da Extensão -> Manda pro Google Drive (Webhook)
+        # 1. Envio para Webhook (Google Drive) - Se vier do LinkedIn
         if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
             try:
                 nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
@@ -249,25 +255,19 @@ def triar_curriculo(file: UploadFile = File(...)):
                 dados_candidato['nome'] = nome_candidato
                 dados_candidato['url_perfil'] = "Via Extensão Chrome"
 
-                # Envia e espera resposta para pegar o Link do Drive
                 resp = http_session.post(WEBHOOK_GOOGLE_URL, json=dados_candidato, timeout=10)
                 
                 if resp.status_code == 200:
                     resp_json = resp.json()
-                    link_drive_gerado = resp_json.get("link", "") # O AppScript precisa retornar {link: "..."}
+                    link_drive_gerado = resp_json.get("link", "")
                     logger.info("✅ Salvo no Drive via Webhook")
             except Exception as e:
                 logger.error(f"Erro Webhook: {e}")
 
-        # 2. Se tiver configurado Notion -> Salva no Notion também
-        # (Salva se tiver link do drive OU se for um arquivo que não veio da extensão mas foi processado)
+        # 2. Salvar no Notion
         if NOTION_TOKEN and setor != "ARQUIVO_INVALIDO":
-             # Se veio do Gmail, o nome é o nome do arquivo
              if not is_from_extension:
                  dados_candidato['nome'] = sanitize_filename(file.filename)
-                 # Nota: Se veio do Gmail, o link do drive já existe no AppScript, mas a API Python não sabe qual é.
-                 # O ideal para Notion + Gmail é o AppScript mandar direto pro Notion, não o Python.
-                 # Mas para LinkedIn -> Notion, funciona aqui:
              
              if is_from_extension and link_drive_gerado:
                  dados_candidato['link_drive'] = link_drive_gerado
@@ -279,7 +279,7 @@ def triar_curriculo(file: UploadFile = File(...)):
             "arquivo": file.filename,
             "setor_sugerido": setor,
             "confianca": dados_candidato['confianca'],
-            "detalhes": analise
+            "detalhes": detalhes_padrao # Agora mandamos o padronizado
         }
 
     except Exception as e:
