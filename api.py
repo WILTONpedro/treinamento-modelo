@@ -16,6 +16,7 @@ import docx
 from PIL import Image
 import pytesseract
 import google.generativeai as genai
+from notion_client import Client
 
 logging.basicConfig(
     level=logging.INFO, 
