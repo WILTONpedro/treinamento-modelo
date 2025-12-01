@@ -131,6 +131,10 @@ def analisar_com_gemini(texto_curriculo):
     - Mantenha: Nome, Resumo, Experiência (Empresas, Cargos, Datas), Formação, Idiomas e Competências.
     - Formato: Texto corrido bem organizado (Markdown simples).
 
+    TAREFA 3 (SUPER IMPORTANTE): Sempre tente capturar o nome da pessoa no currículo.
+    - Geralmente fica na parte de cima do currículo.
+    - Geralmente é um nome composto (Exemplo: Wilton Pedro Silva Souza), pegue apenas o nome e sobrenome. (Exemplo: Wilton Pedro)
+
     ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
 
     1. **JOVEM APRENDIZ (Cuidado!)**:
@@ -182,7 +186,11 @@ def analisar_com_gemini(texto_curriculo):
 
     RESPONDA JSON:
     {{
-        "setor": "NOME", "confianca": "ALTA", "anos_experiencia": 0, "resumo": "Motivo", 
+        "nome": "NOME COMPLETO DO CANDIDATO (Capitalizado)",
+        "setor": "NOME_DA_CATEGORIA", 
+        "confianca": "ALTA", 
+        "anos_experiencia": 0, 
+        "resumo": "Motivo", 
         "cv_limpo": "TEXTO REESCRITO..."
     }}
     """
@@ -192,7 +200,7 @@ def analisar_com_gemini(texto_curriculo):
         return json.loads(response.text)
     except Exception as e:
         logger.error(f"Erro Gemini: {e}")
-        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "cv_limpo": texto_curriculo}
+        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "cv_limpo": texto_curriculo, "nome": "Desconhecido"}
 
 # ==============================================================================
 # 3. API
@@ -221,65 +229,52 @@ def triar_curriculo(file: UploadFile = File(...)):
         raw_text = extract_text_from_memory(content, file.filename)
         analise = analisar_com_gemini(raw_text)
         setor = analise.get("setor", "OUTROS")
-        cv_final = analise.get("cv_limpo") if analise.get("cv_limpo") and len(analise.get("cv_limpo")) > 50 else raw_text
+        
+        # Pega o nome extraído pela IA, se falhar, usa o do arquivo limpo
+        nome_ia = analise.get("nome", "Candidato")
+        if nome_ia == "Desconhecido" or len(nome_ia) < 3:
+             nome_ia = sanitize_filename(file.filename.replace(".pdf", "").replace(".docx", ""))
 
+        cv_final = analise.get("cv_limpo") if analise.get("cv_limpo") and len(analise.get("cv_limpo")) > 50 else raw_text
         conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
         conf_val = conf_map.get(analise.get("confianca"), 0.5)
 
-        # --- CRIAÇÃO DO OBJETO DETALHES PADRONIZADO ---
-        # Isso garante que 'motivo_rejeicao' exista tanto para Gmail quanto para Webhook
-        detalhes_padrao = {
-            "tempo_estimado": analise.get("anos_experiencia", 0),
-            "tem_cursos": True,
-            "motivo_rejeicao": analise.get("resumo"), # <--- AQUI ESTÁ A CORREÇÃO
-            "resumo": analise.get("resumo") # Mantemos os dois para garantir compatibilidade
-        }
-
+        # Dados estruturados
         dados_candidato = {
-            "nome": "Candidato",
+            "nome": nome_ia, # AGORA USA O NOME REAL DA IA
             "texto": cv_final,
             "setor": setor,
             "confianca": f"{conf_val:.2%}",
-            "detalhes": detalhes_padrao
+            "detalhes": {
+                "tempo_estimado": analise.get("anos_experiencia", 0),
+                "tem_cursos": True,
+                "motivo_rejeicao": analise.get("resumo"),
+                "resumo": analise.get("resumo")
+            }
         }
-
-        link_drive_gerado = "" 
-        is_from_extension = "FONTE: LINKEDIN" in raw_text.upper()
         
-        # 1. Envio para Webhook (Google Drive) - Se vier do LinkedIn
+        # Webhook (LinkedIn)
+        link_drive_gerado = ""
+        is_from_extension = "FONTE: LINKEDIN" in raw_text.upper()
         if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
             try:
-                nome_limpo = file.filename.replace("perfil_linkedin_auto", "").replace(".txt", "").strip()
-                nome_candidato = sanitize_filename(nome_limpo) or "Candidato LinkedIn"
-                
-                dados_candidato['nome'] = nome_candidato
                 dados_candidato['url_perfil'] = "Via Extensão Chrome"
-
                 resp = http_session.post(WEBHOOK_GOOGLE_URL, json=dados_candidato, timeout=10)
-                
                 if resp.status_code == 200:
-                    resp_json = resp.json()
-                    link_drive_gerado = resp_json.get("link", "")
-                    logger.info("✅ Salvo no Drive via Webhook")
-            except Exception as e:
-                logger.error(f"Erro Webhook: {e}")
+                    link_drive_gerado = resp.json().get("link", "")
+            except Exception: pass
 
-        # 2. Salvar no Notion
-        if NOTION_TOKEN and setor != "ARQUIVO_INVALIDO":
-             if not is_from_extension:
-                 dados_candidato['nome'] = sanitize_filename(file.filename)
-             
-             if is_from_extension and link_drive_gerado:
-                 dados_candidato['link_drive'] = link_drive_gerado
-                 salvar_no_notion(dados_candidato, link_drive_gerado)
+        # Notion (Se configurado direto no Python, mas vamos usar o Apps Script para re-triagem)
+        # ... (código do notion opcional aqui)
 
-        logger.info(f"🏁 {file.filename} -> {setor}")
+        logger.info(f"🏁 {file.filename} -> {setor} ({nome_ia})")
 
         return {
             "arquivo": file.filename,
+            "nome_identificado": nome_ia, # Retorna o nome pra gente ver
             "setor_sugerido": setor,
             "confianca": dados_candidato['confianca'],
-            "detalhes": detalhes_padrao # Agora mandamos o padronizado
+            "detalhes": dados_candidato['detalhes']
         }
 
     except Exception as e:
