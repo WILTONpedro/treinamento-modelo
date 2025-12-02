@@ -8,8 +8,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from contextlib import asynccontextmanager
-
-# --- SERVER ---
+import time
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -203,13 +202,24 @@ def analisar_com_gemini(texto_curriculo):
         "cv_limpo": "TEXTO REESCRITO..."
     }}
     """
-    try:
-        model = genai.GenerativeModel(NOME_MODELO_GEMINI)
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(response.text)
-    except Exception as e:
-        logger.error(f"Erro Gemini: {e}")
-        return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "cv_limpo": texto_curriculo, "nome": "Desconhecido"}
+    for tentativa in range(3):
+        try:
+            model = genai.GenerativeModel(NOME_MODELO_GEMINI)
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(response.text)
+            
+        except Exception as e:
+            erro_str = str(e)
+            # Se for erro de limite (429), espera e tenta de novo
+            if "429" in erro_str or "Resource exhausted" in erro_str:
+                logger.warning(f"⚠️ Limite do Google atingido. Esperando 10s... (Tentativa {tentativa+1}/3)")
+                time.sleep(10) # Dorme 10 segundos
+            else:
+                # Se for outro erro, desiste logo
+                logger.error(f"Erro Gemini: {e}")
+                return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
+    
+    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Google 429 - Muitas tentativas falhas"}
 
 # ==============================================================================
 # 3. API
