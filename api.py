@@ -182,7 +182,16 @@ def analisar_com_gemini(texto_curriculo):
         - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
         - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
 
-    ENTRADA: {texto_curriculo[:12000]}
+    19. **ATENÇÃO!! Nossas pastas e como elas funcionam**:
+        - Nossas pastas Funcionam assim: Uma para GERENTE do setor, e a outra para que varia de Analista ate auxiliar, ou seja: A de GERENTE MARKETING vai os perfis mais adequados para está pasta, com experiências mais relevantes, e a de MARKETING vai o pessoal que tem experiência como Analista pra baixo
+        - Não tente ir criando novas pastas como você estava criando (Ex: Executivo de vendas, representante, etc), tente encaixar os currículos nas pastas já existentes, sem criar novas.
+        - Tente procurar similaridades de experiências com as pastas do drive que já temos (Ex: Você criou a pasta PROPAGANDISTA, porém quem faz propaganda geralmente é vinculado a parte do marketing).
+
+    20. **ANTIC ARQUIVO INUTIL**:
+        - Geralmente o pessoal envia junto ao currículo, uma apresentação por powerpoint, cartas de apresentação, diplomas, cartas de indicação, etc...
+        - Ao ver arquivos nesse tipo, não salve no drive, apenas pule para o próximo.
+
+    ENTRADA: {texto_curriculo[:15000]}
 
     RESPONDA JSON:
     {{
