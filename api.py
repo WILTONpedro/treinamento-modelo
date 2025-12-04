@@ -21,7 +21,6 @@ import pytesseract
 
 # --- IA & INTEGRAÇÕES ---
 import google.generativeai as genai
-from notion_client import Client # <--- Importante
 
 # ==============================================================================
 # ⚙️ CONFIGURAÇÃO
@@ -33,22 +32,18 @@ logger = logging.getLogger("api")
 # Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
-NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
 
 # Configuração IA
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
-# Configuração HTTP (Sessão Otimizada)
+# Configuração HTTP
 http_session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
 http_session.mount('https://', HTTPAdapter(max_retries=retries))
 
-# Cliente Notion
-notion = Client(auth=NOTION_TOKEN) if NOTION_TOKEN else None
-
-# Categorias
+# ⚠️ SUA LISTA ORIGINAL (TRAVADA) ⚠️
+# A IA só poderá responder um destes nomes exatos.
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
     "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
@@ -57,7 +52,7 @@ CATEGORIAS_DISPONIVEIS = [
     "GERENTE QUALIDADE", "GERENTE DE RH", "GERENTE VENDAS", "HIGIENIZAÇÃO", "JOVEM APRENDIZ",
     "KEY ACCOUNT", "LIDER DE PRODUÇÃO", "LOGÍSTICA", "MARKETING", "MECANICA INDUSTRIAL",
     "MERCHANDISING", "MOTORISTA", "PCD", "PCP", "PRODUÇÃO", "PROJETOS", "PROMOTOR DE VENDAS",
-    "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "TI", "VENDAS", "VIGIA"
+    "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "TI", "VENDAS", "VIGIA", "OUTROS"
 ]
 
 # ==============================================================================
@@ -91,27 +86,6 @@ def extract_text_from_memory(file_bytes, filename):
         return ""
     return text.replace("\x00", "")
 
-def salvar_no_notion(dados, link_drive):
-    """Cria um card no Notion com as informações"""
-    if not notion or not NOTION_DATABASE_ID:
-        return
-    
-    try:
-        notion.pages.create(
-            parent={"database_id": NOTION_DATABASE_ID},
-            properties={
-                "Nome": {"title": [{"text": {"content": dados['nome'][:100]}}]},
-                "Setor": {"select": {"name": dados['setor']}},
-                "Confiança": {"rich_text": [{"text": {"content": dados['confianca']}}]},
-                "Resumo IA": {"rich_text": [{"text": {"content": dados['detalhes']['motivo_rejeicao'][:2000]}}]},
-                "Status": {"select": {"name": "Novo"}},
-                "Link Currículo": {"url": link_drive if link_drive else "https://drive.google.com"} 
-            }
-        )
-        logger.info("✅ Salvo no Notion!")
-    except Exception as e:
-        logger.error(f"⚠️ Erro Notion: {e}")
-
 # ==============================================================================
 # 2. CÉREBRO (GEMINI)
 # ==============================================================================
@@ -120,9 +94,9 @@ def analisar_com_gemini(texto_curriculo):
     if not texto_curriculo or len(texto_curriculo.strip()) < 20:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente"}
 
-    # SEU PROMPT (MANTIDO INTACTO)
     prompt = f"""
-    Você é um Recrutador Sênior Especialista da empresa Baly. Sua missão é triar currículos para as pastas corretas.
+    Você é um Recrutador Sênior da Baly.
+    LISTA PERMITIDA: {json.dumps(CATEGORIAS_DISPONIVEIS)}
     
     TAREFA 2 (CRUCIAL): O texto abaixo veio de uma extração bruta do LinkedIn ou PDF e está sujo.
     Você deve REESCREVER e ESTRUTURAR as informações em formato de Currículo Profissional Limpo.
@@ -133,6 +107,11 @@ def analisar_com_gemini(texto_curriculo):
     TAREFA 3 (SUPER IMPORTANTE): Sempre tente capturar o nome da pessoa no currículo.
     - Geralmente fica na parte de cima do currículo.
     - Geralmente é um nome composto (Exemplo: Wilton Pedro Silva Souza), pegue apenas o nome e sobrenome. (Exemplo: Wilton Pedro)
+
+    REGRA SUPREMA: EVITAR AO MÁXIMO CRIAR PASTAS NOVAS.
+    - Se no currículo do candidato tiver coisas que não foge tanto das categorias listadas, NÃO crie outras pastas.
+    - Leve em consideração a hierarquia que está listado nas regras, então se o candidato for um EXECUTIVO, não é para colocar em uma pasta abaixo, coloque na SUPERVISOR DE VENDAS e por aí vai.
+
 
     ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
 
@@ -196,32 +175,36 @@ def analisar_com_gemini(texto_curriculo):
 
     RESPONDA JSON:
     {{
-        "nome": "NOME COMPLETO DO CANDIDATO (Capitalizado)",
-        "setor": "NOME_DA_CATEGORIA", 
+        "nome": "Nome Sobrenome",
+        "setor": "UMA_DAS_CATEGORIAS_DA_LISTA", 
         "confianca": "ALTA", 
         "anos_experiencia": 0, 
-        "resumo": "Motivo", 
-        "cv_limpo": "TEXTO REESCRITO..."
+        "resumo": "Motivo da escolha", 
+        "cv_limpo": "Texto..."
     }}
     """
     for tentativa in range(3):
         try:
             model = genai.GenerativeModel(NOME_MODELO_GEMINI)
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-            return json.loads(response.text)
+            dados = json.loads(response.text)
             
+            # TRAVA DE SEGURANÇA FINAL (NO CÓDIGO)
+            # Se a IA alucinar e inventar um nome, forçamos para OUTROS
+            setor_ia = dados.get("setor", "OUTROS").upper()
+            if setor_ia not in CATEGORIAS_DISPONIVEIS:
+                dados["setor"] = "OUTROS"
+                dados["resumo"] += f" (IA tentou criar pasta '{setor_ia}', mas foi bloqueada e movida para OUTROS)"
+            
+            return dados
+
         except Exception as e:
-            erro_str = str(e)
-            # Se for erro de limite (429), espera e tenta de novo
-            if "429" in erro_str or "Resource exhausted" in erro_str:
-                logger.warning(f"⚠️ Limite do Google atingido. Esperando 10s... (Tentativa {tentativa+1}/3)")
-                time.sleep(10) # Dorme 10 segundos
+            if "429" in str(e):
+                time.sleep(10)
             else:
-                # Se for outro erro, desiste logo
-                logger.error(f"Erro Gemini: {e}")
                 return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
     
-    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Google 429 - Muitas tentativas falhas"}
+    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout 429"}
 
 # ==============================================================================
 # 3. API
@@ -230,9 +213,7 @@ def analisar_com_gemini(texto_curriculo):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 SERVIDOR INICIADO")
-    sys.modules['__main__'] = sys.modules[__name__]
     yield
-    logger.info("🛑 SERVIDOR DESLIGADO")
     http_session.close()
 
 app = FastAPI(title="API Triagem", lifespan=lifespan)
@@ -240,66 +221,39 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.post("/triagem")
 def triar_curriculo(file: UploadFile = File(...)):
-    file.file.seek(0, 2)
-    if file.file.tell() > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Arquivo muito grande")
     file.file.seek(0)
-
     try:
         content = file.file.read()
         raw_text = extract_text_from_memory(content, file.filename)
         analise = analisar_com_gemini(raw_text)
+        
+        # Garante que o setor retornado está limpo
         setor = analise.get("setor", "OUTROS")
         
-        # Pega o nome extraído pela IA, se falhar, usa o do arquivo limpo
         nome_ia = analise.get("nome", "Candidato")
         if nome_ia == "Desconhecido" or len(nome_ia) < 3:
              nome_ia = sanitize_filename(file.filename.replace(".pdf", "").replace(".docx", ""))
 
-        cv_final = analise.get("cv_limpo") if analise.get("cv_limpo") and len(analise.get("cv_limpo")) > 50 else raw_text
-        conf_map = {"ALTA": 0.98, "MEDIA": 0.75, "BAIXA": 0.45, "ERRO_IA": 0.0}
-        conf_val = conf_map.get(analise.get("confianca"), 0.5)
+        cv_final = analise.get("cv_limpo") or raw_text
 
-        # Dados estruturados
-        dados_candidato = {
-            "nome": nome_ia, # AGORA USA O NOME REAL DA IA
-            "texto": cv_final,
-            "setor": setor,
-            "confianca": f"{conf_val:.2%}",
-            "detalhes": {
-                "tempo_estimado": analise.get("anos_experiencia", 0),
-                "tem_cursos": True,
-                "motivo_rejeicao": analise.get("resumo"),
-                "resumo": analise.get("resumo")
-            }
-        }
-        
-        # Webhook (LinkedIn)
-        link_drive_gerado = ""
-        is_from_extension = "FONTE: LINKEDIN" in raw_text.upper()
-        if WEBHOOK_GOOGLE_URL and setor != "ARQUIVO_INVALIDO" and is_from_extension:
+        # Webhook LinkedIn
+        link_drive = ""
+        if WEBHOOK_GOOGLE_URL and "LINKEDIN" in raw_text.upper():
             try:
-                dados_candidato['url_perfil'] = "Via Extensão Chrome"
-                resp = http_session.post(WEBHOOK_GOOGLE_URL, json=dados_candidato, timeout=10)
-                if resp.status_code == 200:
-                    link_drive_gerado = resp.json().get("link", "")
-            except Exception: pass
-
-        # Notion (Se configurado direto no Python, mas vamos usar o Apps Script para re-triagem)
-        # ... (código do notion opcional aqui)
-
-        logger.info(f"🏁 {file.filename} -> {setor} ({nome_ia})")
+                resp = http_session.post(WEBHOOK_GOOGLE_URL, json={"nome": nome_ia, "setor": setor, "texto": raw_text}, timeout=5)
+                if resp.status_code == 200: link_drive = resp.json().get("link", "")
+            except: pass
 
         return {
             "arquivo": file.filename,
-            "nome_identificado": nome_ia, # Retorna o nome pra gente ver
+            "nome_identificado": nome_ia,
             "setor_sugerido": setor,
-            "confianca": dados_candidato['confianca'],
-            "detalhes": dados_candidato['detalhes']
+            "confianca": analise.get("confianca", "BAIXA"),
+            "detalhes": analise
         }
 
     except Exception as e:
-        logger.error(f"Erro fatal: {e}")
+        logger.error(f"Erro: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
