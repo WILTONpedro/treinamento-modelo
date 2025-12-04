@@ -43,7 +43,7 @@ CATEGORIAS_DISPONIVEIS = [
     "GERENTE QUALIDADE", "GERENTE DE RH", "GERENTE VENDAS", "HIGIENIZAÇÃO", "JOVEM APRENDIZ",
     "KEY ACCOUNT", "LIDER DE PRODUÇÃO", "LOGÍSTICA", "MARKETING", "MECANICA INDUSTRIAL",
     "MERCHANDISING", "MOTORISTA", "PCD", "PCP", "PRODUÇÃO", "PROJETOS", "PROMOTOR DE VENDAS",
-    "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "TI", "VENDAS", "VIGIA", "OUTROS"
+    "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "SUPERVISOR DE VENDAS", "TI", "VENDAS", "VIGIA", "OUTROS"
 ]
 
 def sanitize_filename(filename):
@@ -157,6 +157,24 @@ def analisar_com_gemini(texto_curriculo):
     21. **ANTI ARQUIVO INUTIL**:
         - Geralmente o pessoal envia junto ao currículo, uma apresentação por powerpoint, cartas de apresentação, diplomas, cartas de indicação, etc...
         - Ao ver arquivos nesse tipo, não salve no drive, apenas pule para o próximo.
+
+    ⚠️ REGRAS DE AGRUPAMENTO (EVITE CRIAR PASTAS REDUNDANTES):
+    
+    1. **VENDEDORES / COMERCIAL**:
+       - Se for "Vendedor", "Vendedor Interno", "Balconista", "Consultor de Vendas" -> Use a pasta **VENDAS**. (Não crie pasta "Vendedor").
+       - Se for "Representante Comercial" -> Use a pasta **VENDAS** ou **COMERCIAL**.
+       - Se for "Vendedor Externo" -> Use a pasta **VENDAS** (ou PROMOTOR DE VENDAS se for focado em merchandising).
+    
+    2. **LIDERANÇA DE VENDAS**:
+       - Supervisores, Coordenadores, Líderes de vendas -> Use **SUPERVISOR DE VENDAS**.
+       - Gerentes -> Use **GERENTE VENDAS**.
+    
+    3. **TI / SUPORTE**:
+       - Dev, Suporte, Infra, Redes -> Use **TI**
+
+    4. **NOVAS PASTAS**:
+       - Você pode sugerir uma pasta nova APENAS se o cargo for totalmente diferente de tudo que existe na lista (Ex: "Médico", "Advogado"). 
+       - Mas para variações comuns (Vendedor x Vendas), USE A PASTA EXISTENTE NA LISTA.
 
     ENTRADA: {texto_curriculo[:15000]}
 
