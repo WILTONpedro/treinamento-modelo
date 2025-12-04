@@ -236,25 +236,5 @@ def triar_curriculo(file: UploadFile = File(...)):
 
         cv_final = analise.get("cv_limpo") or raw_text
 
-        # Webhook LinkedIn
-        link_drive = ""
-        if WEBHOOK_GOOGLE_URL and "LINKEDIN" in raw_text.upper():
-            try:
-                resp = http_session.post(WEBHOOK_GOOGLE_URL, json={"nome": nome_ia, "setor": setor, "texto": raw_text}, timeout=5)
-                if resp.status_code == 200: link_drive = resp.json().get("link", "")
-            except: pass
-
-        return {
-            "arquivo": file.filename,
-            "nome_identificado": nome_ia,
-            "setor_sugerido": setor,
-            "confianca": analise.get("confianca", "BAIXA"),
-            "detalhes": analise
-        }
-
-    except Exception as e:
-        logger.error(f"Erro: {e}")
-        return {"status": "erro", "mensagem": str(e)}
-
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
