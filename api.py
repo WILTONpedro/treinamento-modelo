@@ -4,9 +4,6 @@ import json
 import logging
 import re
 import sys
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from contextlib import asynccontextmanager
 import time
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -19,7 +16,7 @@ import docx
 from PIL import Image
 import pytesseract
 
-# --- IA & INTEGRAÇÕES ---
+# --- IA ---
 import google.generativeai as genai
 
 # ==============================================================================
@@ -31,16 +28,10 @@ logger = logging.getLogger("api")
 
 # Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-WEBHOOK_GOOGLE_URL = os.environ.get("WEBHOOK_GOOGLE_URL", "")
 
 # Configuração IA
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
-
-# Configuração HTTP
-http_session = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-http_session.mount('https://', HTTPAdapter(max_retries=retries))
 
 # ⚠️ SUA LISTA ORIGINAL (TRAVADA) ⚠️
 # A IA só poderá responder um destes nomes exatos.
@@ -54,10 +45,6 @@ CATEGORIAS_DISPONIVEIS = [
     "MERCHANDISING", "MOTORISTA", "PCD", "PCP", "PRODUÇÃO", "PROJETOS", "PROMOTOR DE VENDAS",
     "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "TI", "VENDAS", "VIGIA", "OUTROS"
 ]
-
-# ==============================================================================
-# 1. FUNÇÕES AUXILIARES
-# ==============================================================================
 
 def sanitize_filename(filename):
     clean = re.sub(r'[^a-zA-Z0-9 \-\.]', '', filename)
@@ -189,12 +176,12 @@ def analisar_com_gemini(texto_curriculo):
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             dados = json.loads(response.text)
             
-            # TRAVA DE SEGURANÇA FINAL (NO CÓDIGO)
-            # Se a IA alucinar e inventar um nome, forçamos para OUTROS
+            # TRAVA DE SEGURANÇA FINAL
+            # Se a IA inventar uma pasta que não existe na lista, forçamos OUTROS
             setor_ia = dados.get("setor", "OUTROS").upper()
             if setor_ia not in CATEGORIAS_DISPONIVEIS:
                 dados["setor"] = "OUTROS"
-                dados["resumo"] += f" (IA tentou criar pasta '{setor_ia}', mas foi bloqueada e movida para OUTROS)"
+                dados["resumo"] += f" (IA tentou '{setor_ia}', movido para OUTROS)"
             
             return dados
 
@@ -207,14 +194,13 @@ def analisar_com_gemini(texto_curriculo):
     return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout 429"}
 
 # ==============================================================================
-# 3. API
+# 3. API (SIMPLIFICADA)
 # ==============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 SERVIDOR INICIADO")
     yield
-    http_session.close()
 
 app = FastAPI(title="API Triagem", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -227,14 +213,26 @@ def triar_curriculo(file: UploadFile = File(...)):
         raw_text = extract_text_from_memory(content, file.filename)
         analise = analisar_com_gemini(raw_text)
         
-        # Garante que o setor retornado está limpo
         setor = analise.get("setor", "OUTROS")
-        
         nome_ia = analise.get("nome", "Candidato")
+        
+        # Fallback para nome
         if nome_ia == "Desconhecido" or len(nome_ia) < 3:
              nome_ia = sanitize_filename(file.filename.replace(".pdf", "").replace(".docx", ""))
 
-        cv_final = analise.get("cv_limpo") or raw_text
+        logger.info(f"🏁 {file.filename} -> {setor} ({nome_ia})")
+
+        return {
+            "arquivo": file.filename,
+            "nome_identificado": nome_ia,
+            "setor_sugerido": setor,
+            "confianca": analise.get("confianca", "BAIXA"),
+            "detalhes": analise
+        }
+
+    except Exception as e:
+        logger.error(f"Erro: {e}")
+        return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
