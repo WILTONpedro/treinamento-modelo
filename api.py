@@ -16,6 +16,7 @@ from PIL import Image
 import pytesseract
 import google.generativeai as genai
 
+# --- CONFIGURATION ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("api")
 
@@ -23,8 +24,6 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
-# ⚠️ SUA LISTA ORIGINAL (TRAVADA) ⚠️
-# A IA só poderá responder um destes nomes exatos.
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRITIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
     "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
@@ -182,8 +181,20 @@ def analisar_com_gemini(texto_curriculo):
         try:
             model = genai.GenerativeModel(NOME_MODELO_GEMINI)
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-            dados = json.loads(response.text)
             
+            # --- FIX: Handle List vs Dict Response ---
+            try:
+                dados = json.loads(response.text)
+                if isinstance(dados, list):
+                    dados = dados[0]  # Take the first item if it's a list
+            except json.JSONDecodeError:
+                 # Fallback: try to find JSON block if raw text has extra chars
+                 match = re.search(r'\{.*\}', response.text, re.DOTALL)
+                 if match:
+                     dados = json.loads(match.group())
+                 else:
+                     raise ValueError("Could not parse JSON from Gemini")
+
             setor_ia = dados.get("setor", "OUTROS").upper()
             if setor_ia not in CATEGORIAS_DISPONIVEIS:
                 dados["setor"] = "OUTROS"
