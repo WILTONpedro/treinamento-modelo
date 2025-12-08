@@ -10,26 +10,16 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# --- PROCESSAMENTO ---
 import pdfplumber
 import docx
 from PIL import Image
 import pytesseract
-
-# --- IA ---
 import google.generativeai as genai
-
-# ==============================================================================
-# ⚙️ CONFIGURAÇÃO
-# ==============================================================================
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("api")
 
-# Variáveis de Ambiente
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
-# Configuração IA
 genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-2.0-flash"
 
@@ -72,10 +62,6 @@ def extract_text_from_memory(file_bytes, filename):
         logger.error(f"Erro leitura: {e}")
         return ""
     return text.replace("\x00", "")
-
-# ==============================================================================
-# 2. CÉREBRO (GEMINI)
-# ==============================================================================
 
 def analisar_com_gemini(texto_curriculo):
     if not texto_curriculo or len(texto_curriculo.strip()) < 20:
@@ -188,7 +174,7 @@ def analisar_com_gemini(texto_curriculo):
         "setor": "UMA_DAS_CATEGORIAS_DA_LISTA", 
         "confianca": "ALTA", 
         "anos_experiencia": 0, 
-        "resumo": "Motivo da escolha", 
+        "resumo": "Explique por que escolheu este setor (se tiver liderança, cite aqui)", 
         "cv_limpo": "Texto..."
     }}
     """
@@ -198,8 +184,6 @@ def analisar_com_gemini(texto_curriculo):
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             dados = json.loads(response.text)
             
-            # TRAVA DE SEGURANÇA FINAL
-            # Se a IA inventar uma pasta que não existe na lista, forçamos OUTROS
             setor_ia = dados.get("setor", "OUTROS").upper()
             if setor_ia not in CATEGORIAS_DISPONIVEIS:
                 dados["setor"] = "OUTROS"
@@ -214,10 +198,6 @@ def analisar_com_gemini(texto_curriculo):
                 return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
     
     return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout 429"}
-
-# ==============================================================================
-# 3. API (SIMPLIFICADA)
-# ==============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -238,7 +218,6 @@ def triar_curriculo(file: UploadFile = File(...)):
         setor = analise.get("setor", "OUTROS")
         nome_ia = analise.get("nome", "Candidato")
         
-        # Fallback para nome
         if nome_ia == "Desconhecido" or len(nome_ia) < 3:
              nome_ia = sanitize_filename(file.filename.replace(".pdf", "").replace(".docx", ""))
 
