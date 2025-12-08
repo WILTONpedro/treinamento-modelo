@@ -99,6 +99,10 @@ def analisar_com_gemini(texto_curriculo):
     - Se no currículo do candidato tiver coisas que não foge tanto das categorias listadas, NÃO crie outras pastas.
     - Leve em consideração a hierarquia que está listado nas regras, então se o candidato for um EXECUTIVO, não é para colocar em uma pasta abaixo, coloque na SUPERVISOR DE VENDAS e por aí vai.
 
+    ⚠️ REGRA DE OURO (HIERARQUIA):
+    - Se o candidato tem experiência em **GESTÃO, LIDERANÇA, COORDENAÇÃO ou MBA**, ele é **PROIBIDO** de entrar na pasta "ADMINISTRATIVO".
+    - Ele deve ir para a pasta de Gerência/Supervisão da área dele (Ex: Lucas tem MBA em Liderança -> GERENTE COMERCIAL ou SUPERVISOR DE VENDAS).
+
 
     ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
 
