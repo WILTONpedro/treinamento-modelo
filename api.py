@@ -70,15 +70,13 @@ def analisar_com_gemini(texto_curriculo):
     Você é um Recrutador Sênior da Baly.
     LISTA PERMITIDA: {json.dumps(CATEGORIAS_DISPONIVEIS)}
     
-    TAREFA 2 (CRUCIAL): O texto abaixo veio de uma extração bruta do LinkedIn ou PDF e está sujo.
-    Você deve REESCREVER e ESTRUTURAR as informações em formato de Currículo Profissional Limpo.
-    - Remova: Botões ("Conectar", "Enviar mensagem"), propagandas, menus, "Pessoas também viram", textos de interface.
-    - Mantenha: Nome, Resumo, Experiência (Empresas, Cargos, Datas), Formação, Idiomas e Competências.
-    - Formato: Texto corrido bem organizado (Markdown simples).
-
-    TAREFA 3 (SUPER IMPORTANTE): Sempre tente capturar o nome da pessoa no currículo.
+    TAREFA 1 (SUPER IMPORTANTE): Sempre tente capturar o nome da pessoa no currículo.
     - Geralmente fica na parte de cima do currículo.
     - Geralmente é um nome composto (Exemplo: Wilton Pedro Silva Souza), pegue apenas o nome e sobrenome. (Exemplo: Wilton Pedro)
+
+    TAREFA 2 (IGUALMENTE IMPORTANTE): Tente sempre extrair número de telefone e email do currículo.
+    - Núemero geralmente vai estar com dois números entre parênteses(ex: (49)), seguido de uma sequência de uma sequência de 10 à 11 números, podendo ser separados ou não por um -
+    - O email sempre vai ter um @, pode ser @gmail; @outlook e por aí vai...
 
     REGRA SUPREMA: EVITAR AO MÁXIMO CRIAR PASTAS NOVAS.
     - Se no currículo do candidato tiver coisas que não foge tanto das categorias listadas, NÃO crie outras pastas.
@@ -170,6 +168,8 @@ def analisar_com_gemini(texto_curriculo):
     RESPONDA JSON:
     {{
         "nome": "Nome Sobrenome",
+        "email": "email@exemplo.com",
+        "núemro": "(XX) 9XXXX-XXXX",
         "setor": "UMA_DAS_CATEGORIAS_DA_LISTA", 
         "confianca": "ALTA", 
         "anos_experiencia": 0, 
