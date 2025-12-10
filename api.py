@@ -145,6 +145,11 @@ def analisar_com_gemini(texto_curriculo):
         - Geralmente o pessoal envia junto ao currículo, uma apresentação por powerpoint, cartas de apresentação, diplomas, cartas de indicação, etc...
         - Ao ver arquivos nesse tipo, não salve no drive, apenas pule para o próximo.
 
+    22. **RECURSOS HUMANSO**: Pasta focada para pessoas com perfil mais educaional.
+    -Não colocar nesta pasta apenas pessoas com experiência em gestão de pessoas, isso é muito amplo, veja o contexto(Uma pessoa com gestão de promotores de vendas para uma pessoa que teve com gestão de pessoas).
+    -colocar aqui também pessoas que tenham estudado curosos como psicologia, etc...
+    -LEVE MUITO EM CONSIDERAÇÃO O CONTEXTO DO CURRÍCULO. Não é só por que ele tem Gestão de Pessoas no currículo que ele tem que ir para GERENTE RH ou algo do tipo. Veja toda a experiência do currículo e veja o contexto
+
     ⚠️ REGRAS DE AGRUPAMENTO (EVITE CRIAR PASTAS REDUNDANTES):
     
     1. **VENDEDORES / COMERCIAL**:
