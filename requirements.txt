@@ -1,16 +1,11 @@
 fastapi
 uvicorn
 python-multipart
-pandas
 numpy
-scikit-learn
-xgboost
-imblearn
 pdfplumber
 python-docx
 pytesseract
 Pillow
-nltk
 google-generativeai>=0.8.3
 requests
 notion-client
