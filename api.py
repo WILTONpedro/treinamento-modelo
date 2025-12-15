@@ -91,7 +91,7 @@ def analisar_com_gemini(conteudo_processado):
     - Geralmente é um nome composto (Exemplo: Wilton Pedro Silva Souza), pegue apenas o nome e sobrenome. (Exemplo: Wilton Pedro)
 
     TAREFA 2 (IGUALMENTE IMPORTANTE): Tente sempre extrair número de telefone e email do currículo.
-    - Núemero geralmente vai estar com dois números entre parênteses(ex: (49)), seguido de uma sequência de uma sequência de 10 à 11 números, podendo ser separados ou não por um -
+    - Extraia Telefone e salve OBRIGATORIAMENTE no campo 'numero' do JSON.
     - O email sempre vai ter um @, pode ser @gmail; @outlook e por aí vai...
 
     REGRA SUPREMA: EVITAR AO MÁXIMO CRIAR PASTAS NOVAS.
