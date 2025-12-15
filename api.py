@@ -4,13 +4,14 @@ import json
 import logging
 import re
 import time
-import typing  # Se usar Python 3.11+ no Docker, é nativo. Se der erro, use typing_extensions
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import docx
 import google.generativeai as genai
+# CORREÇÃO DO ERRO: Importando explicitamente do typing_extensions
+from typing_extensions import TypedDict
 
 # --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
@@ -24,7 +25,7 @@ genai.configure(api_key=GEMINI_API_KEY)
 NOME_MODELO_GEMINI = "gemini-1.5-flash"
 
 # Definição do Schema para resposta estruturada (JSON garantido)
-class CurriculoSchema(typing.TypedDict):
+class CurriculoSchema(TypedDict):
     nome: str
     email: str
     numero: str
