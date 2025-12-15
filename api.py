@@ -22,7 +22,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Use o flash para ser rápido e barato
-NOME_MODELO_GEMINI = "gemini-1.5-flash-001"
+NOME_MODELO_GEMINI = "gemini-2.5-flash"
 
 # Definição do Schema para resposta estruturada (JSON garantido)
 class CurriculoSchema(TypedDict):
