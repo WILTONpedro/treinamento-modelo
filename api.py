@@ -3,26 +3,35 @@ import io
 import json
 import logging
 import re
-import sys
-from contextlib import asynccontextmanager
 import time
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import typing  # Se usar Python 3.11+ no Docker, é nativo. Se der erro, use typing_extensions
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-
-import pdfplumber
 import docx
-from PIL import Image
-import pytesseract
 import google.generativeai as genai
 
-# --- CONFIGURATION ---
+# --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
 logger = logging.getLogger("api")
 
+# Pega a chave do ambiente (Render)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
-NOME_MODELO_GEMINI = "gemini-2.0-flash"
+
+# Use o flash para ser rápido e barato
+NOME_MODELO_GEMINI = "gemini-1.5-flash"
+
+# Definição do Schema para resposta estruturada (JSON garantido)
+class CurriculoSchema(typing.TypedDict):
+    nome: str
+    email: str
+    numero: str
+    setor: str
+    confianca: str
+    anos_experiencia: int
+    resumo: str
 
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRATIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
@@ -35,36 +44,42 @@ CATEGORIAS_DISPONIVEIS = [
     "QUALIDADE", "RECURSOS HUMANOS", "SUPERVISOR DE MERCHANDISING", "SUPERVISOR DE VENDAS", "TI", "VENDAS", "VIGIA", "OUTROS"
 ]
 
-def sanitize_filename(filename):
-    clean = re.sub(r'[^a-zA-Z0-9 \-\.]', '', filename)
-    return clean.strip() or "arquivo_sem_nome"
-
-def extract_text_from_memory(file_bytes, filename):
+def preparar_entrada_gemini(file_bytes, filename, mime_type):
+    """
+    Prepara o arquivo para o Gemini.
+    - PDF/Imagens: Envia os bytes direto (Multimodal).
+    - DOCX/TXT: Extrai texto localmente.
+    """
     ext = os.path.splitext(filename)[1].lower()
-    text = ""
-    file_stream = io.BytesIO(file_bytes)
-    try:
-        if ext == ".pdf":
-            with pdfplumber.open(file_stream) as pdf:
-                pages = pdf.pages[:5]
-                text = "\n".join([p.extract_text() or "" for p in pages])
-        elif ext == ".docx":
-            doc = docx.Document(file_stream)
-            text = "\n".join([p.text for p in doc.paragraphs])
-        elif ext in [".jpg", ".png", ".jpeg"]:
-            img = Image.open(file_stream)
-            if img.width > 2000: img.thumbnail((2000, 2000))
-            text = pytesseract.image_to_string(img, lang="por")
-        elif ext == ".txt":
-            text = file_bytes.decode("utf-8", errors="ignore")
-    except Exception as e:
-        logger.error(f"Erro leitura: {e}")
-        return ""
-    return text.replace("\x00", "")
 
-def analisar_com_gemini(texto_curriculo):
-    if not texto_curriculo or len(texto_curriculo.strip()) < 20:
-        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Texto insuficiente"}
+    # CASO 1: DOCX (Processamento Local Leve)
+    if ext == ".docx":
+        try:
+            file_stream = io.BytesIO(file_bytes)
+            doc = docx.Document(file_stream)
+            texto = "\n".join([p.text for p in doc.paragraphs])
+            return texto 
+        except Exception as e:
+            logger.error(f"Erro ao ler DOCX: {e}")
+            return None
+
+    # CASO 2: TXT
+    elif ext == ".txt":
+        return file_bytes.decode("utf-8", errors="ignore")
+
+    # CASO 3: PDF e IMAGENS (Processamento na Nuvem)
+    # Suporta PDF, JPG, PNG, WEBP
+    elif ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp"]:
+        return {
+            "mime_type": mime_type,
+            "data": file_bytes
+        }
+    
+    return None
+
+def analisar_com_gemini(conteudo_processado):
+    if not conteudo_processado:
+        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Arquivo vazio"}
 
     prompt = f"""
     Você é um Recrutador Sênior da Baly.
@@ -168,52 +183,43 @@ def analisar_com_gemini(texto_curriculo):
        - Você pode sugerir uma pasta nova APENAS se o cargo for totalmente diferente de tudo que existe na lista (Ex: "Médico", "Advogado"). 
        - Mas para variações comuns (Vendedor x Vendas), USE A PASTA EXISTENTE NA LISTA.
 
-    ENTRADA: {texto_curriculo[:15000]}
-
-    RESPONDA JSON:
-    {{
-        "nome": "Nome Sobrenome",
-        "email": "email@exemplo.com",
-        "núemro": "(XX) 9XXXX-XXXX",
-        "setor": "UMA_DAS_CATEGORIAS_DA_LISTA", 
-        "confianca": "ALTA", 
-        "anos_experiencia": 0, 
-        "resumo": "Explique por que escolheu este setor (se tiver liderança, cite aqui)", 
-        "cv_limpo": "Texto..."
-    }}
+    SAÍDA JSON OBRIGATÓRIA (Use o Schema):
+    - Se não encaixar em nenhuma, use "OUTROS".
+    - Responda apenas o JSON.
     """
+
     for tentativa in range(3):
         try:
             model = genai.GenerativeModel(NOME_MODELO_GEMINI)
-            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             
-            # --- FIX: Handle List vs Dict Response ---
-            try:
-                dados = json.loads(response.text)
-                if isinstance(dados, list):
-                    dados = dados[0]  # Take the first item if it's a list
-            except json.JSONDecodeError:
-                 # Fallback: try to find JSON block if raw text has extra chars
-                 match = re.search(r'\{.*\}', response.text, re.DOTALL)
-                 if match:
-                     dados = json.loads(match.group())
-                 else:
-                     raise ValueError("Could not parse JSON from Gemini")
+            # Chama o Gemini com Prompt + Arquivo + Schema
+            response = model.generate_content(
+                [prompt, conteudo_processado], 
+                generation_config={
+                    "response_mime_type": "application/json",
+                    "response_schema": CurriculoSchema, 
+                    "temperature": 0.2
+                }
+            )
+            
+            # O response.text já é um JSON validado pelo Schema
+            dados = json.loads(response.text)
+            
+            # Tratamento caso venha lista (embora o Schema evite isso, é bom garantir)
+            if isinstance(dados, list): 
+                dados = dados[0]
 
-            setor_ia = dados.get("setor", "OUTROS").upper()
-            if setor_ia not in CATEGORIAS_DISPONIVEIS:
-                dados["setor"] = "OUTROS"
-                dados["resumo"] += f" (IA tentou '{setor_ia}', movido para OUTROS)"
-            
             return dados
 
         except Exception as e:
-            if "429" in str(e):
-                time.sleep(10)
+            if "429" in str(e): # Erro de muitos pedidos
+                logger.warning(f"Rate limit (429). Tentativa {tentativa+1}/3...")
+                time.sleep(5)
             else:
+                logger.error(f"Erro Gemini: {e}")
                 return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
     
-    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout 429"}
+    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout Gemini"}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -224,19 +230,21 @@ app = FastAPI(title="API Triagem", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/triagem")
-def triar_curriculo(file: UploadFile = File(...)):
-    file.file.seek(0)
+async def triar_curriculo(file: UploadFile = File(...)):
     try:
-        content = file.file.read()
-        raw_text = extract_text_from_memory(content, file.filename)
-        analise = analisar_com_gemini(raw_text)
+        # 1. Ler arquivo de forma assíncrona
+        content = await file.read()
+        
+        # 2. Preparar (Decidir se extrai texto ou manda bytes)
+        # Passamos o content_type original do arquivo (application/pdf, image/jpeg, etc)
+        dados_entrada = preparar_entrada_gemini(content, file.filename, file.content_type)
+        
+        # 3. Enviar para IA
+        analise = analisar_com_gemini(dados_entrada)
         
         setor = analise.get("setor", "OUTROS")
         nome_ia = analise.get("nome", "Candidato")
         
-        if nome_ia == "Desconhecido" or len(nome_ia) < 3:
-             nome_ia = sanitize_filename(file.filename.replace(".pdf", "").replace(".docx", ""))
-
         logger.info(f"🏁 {file.filename} -> {setor} ({nome_ia})")
 
         return {
@@ -248,7 +256,7 @@ def triar_curriculo(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        logger.error(f"Erro: {e}")
+        logger.error(f"Erro rota: {e}")
         return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
