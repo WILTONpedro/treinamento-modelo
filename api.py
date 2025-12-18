@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import docx
 import google.generativeai as genai
-# CORREÇÃO DO ERRO: Importando explicitamente do typing_extensions
 from typing_extensions import TypedDict
+from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
 # --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
@@ -21,8 +21,8 @@ logger = logging.getLogger("api")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Use o flash para ser rápido e barato
-NOME_MODELO_GEMINI = "gemini-2.5-flash"
+# Ajustado para a versão correta e mais rápida
+NOME_MODELO_GEMINI = "gemini-2.0-flash" 
 
 # Definição do Schema para resposta estruturada (JSON garantido)
 class CurriculoSchema(TypedDict):
@@ -69,7 +69,7 @@ def preparar_entrada_gemini(file_bytes, filename, mime_type):
         return file_bytes.decode("utf-8", errors="ignore")
 
     # CASO 3: PDF e IMAGENS (Processamento na Nuvem)
-    # Suporta PDF, JPG, PNG, WEBP
+    # O Gemini aceita esses MIME types diretamente
     elif ext in [".pdf", ".jpg", ".jpeg", ".png", ".webp"]:
         return {
             "mime_type": mime_type,
@@ -80,7 +80,7 @@ def preparar_entrada_gemini(file_bytes, filename, mime_type):
 
 def analisar_com_gemini(conteudo_processado):
     if not conteudo_processado:
-        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Arquivo vazio"}
+        return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Arquivo vazio ou ilegível"}
 
     prompt = f"""
     Você é um Recrutador Sênior da Baly.
@@ -189,26 +189,38 @@ def analisar_com_gemini(conteudo_processado):
     - Responda apenas o JSON.
     """
 
+    safety_settings = {
+        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+    }
+
     for tentativa in range(3):
         try:
             model = genai.GenerativeModel(NOME_MODELO_GEMINI)
             
-            # Chama o Gemini com Prompt + Arquivo + Schema
+            # Chama o Gemini com Prompt + Arquivo + Schema + Segurança
             response = model.generate_content(
                 [prompt, conteudo_processado], 
                 generation_config={
                     "response_mime_type": "application/json",
                     "response_schema": CurriculoSchema, 
                     "temperature": 0.2
-                }
+                },
+                safety_settings=safety_settings
             )
             
-            # O response.text já é um JSON validado pelo Schema
+            # Converte a resposta texto (JSON) para objeto Python
             dados = json.loads(response.text)
             
-            # Tratamento caso venha lista (embora o Schema evite isso, é bom garantir)
+            # Tratamento caso venha lista
             if isinstance(dados, list): 
                 dados = dados[0]
+
+            # Validação extra do setor
+            if dados.get("setor") not in CATEGORIAS_DISPONIVEIS:
+                dados["setor"] = "OUTROS"
 
             return dados
 
@@ -218,9 +230,17 @@ def analisar_com_gemini(conteudo_processado):
                 time.sleep(5)
             else:
                 logger.error(f"Erro Gemini: {e}")
-                return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e)}
+                # Se der erro, retorna estrutura básica para não quebrar o front
+                return {
+                    "setor": "OUTROS", 
+                    "confianca": "ERRO_IA", 
+                    "resumo": str(e),
+                    "nome": "Desconhecido",
+                    "email": "",
+                    "numero": ""
+                }
     
-    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout Gemini"}
+    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout Gemini", "nome": "Desconhecido", "email": "", "numero": ""}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -237,7 +257,6 @@ async def triar_curriculo(file: UploadFile = File(...)):
         content = await file.read()
         
         # 2. Preparar (Decidir se extrai texto ou manda bytes)
-        # Passamos o content_type original do arquivo (application/pdf, image/jpeg, etc)
         dados_entrada = preparar_entrada_gemini(content, file.filename, file.content_type)
         
         # 3. Enviar para IA
