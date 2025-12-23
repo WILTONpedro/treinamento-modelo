@@ -19,7 +19,7 @@ logger = logging.getLogger("api")
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 genai.configure(api_key=GEMINI_API_KEY)
-NOME_MODELO_GEMINI = "gemini-2.0-flash"
+NOME_MODELO_GEMINI = "gemini-2.5-flash"
 
 class CurriculoSchema(TypedDict):
     nome: str
