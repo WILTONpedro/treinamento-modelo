@@ -30,7 +30,7 @@ class CurriculoSchema(TypedDict):
     anos_experiencia: int
     resumo: str
 
-# LISTA CORRIGIDA (Arrumei ADMINISTRITIVO -> ADMINISTRATIVO)
+# LISTA DE CATEGORIAS
 CATEGORIAS_DISPONIVEIS = [
     "ADMINISTRATIVO", "ALMOXARIFADO", "AREA INDUSTRIAL", "COMERCIAL", "COMERCIO EXTERIOR",
     "COMPRAS", "CONTABILIDADE", "COORDENADOR DE EXPEDIÇÃO", "COORDENADOR DE MERCHANDISING",
@@ -55,115 +55,83 @@ def preparar_entrada_gemini(file_bytes, filename, mime_type):
         return {"mime_type": mime_type, "data": file_bytes}
     return None
 
+def limpar_json(text):
+    """Tenta extrair e limpar JSON de uma string."""
+    text = text.strip()
+    
+    # Remove blocos de código markdown
+    if "```" in text:
+        text = re.sub(r"```(?:json)?(.*?)```", r"\1", text, flags=re.DOTALL).strip()
+    
+    # Tenta encontrar o objeto JSON
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+        
+    return text
+
 def analisar_com_gemini(conteudo_processado):
     if not conteudo_processado:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Vazio"}
 
     prompt = f"""
-    Você é um Recrutador Sênior da Baly.
-    LISTA PERMITIDA: {json.dumps(CATEGORIAS_DISPONIVEIS)}
+    Você é um Recrutador Sênior da Baly. Sua tarefa é analisar um currículo e categorizá-lo corretamente em uma das pastas disponíveis.
+
+    <categorias_permitidas>
+    {json.dumps(CATEGORIAS_DISPONIVEIS, ensure_ascii=False)}
+    </categorias_permitidas>
+
+    <instrucoes_extracao>
+    1. **Nome**: Identifique o nome completo do candidato (geralmente no topo).
+    2. **Contato**: Extraia o telefone (campo 'numero') e email.
+    </instrucoes_extracao>
+
+    <regras_categorizacao>
+    1. **Hierarquia e Liderança**:
+       - Candidatos com experiência em Gestão, Liderança, Coordenação ou MBA devem ir para pastas de GERENTE [AREA] ou SUPERVISOR [AREA].
+       - **PROIBIDO** colocar líderes na pasta "ADMINISTRATIVO".
+       - Respeite a última experiência. Se era Coordenador, não rebaixe.
+
+    2. **Jovem Aprendiz**:
+       - Apenas se < 18 anos E ensino médio em curso ou concluído recentemente.
+       - Se tiver ensino superior ou > 18 anos, NÃO é Jovem Aprendiz.
+
+    3. **Operacional vs Especialista**:
+       - **Empilhadeira**: Só com curso/NR-11 explícito. Senão -> LOGÍSTICA.
+       - **Motorista**: Só com CNH C, D ou E. CNH B/Moto -> LOGÍSTICA ou OUTROS.
+       - **Vigia**: Só com curso de vigilante/reciclagem.
+       - **Área Industrial**: Exclusiva para Segurança do Trabalho/SESMT. Operadores de máquina -> PRODUÇÃO.
     
-    TAREFA 1 (SUPER IMPORTANTE): Sempre tente capturar o nome da pessoa no currículo.
-    - Geralmente fica na parte de cima do currículo.
-    - Geralmente é um nome composto (Exemplo: Wilton Pedro Silva Souza), pegue apenas o nome e sobrenome. (Exemplo: Wilton Pedro)
+    4. **Comercial e Vendas**:
+       - Vendedor, Balconista, Consultor -> VENDAS.
+       - Representante -> VENDAS ou COMERCIAL.
+       - Gerente/Supervisor de Vendas -> GERENTE VENDAS / SUPERVISOR DE VENDAS.
+       - Promotor de Vendas -> Apenas se tiver experiência prévia como promotor.
+       
+    5. **Outras Regras Específicas**:
+       - **TI**: Suporte, Infra, Dev, Redes.
+       - **PCP**: Planejamento e Controle de Produção.
+       - **PCD**: Apenas se mencionar explicitamente Deficiência/CID.
+       - **Comércio Exterior**: Importação/Exportação.
 
-    TAREFA 2 (IGUALMENTE IMPORTANTE): Tente sempre extrair número de telefone e email do currículo.
-    - Extraia Telefone e salve OBRIGATORIAMENTE no campo 'numero' do JSON.
-    - O email sempre vai ter um @, pode ser @gmail; @outlook e por aí vai...
+    6. **Arquivos Inválidos (LIXO)**:
+       - Se for foto aleatória, boleto, ou o próprio anúncio da vaga ("Anti-Espelho") -> setor: "ARQUIVO_INVALIDO".
+       - Apresentações (PPT), cartas soltas -> Ignorar.
+    </regras_categorizacao>
 
-    REGRA SUPREMA: EVITAR AO MÁXIMO CRIAR PASTAS NOVAS.
-    - Se no currículo do candidato tiver coisas que não foge tanto das categorias listadas, NÃO crie outras pastas.
-    - Leve em consideração a hierarquia que está listado nas regras, então se o candidato for um EXECUTIVO, não é para colocar em uma pasta abaixo, coloque na SUPERVISOR DE VENDAS e por aí vai.
-
-    ⚠️ REGRA DE OURO (HIERARQUIA):
-    - Se o candidato tem experiência em **GESTÃO, LIDERANÇA, COORDENAÇÃO ou MBA**, ele é **PROIBIDO** de entrar na pasta "ADMINISTRATIVO".
-    - Ele deve ir para a pasta de Gerência/Supervisão da área dele (Ex: Lucas tem MBA em Liderança -> GERENTE COMERCIAL ou SUPERVISOR DE VENDAS).
-
-
-    ⚠️ REGRAS ELIMINATÓRIAS DE NEGÓCIO (IMPORTANTE):
-
-    1. **JOVEM APRENDIZ (Cuidado!)**:
-       - APENAS se o candidato tiver MENOS de 18 anos.
-       - COMO SABER A IDADE? Olhe a data de conclusão do Ensino Médio. Se concluiu o ensino médio antes de 2025, ele JÁ É MAIOR DE IDADE (tem 19+ anos), então NÃO coloque aqui.
-       - Se ele já tiver Ensino Superior ou estiver na faculdade há mais de 1 ano, ele NÃO é Jovem Aprendiz.
-       - Na dúvida sobre a idade, considere MAIOR de 18 e use a regra 3.
-    
-    2. **HIERARQUIA (GERENTES vs OPERACIONAIS)IMPORTANTE!!!**:
-       - Se o cargo for de Liderança Estratégica (Gerente, Head, Diretor), use as pastas que começam com "GERENTE ...".
-       - Exemplo: Um "Gerente de Marketing" vai para "GERENTE MARKETING". Um "Analista de Marketing" vai para "MARKETING".
-       - Exemplo: "Coordenador" e "Supervisor" têm pastas específicas na lista (ex: SUPERVISOR DE MERCHANDISING). Se não tiver pasta específica de coordenação, jogue na área geral.
-
-    3. **HIERARQUIA NA EXPERIÊNCIA**: Levar a serio o criterio de ultima experiência do colaborador, Exemplo: Ele tem experiência como supervisor de merchandising mas também como coordenador(Cargo acima) não à motivos para colocar ele em um cargo abaixo.
-
-    4. **GERENTE DE GRANDES CONTAS**:Essa pasta é específica, então ela é uma vaga para o trade marketing e vai fazer uma ponte com o comercial cuidando de nossas grandes redes. Então o rapaz tem que já ter experiência com esse assunto.
-
-    5. **KEY ACCOUNT**: Aqui nesta empresa, essa pasta é especifica para o pessoal mais comercial focado em VENDAS para as grandes redes
-    
-    6. **EMPILHADEIRA**: O candidato SÓ vai para esta pasta se citar explicitamente "Curso de Empilhadeira", "Operador de Empilhadeira" ou "NR-11". Se tiver experiência em logística mas não tiver o curso, jogue em "LOGÍSTICA" ou "ALMOXARIFADO".
-    
-    7. **MOTORISTA**: Exige CNH categorias C, D ou E (Caminhão/Carreta). Se tiver apenas CNH B ou Moto, NÃO coloque aqui (jogue em LOGÍSTICA ou OUTROS).
-    
-    8. **VIGIA**: Obrigatório ter "Curso de Vigilante", "Reciclagem em dia" ou experiência comprovada em segurança patrimonial.
-    
-    9. **COMERCIO EXTERIOR**: O candidato deve ter experiência com Importação/Exportação, trâmites aduaneiros ou vendas internacionais.
-    
-    10. **PCP**: Significa "Planejamento e Controle da Produção". Se o currículo falar de planejar fábrica, cronograma de produção ou ordens de serviço, é aqui.
-    
-    11. **PROMOTOR DE VENDAS**: Só será colocado nesta pasta caso a pessoa já tenha experiência como promotor antes.
-
-    12. **LIXO/INVALIDO**: Se o arquivo for foto de pessoa, print de tela, boleto ou não for um currículo, responda "ARQUIVO_INVALIDO".
-
-    13. **ADMINISTRATIVO**: Essa pasta é para aqueles currículos de pessoas jovens que sejam acima dos 18 e que não tenham nenhuma experiência, mas tenham cursos de áreas importantes.
-
-    14. **PCD**: Se o currículo mencionar explicitamente "PCD", "Deficiência", "CID" ou "Laudo Médico", jogue aqui.
-
-    15. **AREA INDUSTRIAL**: ATENÇÃO! Nesta empresa, esta pasta é EXCLUSIVA para "Técnico em Segurança do Trabalho", "Engenheiro de Segurança" ou "SESMT". Não jogue operadores de máquina aqui (jogue em PRODUÇÃO).
-
-    16. **MECANICA INDUSTRIAL**: Aqui não são só colocados currículos de mecânicos, mas de tudo que envolve essa área, como eletricistas
-
-    17. **QUALIDADE**: A vaga aqui pode ser alocada o pessoal que tenha experiência ou tenha feito alguma especialização mais laboral, como biomedicina e áreas da saúde.
-
-    18. **ANTI-ESPELHO (O PRÓPRIO ANÚNCIO)**: 
-        - Se o texto extraído contiver instruções de como se candidatar (ex: "Como participar", "Envie seu currículo para", "Vem ser time amarelo", "WhatsApp para envio"), isso NÃO É UM CURRÍCULO, é a imagem da vaga.
-        - Neste caso, responda OBRIGATORIAMENTE: "ARQUIVO_INVALIDO".
-
-    19. **SUPERVISOR DE VENDAS**: Nesta pasta é para colocar todos que estão acima da pasta "VENDAS", então, executivos, gerentes, etc... Tudo aqui.
-
-    20. **ATENÇÃO!! Nossas pastas e como elas funcionam**:
-        - Nossas pastas Funcionam assim: Uma para GERENTE do setor, e a outra para que varia de Analista ate auxiliar, ou seja: A de GERENTE MARKETING vai os perfis mais adequados para está pasta, com experiências mais relevantes, e a de MARKETING vai o pessoal que tem experiência como Analista pra baixo
-        - Não tente ir criando novas pastas como você estava criando (Ex: Executivo de vendas, representante, etc), tente encaixar os currículos nas pastas já existentes, sem criar novas.
-        - Tente procurar similaridades de experiências com as pastas do drive que já temos (Ex: Você criou a pasta PROPAGANDISTA, porém quem faz propaganda geralmente é vinculado a parte do marketing).
-
-    21. **ANTI ARQUIVO INUTIL**:
-        - Geralmente o pessoal envia junto ao currículo, uma apresentação por powerpoint, cartas de apresentação, diplomas, cartas de indicação, etc...
-        - Ao ver arquivos nesse tipo, não salve no drive, apenas pule para o próximo.
-
-    22. **RECURSOS HUMANSO**: Pasta focada para pessoas com perfil mais educaional.
-    -Não colocar nesta pasta apenas pessoas com experiência em gestão de pessoas, isso é muito amplo, veja o contexto(Uma pessoa com gestão de promotores de vendas para uma pessoa que teve com gestão de pessoas).
-    -colocar aqui também pessoas que tenham estudado curosos como psicologia, etc...
-    -LEVE MUITO EM CONSIDERAÇÃO O CONTEXTO DO CURRÍCULO. Não é só por que ele tem Gestão de Pessoas no currículo que ele tem que ir para GERENTE RH ou algo do tipo. Veja toda a experiência do currículo e veja o contexto
-
-    ⚠️ REGRAS DE AGRUPAMENTO (EVITE CRIAR PASTAS REDUNDANTES):
-    
-    1. **VENDEDORES / COMERCIAL**:
-       - Se for "Vendedor", "Vendedor Interno", "Balconista", "Consultor de Vendas" -> Use a pasta **VENDAS**. (Não crie pasta "Vendedor").
-       - Se for "Representante Comercial" -> Use a pasta **VENDAS** ou **COMERCIAL**.
-       - Se for "Vendedor Externo" -> Use a pasta **VENDAS** (ou PROMOTOR DE VENDAS se for focado em merchandising).
-    
-    2. **LIDERANÇA DE VENDAS**:
-       - Supervisores, Coordenadores, Líderes de vendas -> Use **SUPERVISOR DE VENDAS**.
-       - Gerentes -> Use **GERENTE VENDAS**.
-    
-    3. **TI / SUPORTE**:
-       - Dev, Suporte, Infra, Redes -> Use **TI**
-
-    4. **NOVAS PASTAS**:
-       - Você pode sugerir uma pasta nova APENAS se o cargo for totalmente diferente de tudo que existe na lista (Ex: "Médico", "Advogado"). 
-       - Mas para variações comuns (Vendedor x Vendas), USE A PASTA EXISTENTE NA LISTA.
-
-    SAÍDA JSON OBRIGATÓRIA (Use o Schema):
-    - Se não encaixar em nenhuma, use "OUTROS".
-    - Responda apenas o JSON.
+    <saida_esperada>
+    Responda EXCLUSIVAMENTE com um objeto JSON seguindo este schema:
+    {{
+        "nome": "Nome Sobrenome",
+        "email": "email@exemplo.com",
+        "numero": "Telefone",
+        "setor": "CATEGORIA_ESCOLHIDA",
+        "confianca": "ALTA/MEDIA/BAIXA",
+        "anos_experiencia": 0,
+        "resumo": "Breve justificativa"
+    }}
+    Se não se encaixar em nenhuma categoria específica, use "OUTROS".
+    </saida_esperada>
     """
 
     safety_settings = {
@@ -183,34 +151,42 @@ def analisar_com_gemini(conteudo_processado):
                     "response_schema": CurriculoSchema,
                     "temperature": 0.2
                 },
-                safety_settings=safety_settings # <--- IMPORTANTE
+                safety_settings=safety_settings
             )
             
-            # Se o filtro bloquear mesmo assim, evita o crash
             if not response.candidates:
                 logger.warning("⚠️ Bloqueio de Segurança Gemini (Mesmo com filtro desligado)")
                 return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Bloqueado pelo Google (Dados Sensíveis)", "nome": "Candidato", "email":"", "numero":""}
 
             try:
+                # Tentativa direta de parsing
                 dados = json.loads(response.text)
-                if isinstance(dados, list): dados = dados[0]
-            except:
-                # Tenta limpar o JSON se vier sujo
-                text = response.text.strip()
-                if text.startswith("```json"): text = text[7:-3]
-                dados = json.loads(text)
+            except json.JSONDecodeError:
+                # Tentativa com limpeza
+                try:
+                    texto_limpo = limpar_json(response.text)
+                    dados = json.loads(texto_limpo)
+                except Exception as e:
+                    logger.error(f"Erro ao fazer parse do JSON: {e} | Raw: {response.text}")
+                    raise e
+
+            if isinstance(dados, list): dados = dados[0]
 
             if dados.get("setor") not in CATEGORIAS_DISPONIVEIS:
-                dados["setor"] = "OUTROS"
+                if dados.get("setor") != "ARQUIVO_INVALIDO": # Mantém ARQUIVO_INVALIDO se for o caso
+                    dados["setor"] = "OUTROS"
 
             return dados
 
         except Exception as e:
             if "429" in str(e):
+                logger.warning(f"Rate limit (429). Tentativa {tentativa+1}/3. Aguardando...")
                 time.sleep(5)
             else:
-                logger.error(f"Erro: {e}")
-                return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "nome": "Desconhecido", "email":"", "numero":""}
+                logger.error(f"Erro geral na análise: {e}")
+                # Se for a última tentativa, retorna erro
+                if tentativa == 2:
+                    return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": str(e), "nome": "Desconhecido", "email":"", "numero":""}
     
     return {"setor": "OUTROS", "confianca": "ERRO_IA", "resumo": "Timeout", "nome": "Desconhecido", "email":"", "numero":""}
 
@@ -229,8 +205,8 @@ async def triar_curriculo(file: UploadFile = File(...)):
         dados = preparar_entrada_gemini(content, file.filename, file.content_type)
         analise = analisar_com_gemini(dados)
         
-        # Garante que campos existam
-        nome = analise.get("nome", "Candidato") or "Candidato"
+        # Garante que campos existam e tenham valores padrão
+        nome = analise.get("nome") or "Candidato"
         if len(nome) < 3: nome = "Candidato"
         
         logger.info(f"🏁 {file.filename} -> {analise.get('setor')} ({nome})")
