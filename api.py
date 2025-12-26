@@ -43,6 +43,13 @@ CATEGORIAS_DISPONIVEIS = [
 ]
 
 def preparar_entrada_gemini(file_bytes, filename, mime_type):
+    # FILTRAGEM POR NOME DE ARQUIVO
+    nome_lower = filename.lower()
+    if "carta" in nome_lower and "apresenta" in nome_lower:
+        return {"ignorar": True, "motivo": "Carta de Apresentação (Filtro Nome)"}
+    if "cover" in nome_lower and "letter" in nome_lower:
+        return {"ignorar": True, "motivo": "Cover Letter (Filtro Nome)"}
+
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".docx":
         try:
@@ -71,6 +78,15 @@ def limpar_json(text):
     return text
 
 def analisar_com_gemini(conteudo_processado):
+    # Verifica se foi filtrado na etapa anterior
+    if isinstance(conteudo_processado, dict) and conteudo_processado.get("ignorar"):
+        return {
+            "setor": "ARQUIVO_INVALIDO", 
+            "confianca": "ALTA", 
+            "motivo": conteudo_processado.get("motivo"),
+            "nome": "Ignorado", "email": "", "numero": "", "anos_experiencia": 0, "resumo": conteudo_processado.get("motivo")
+        }
+
     if not conteudo_processado:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Vazio"}
 
@@ -87,35 +103,39 @@ def analisar_com_gemini(conteudo_processado):
     </instrucoes_extracao>
 
     <regras_categorizacao>
-    1. **Hierarquia e Liderança**:
-       - Candidatos com experiência em Gestão, Liderança, Coordenação ou MBA devem ir para pastas de GERENTE [AREA] ou SUPERVISOR [AREA].
+    1. **Hierarquia e Liderança (MUITO IMPORTANTE)**:
+       - **ÚLTIMA EXPERIÊNCIA É A QUE CONTA**: Se o candidato atuava como COORDENADOR, GERENTE ou SUPERVISOR no emprego mais recente, ele DEVE ir para a pasta correspondente (GERENTE [AREA] ou SUPERVISOR [AREA]).
+       - **NÃO REBAIXE O CANDIDATO**: Um Gerente não deve ser colocado como Analista/Assistente.
        - **PROIBIDO** colocar líderes na pasta "ADMINISTRATIVO".
-       - Respeite a última experiência. Se era Coordenador, não rebaixe.
 
-    2. **Jovem Aprendiz**:
+    2. **Cartas de Apresentação (IGNORAR)**:
+       - Se o arquivo for apenas uma Carta de Apresentação (Cover Letter) sem os detalhes completos de um currículo, classifique como **ARQUIVO_INVALIDO**.
+       - Não tente "adivinhar" a área baseada apenas na carta. Se não for um CV completo -> LIXO.
+
+    3. **Jovem Aprendiz**:
        - Apenas se < 18 anos E ensino médio em curso ou concluído recentemente.
        - Se tiver ensino superior ou > 18 anos, NÃO é Jovem Aprendiz.
 
-    3. **Operacional vs Especialista**:
+    4. **Operacional vs Especialista**:
        - **Empilhadeira**: Só com curso/NR-11 explícito. Senão -> LOGÍSTICA.
        - **Motorista**: Só com CNH C, D ou E. CNH B/Moto -> LOGÍSTICA ou OUTROS.
        - **Vigia**: Só com curso de vigilante/reciclagem.
        - **Área Industrial**: Exclusiva para Segurança do Trabalho/SESMT. Operadores de máquina -> PRODUÇÃO.
     
-    4. **Comercial e Vendas**:
+    5. **Comercial e Vendas**:
        - Vendedor, Balconista, Consultor -> VENDAS.
        - Representante -> VENDAS ou COMERCIAL.
        - Gerente/Supervisor de Vendas -> GERENTE VENDAS / SUPERVISOR DE VENDAS.
        - Promotor de Vendas -> Apenas se tiver experiência prévia como promotor.
        
-    5. **Outras Regras Específicas**:
+    6. **Outras Regras Específicas**:
        - **TI**: Suporte, Infra, Dev, Redes.
        - **PCP**: Planejamento e Controle de Produção.
        - **PCD**: Apenas se mencionar explicitamente Deficiência/CID.
        - **Comércio Exterior**: Importação/Exportação.
 
-    6. **Arquivos Inválidos (LIXO)**:
-       - Se for foto aleatória, boleto, ou o próprio anúncio da vaga ("Anti-Espelho") -> setor: "ARQUIVO_INVALIDO".
+    7. **Arquivos Inválidos (LIXO)**:
+       - Se for foto aleatória, boleto, carta de apresentação isolada ou o próprio anúncio da vaga ("Anti-Espelho") -> setor: "ARQUIVO_INVALIDO".
        - Apresentações (PPT), cartas soltas -> Ignorar.
     </regras_categorizacao>
 
