@@ -12,6 +12,7 @@ import docx
 import google.generativeai as genai
 from typing_extensions import TypedDict
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
+from datetime import datetime
 
 # --- CONFIGURAÇÃO ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s', datefmt='%H:%M:%S')
@@ -25,6 +26,7 @@ class CurriculoSchema(TypedDict):
     nome: str
     email: str
     numero: str
+    cidade: str
     setor: str
     confianca: str
     anos_experiencia: int
@@ -92,6 +94,8 @@ def analisar_com_gemini(conteudo_processado):
 
     prompt = f"""
     Você é um Recrutador Sênior da Baly. Sua tarefa é analisar um currículo e categorizá-lo corretamente em uma das pastas disponíveis.
+    Data de Hoje: {datetime.now().strftime('%d/%m/%Y')} (Considere esta data para cálculos de idade).
+    Estamos no ano de {ano_atual}.
 
     <categorias_permitidas>
     {json.dumps(CATEGORIAS_DISPONIVEIS, ensure_ascii=False)}
@@ -100,6 +104,12 @@ def analisar_com_gemini(conteudo_processado):
     <instrucoes_extracao>
     1. **Nome**: Identifique o nome completo do candidato (geralmente no topo).
     2. **Contato**: Extraia o telefone (campo 'numero') e email.
+    **Localização (NOVO)**: Identifique a **CIDADE e ESTADO** de residência atual do candidato.
+       - Procure no cabeçalho ou dados pessoais.
+       - Formato desejado: "Cidade - UF" (ex: "Ribeirão Preto - SP").
+       - Se não tiver o nome da cidade, apenas a Sigla, retorne apenas a sigla por extenso (ex: se tiver no currículo SP, RJ etc... Coloque São Paulo, Rio de Janeiro)
+       - Se não encontrar, retorne "Não informado".
+       - Se o candidato disser "Disponível para mudança para X", registre a cidade onde ele mora HOJE, mas mencione a disponibilidade no 'resumo'.
     </instrucoes_extracao>
 
     <regras_categorizacao>
@@ -112,9 +122,14 @@ def analisar_com_gemini(conteudo_processado):
        - Se o arquivo for apenas uma Carta de Apresentação (Cover Letter) sem os detalhes completos de um currículo, classifique como **ARQUIVO_INVALIDO**.
        - Não tente "adivinhar" a área baseada apenas na carta. Se não for um CV completo -> LIXO.
 
-    3. **Jovem Aprendiz**:
-       - Apenas se < 18 anos E ensino médio em curso ou concluído recentemente.
-       - Se tiver ensino superior ou > 18 anos, NÃO é Jovem Aprendiz.
+    3. **REGRA CRÍTICA: Jovem Aprendiz (CÁLCULO DE IDADE)**:
+       - O candidato DEVE ter MENOS de 18 anos completos hoje.
+       - **Matemática**: Para ter menos de 18 anos, o candidato deve ter nascido DEPOIS de {ano_limite_menor}.
+       - **Exemplos**:
+         - Nascidos em {ano_limite_menor - 2} ({ano_atual - 20} anos) -> NÃO É JOVEM APRENDIZ.
+         - Nascidos em {ano_limite_menor - 1} ({ano_atual - 19} anos) -> NÃO É JOVEM APRENDIZ.
+         - Nascidos em 2006 ou 2007 -> NÃO É JOVEM APRENDIZ (são maiores de idade).
+         - Se o candidato tiver nascido em {ano_limite_menor} ou antes, ou se já tiver concluído o ensino médio há mais de 1 ano, classifique em OUTRA área (ex: ADMINISTRATIVO, VENDAS, PRODUÇÃO) ou OUTROS.
 
     4. **Operacional vs Especialista**:
        - **Empilhadeira**: Só com curso/NR-11 explícito. Senão -> LOGÍSTICA.
