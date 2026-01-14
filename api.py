@@ -92,6 +92,9 @@ def analisar_com_gemini(conteudo_processado):
     if not conteudo_processado:
         return {"setor": "ARQUIVO_INVALIDO", "confianca": "BAIXA", "motivo": "Vazio"}
 
+    ano_atual = datetime.now().year
+    ano_limite_menor = ano_atual - 18
+
     prompt = f"""
     Você é um Recrutador Sênior da Baly. Sua tarefa é analisar um currículo e categorizá-lo corretamente em uma das pastas disponíveis.
     Data de Hoje: {datetime.now().strftime('%d/%m/%Y')} (Considere esta data para cálculos de idade).
@@ -104,12 +107,12 @@ def analisar_com_gemini(conteudo_processado):
     <instrucoes_extracao>
     1. **Nome**: Identifique o nome completo do candidato (geralmente no topo).
     2. **Contato**: Extraia o telefone (campo 'numero') e email.
-    **Localização (NOVO)**: Identifique a **CIDADE e ESTADO** de residência atual do candidato.
+    3. **Localização (NOVO)**: Identifique a **CIDADE e ESTADO** de residência atual do candidato.
        - Procure no cabeçalho ou dados pessoais.
        - Formato desejado: "Cidade - UF" (ex: "Ribeirão Preto - SP").
-       - Se não tiver o nome da cidade, apenas a Sigla, retorne apenas a sigla por extenso (ex: se tiver no currículo SP, RJ etc... Coloque São Paulo, Rio de Janeiro)
+       - Se não tiver o nome da cidade, apenas a Sigla, retorne apenas a sigla por extenso.
        - Se não encontrar, retorne "Não informado".
-       - Se o candidato disser "Disponível para mudança para X", registre a cidade onde ele mora HOJE, mas mencione a disponibilidade no 'resumo'.
+       - Se o candidato disser "Disponível para mudança para X", registre a cidade onde ele mora HOJE.
     </instrucoes_extracao>
 
     <regras_categorizacao>
@@ -129,7 +132,7 @@ def analisar_com_gemini(conteudo_processado):
          - Nascidos em {ano_limite_menor - 2} ({ano_atual - 20} anos) -> NÃO É JOVEM APRENDIZ.
          - Nascidos em {ano_limite_menor - 1} ({ano_atual - 19} anos) -> NÃO É JOVEM APRENDIZ.
          - Nascidos em 2006 ou 2007 -> NÃO É JOVEM APRENDIZ (são maiores de idade).
-         - Se o candidato tiver nascido em {ano_limite_menor} ou antes, ou se já tiver concluído o ensino médio há mais de 1 ano, classifique em OUTRA área (ex: ADMINISTRATIVO, VENDAS, PRODUÇÃO) ou OUTROS.
+       - Se o candidato tiver nascido em {ano_limite_menor} ou antes, classifique em OUTRA área..
 
     4. **Operacional vs Especialista**:
        - **Empilhadeira**: Só com curso/NR-11 explícito. Senão -> LOGÍSTICA.
