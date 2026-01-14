@@ -160,6 +160,7 @@ def analisar_com_gemini(conteudo_processado):
         "nome": "Nome Sobrenome",
         "email": "email@exemplo.com",
         "numero": "Telefone",
+        "cidade": "Cidade - UF",
         "setor": "CATEGORIA_ESCOLHIDA",
         "confianca": "ALTA/MEDIA/BAIXA",
         "anos_experiencia": 0,
