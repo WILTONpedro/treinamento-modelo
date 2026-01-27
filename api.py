@@ -152,7 +152,16 @@ def analisar_com_gemini(conteudo_processado):
        - **PCD**: Apenas se mencionar explicitamente Deficiência/CID.
        - **Comércio Exterior**: Importação/Exportação.
 
-    7. **Arquivos Inválidos (LIXO)**:
+    7. **PRODUÇÃO**
+        -Coloque todos que tiveram alguma experiência mais braçal como prevalente no currículo, não precisa ser especificamente como AUXILIAR DE PRODUÇÃO, mas chapeiro, zelador, etc...
+
+    8. **Qualidade**
+        -Pessoas que trabalham/tem cursos com enfermagem, farmácia ou áreas da saúde e qualidade.
+
+    9. **GERENTE DE RH**
+        -Coloque todos que você achar que se encaixaria como GERENTE ADMINISTRATIVO.
+    
+    10. **Arquivos Inválidos (LIXO)**:
        - Se for foto aleatória, boleto, carta de apresentação isolada ou o próprio anúncio da vaga ("Anti-Espelho") -> setor: "ARQUIVO_INVALIDO".
        - Apresentações (PPT), cartas soltas -> Ignorar.
     </regras_categorizacao>
