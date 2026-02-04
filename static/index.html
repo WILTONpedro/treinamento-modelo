@@ -1,0 +1,1703 @@
+<link rel="icon" type="image/png" href="LOGOS/icone.png?v=2">
+<link rel="icon" type="image/x-icon" href="LOGOS/favicon.ico?v=2">
+<link rel="apple-touch-icon" href="LOGOS/icone.png?v=2">
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                fontFamily: { sans: ['Inter', 'sans-serif'] },
+                colors: {
+                    // Paleta Baly Energy Drink
+                    baly: {
+                        yellow: '#FFCD00', // Amarelo Principal
+                        black: '#211E16',  // Preto Principal
+                        white: '#EAEAEA',  // Branco/Cinza Claro Fundo
+                        hover: '#e6b800'   // Amarelo escuro para hover
+                    },
+                    brand: {
+                        50: '#fffbeb',
+                        100: '#fef3c7',
+                        500: '#FFCD00',
+                        600: '#FFCD00',
+                        700: '#e6b800'
+                    },
+                    slate: {
+                        800: '#211E16', // Texto agora é Preto Baly
+                        900: '#1a1812'
+                    }
+                }
+            }
+        }
+    }
+</script>
+
+<style>
+    /* Fundo Geral */
+    body { background-color: #EAEAEA; color: #211E16; }
+
+    /* Scrollbar Personalizada */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: #211E16; }
+    ::-webkit-scrollbar-thumb { background: #FFCD00; border-radius: 4px; border: 2px solid #211E16; }
+    ::-webkit-scrollbar-thumb:hover { background: #fff; }
+
+    /* Ajustes de Gráficos */
+    .chart-container { position: relative; width: 100%; height: 300px; }
+
+    /* Wizard Steps */
+    .step-circle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; transition: all 0.3s; z-index: 10; position: relative; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+    .step-circle.active { background-color: #FFCD00; color: #211E16; border: 2px solid #211E16; transform: scale(1.1); }
+    .step-circle.completed { background-color: #211E16; color: #FFCD00; border: 2px solid #211E16; }
+    .step-circle.inactive { background-color: #EAEAEA; color: #94a3b8; border: 2px solid #cbd5e1; }
+
+    .step-line { position: absolute; top: 50%; left: 0; width: 100%; height: 4px; background: #cbd5e1; z-index: 0; transform: translateY(-50%); border-radius: 2px; }
+    .step-line-fill { height: 100%; background: #FFCD00; transition: width 0.4s ease; border-radius: 2px; }
+
+    /* Animações e Expansão */
+    .expand-content { transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out; max-height: 0; opacity: 0; overflow: hidden; }
+    .expand-content.open { max-height: 500px; opacity: 1; }
+
+    /* Inputs Focus */
+    input:focus, select:focus, textarea:focus {
+        border-color: #FFCD00 !important;
+        box-shadow: 0 0 0 2px rgba(255, 205, 0, 0.2) !important;
+    }
+
+    /* Botão Primário Estilo Baly */
+    .btn-baly {
+        background-color: #FFCD00;
+        color: #211E16;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        transition: all 0.2s;
+    }
+    .btn-baly:hover {
+        background-color: #e6b800;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(255, 205, 0, 0.3);
+    }
+
+    /* Avatar Hover Overlay */
+    .avatar-overlay {
+        opacity: 0;
+        transition: opacity 0.2s;
+    }
+    .group:hover .avatar-overlay {
+        opacity: 1;
+    }
+
+    /* --- CORREÇÃO DE IMPRESSÃO --- */
+    @media print {
+        @page { margin: 1cm; size: auto; }
+        body, #app-ui, main, #content-area {
+            height: auto !important;
+            overflow: visible !important;
+            background-color: white !important;
+            display: block !important;
+        }
+        aside, header, #auth-screen, .no-print, button { display: none !important; }
+        #view-details { display: block !important; position: static !important; width: 100% !important; height: auto !important; margin: 0 !important; padding: 0 !important; }
+        #print-area { box-shadow: none !important; border: none !important; margin: 0 !important; padding: 0 !important; width: 100% !important; max-width: 100% !important; }
+        p, h1, h2, h3 { page-break-inside: avoid; color: black !important; }
+        .bg-slate-50, .bg-gray-50, .bg-[#FFFBEB] { background-color: transparent !important; border: 1px solid #ccc !important; }
+        .text-[#FFCD00] { color: #000 !important; font-weight: bold; }
+        ::-webkit-scrollbar { display: none; }
+    }
+    @keyframes ai-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(255, 205, 0, 0.4); }
+        70% { box-shadow: 0 0 0 15px rgba(255, 205, 0, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 205, 0, 0); }
+    }
+
+    .listening-mode {
+        animation: ai-pulse 1.5s infinite;
+        background-color: #211E16 !important;
+        color: #FFCD00 !important;
+        border-color: #FFCD00 !important;
+    }
+
+    /* Esconder o redimensionamento da textarea para ficar clean */
+    textarea { resize: none; }
+
+    /* Barrinhas de áudio animadas */
+    .audio-wave-bar {
+        background-color: #FFCD00;
+        width: 4px;
+        height: 100%;
+        border-radius: 2px;
+        animation: sound-wave 0s infinite ease-in-out alternate;
+    }
+    @keyframes sound-wave {
+        0% { height: 20%; opacity: 0.5; }
+        100% { height: 100%; opacity: 1; }
+    }
+    @keyframes fadeInUp {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    .word-fade {
+        animation: fadeInUp 0.2s ease-out forwards;
+        display: inline-block;
+        margin-right: 4px; /* Espaço entre palavras */
+    }
+
+    /* Hack para ter Placeholder em DIV editável */
+    [contenteditable]:empty:before {
+        content: attr(placeholder);
+        color: #cbd5e1; /* text-slate-300 */
+        pointer-events: none;
+        display: block;
+    }
+    @keyframes fadeInRight {
+        from { opacity: 0; transform: translateX(-10px); }
+        to { opacity: 1; transform: translateX(0); }
+    }
+    .animate-fade-in-right {
+        animation: fadeInRight 0.3s ease-out forwards;
+    }
+</style>
+<div id="auth-wallpaper" class="absolute inset-0" style="background-size: cover; background-position: center; transition: background-image 0.5s ease-in-out;"></div>
+
+<div class="absolute inset-0 bg-black/50"></div>
+
+<div class="bg-black/60 backdrop-blur-md rounded-2xl shadow-2xl w-full max-w-md p-8 overflow-hidden relative z-10 border border-white/10 border-t-8 border-t-baly-yellow">
+
+    <div class="w-full flex justify-center items-center mb-6">
+        <img src="LOGOS/logo-baly-branca.png"
+             alt="Baly Brasil"
+             class="h-42 object-contain block">
+    </div>
+
+    <form id="auth-form" class="space-y-5">
+        <div>
+            <label class="block text-xs font-bold text-white uppercase mb-1">Email Corporativo</label>
+            <div class="relative">
+                <i class="fa-solid fa-envelope absolute left-3 top-3 text-slate-400"></i>
+                <input type="email" id="auth-email" class="w-full pl-10 pr-4 py-3 border border-white/20 rounded-lg outline-none font-medium text-white bg-black/40 focus:bg-black/60 focus:border-[#FFCD00] transition-colors placeholder-slate-500" placeholder="seu.nome@baly.com.br" required>
+            </div>
+        </div>
+
+        <div>
+            <label class="block text-xs font-bold text-white uppercase mb-1">Senha</label>
+            <div class="relative">
+                <i class="fa-solid fa-lock absolute left-3 top-3 text-slate-400"></i>
+                <input type="password" id="auth-pass" class="w-full pl-10 pr-4 py-3 border border-white/20 rounded-lg outline-none font-medium text-white bg-black/40 focus:bg-black/60 focus:border-[#FFCD00] transition-colors placeholder-slate-500" placeholder="••••••••" required>
+            </div>
+        </div>
+
+        <div id="auth-error" class="hidden text-red-300 font-bold text-sm text-center bg-red-900/50 p-3 rounded border border-red-500/50">
+            <i class="fa-solid fa-circle-exclamation mr-1"></i> Erro de credenciais.
+        </div>
+
+        <button type="submit" class="w-full btn-baly py-4 rounded-lg shadow-lg text-sm hover:shadow-[#FFCD00]/20">Acessar Sistema</button>
+    </form>
+
+    <div class="mt-6 text-center">
+        <p class="text-xs text-slate-400">© 2025 Baly Energy Drink. Uso Interno.</p>
+    </div>
+</div>Baly Brasil
+Navegação
+
+                <div class="overflow-hidden flex-1">
+                    <div class="flex items-center justify-between">
+                        <p id="user-display-name" class="text-sm font-bold text-white truncate cursor-pointer hover:text-[#FFCD00] transition" onclick="app.openProfileModal()">User</p>
+                        <button onclick="app.openProfileModal()" class="text-xs text-gray-500 hover:text-[#FFCD00] ml-2"><i class="fa-solid fa-pen"></i></button>
+                    </div>
+                    <p class="text-xs text-gray-400 truncate" id="user-role-label">Recrutador</p>
+                </div>
+            </div>
+            <button onclick="app.handleLogout()" class="w-full text-xs font-bold text-red-400 hover:text-red-300 flex items-center gap-2 justify-center py-2 border border-red-900/50 rounded bg-red-900/10 hover:bg-red-900/20 transition"><i class="fa-solid fa-right-from-bracket"></i> SAIR</button>
+        </div>
+    </aside>
+
+    <div id="profile-modal" class="hidden fixed inset-0 z-[60] bg-black/80 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-w-sm p-6 relative animate-fade-in border-t-4 border-[#FFCD00]">
+            <button onclick="document.getElementById('profile-modal').classList.add('hidden')" class="absolute top-4 right-4 text-slate-400 hover:text-red-500"><i class="fa-solid fa-xmark text-xl"></i></button>
+
+            <div class="text-center mb-6">
+                <h3 class="text-xl font-black text-[#211E16] uppercase mb-1">Editar Perfil</h3>
+                <p class="text-xs text-slate-500 mb-4">Atualize sua foto e nome de exibição</p>
+
+                <div class="relative w-24 h-24 mx-auto cursor-pointer group" onclick="document.getElementById('profile-file-input').click()">
+                    <div id="modal-avatar-preview" class="w-full h-full rounded-full bg-[#211E16] flex items-center justify-center text-[#FFCD00] text-3xl overflow-hidden border-4 border-slate-100 shadow-lg">
+                        <i class="fa-solid fa-user"></i>
+                    </div>
+                    <div class="absolute inset-0 bg-black/50 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-200">
+                        <i class="fa-solid fa-camera text-white text-xl"></i>
+                    </div>
+                    <input type="file" id="profile-file-input" class="hidden" accept="image/*" onchange="app.handlePhotoSelection(this)">
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold text-[#211E16] uppercase mb-1">Nome de Exibição</label>
+                    <input type="text" id="profile-display-name" class="w-full border-2 border-slate-200 rounded-lg p-3 text-sm outline-none focus:border-[#FFCD00] bg-slate-50 font-bold text-slate-700" placeholder="Ex: Maria Silva">
+                </div>
+                <button onclick="app.saveProfile()" class="w-full btn-baly py-3 rounded-lg shadow-md text-sm">Salvar Alterações</button>
+            </div>
+        </div>
+    </div>
+
+    <main class="flex-1 flex flex-col h-screen overflow-hidden relative">
+        <header class="bg-[#211E16] p-4 flex md:hidden items-center justify-between shadow-md no-print">
+            <span class="font-black text-xl text-white">Baly<span class="text-[#FFCD00]">RH</span></span>
+            <button onclick="document.querySelector('aside').classList.toggle('hidden'); document.querySelector('aside').classList.toggle('absolute'); document.querySelector('aside').classList.toggle('z-40'); document.querySelector('aside').classList.toggle('h-full');" class="text-[#FFCD00]"><i class="fa-solid fa-bars text-xl"></i></button>
+        </header>
+
+        <div id="content-area" class="flex-1 overflow-y-auto p-4 md:p-8">
+            <section id="view-dashboard" class="space-y-8 animate-fade-in">
+
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-l-8 border-[#FFCD00] pl-6 py-2 bg-white/50 backdrop-blur-sm rounded-r-xl">
+                    <div>
+                        <h2 class="text-4xl font-black text-[#211E16] uppercase tracking-tighter">Visão Geral</h2>
+                        <p class="text-slate-500 font-bold text-sm uppercase tracking-widest">Performance & Métricas</p>
+                    </div>
+
+                    <div id="admin-dashboard-filter" class="hidden bg-white px-4 py-2 rounded-xl shadow-sm border border-slate-200 flex items-center gap-3">
+                        <i class="fa-solid fa-filter text-[#FFCD00]"></i>
+                        <select id="dash-recruiter-filter" onchange="app.applyDashboardFilter()" class="border-none text-sm font-bold text-[#211E16] outline-none bg-transparent cursor-pointer hover:text-[#e6b800] transition">
+                            <option value="">Visão Global (Todos)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-3 ml-1 flex items-center gap-2">
+                        <i class="fa-solid fa-earth-americas"></i> Histórico Global
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center group hover:-translate-y-1 transition-transform duration-300">
+                            <div><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Geral</p><h3 id="kpi-total" class="text-4xl font-black text-[#211E16]">0</h3></div>
+                            <div class="w-12 h-12 bg-[#211E16] text-[#FFCD00] rounded-xl flex items-center justify-center text-xl shadow-lg shadow-black/10 group-hover:rotate-12 transition-transform"><i class="fa-solid fa-users"></i></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center group hover:-translate-y-1 transition-transform duration-300">
+                            <div><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Reprovados</p><h3 id="kpi-rejected" class="text-4xl font-black text-red-500">0</h3></div>
+                            <div class="w-12 h-12 bg-red-50 text-red-500 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-red-100 group-hover:rotate-12 transition-transform"><i class="fa-solid fa-thumbs-down"></i></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center group hover:-translate-y-1 transition-transform duration-300">
+                            <div><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Aprovados</p><h3 id="kpi-approved" class="text-4xl font-black text-green-500">0</h3></div>
+                            <div class="w-12 h-12 bg-green-50 text-green-500 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-green-100 group-hover:rotate-12 transition-transform"><i class="fa-solid fa-check"></i></div>
+                        </div>
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center group hover:-translate-y-1 transition-transform duration-300">
+                            <div><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Banco</p><h3 id="kpi-standby" class="text-4xl font-black text-amber-500">0</h3></div>
+                            <div class="w-12 h-12 bg-amber-50 text-amber-500 rounded-xl flex items-center justify-center text-xl shadow-lg shadow-amber-100 group-hover:rotate-12 transition-transform"><i class="fa-solid fa-box-archive"></i></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-[10px] font-black text-[#FFCD00] uppercase tracking-[0.2em] mb-3 ml-1 flex items-center gap-2">
+                        <i class="fa-regular fa-calendar-check text-[#211E16]"></i> Performance Mensal (<span id="lbl-current-month">Atual</span>)
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div class="bg-[#211E16] p-5 rounded-2xl shadow-lg shadow-[#211E16]/20 border border-gray-800 flex items-center gap-4 relative overflow-hidden group">
+                            <div class="absolute right-0 top-0 w-24 h-24 bg-[#FFCD00] rounded-full blur-[50px] opacity-10 group-hover:opacity-20 transition-opacity"></div>
+                            <div class="w-10 h-10 rounded-full border-2 border-[#FFCD00] text-[#FFCD00] flex items-center justify-center shrink-0 z-10">
+                                <i class="fa-solid fa-calendar-day text-sm"></i>
+                            </div>
+                            <div class="z-10">
+                                <p class="text-[9px] font-bold text-gray-400 uppercase tracking-wider">Entrevistas</p>
+                                <h3 id="kpi-month-total" class="text-2xl font-black text-white">0</h3>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-5 rounded-2xl shadow-sm border-b-4 border-red-500 flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-full bg-red-100 text-red-600 flex items-center justify-center shrink-0">
+                                <i class="fa-solid fa-xmark text-sm"></i>
+                            </div>
+                            <div>
+                                <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Reprovados (Mês)</p>
+                                <h3 id="kpi-month-rejected" class="text-2xl font-black text-red-600">0</h3>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-5 rounded-2xl shadow-sm border-b-4 border-green-500 flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-full bg-green-100 text-green-600 flex items-center justify-center shrink-0">
+                                <i class="fa-solid fa-check text-sm"></i>
+                            </div>
+                            <div>
+                                <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Aprovados (Mês)</p>
+                                <h3 id="kpi-month-approved" class="text-2xl font-black text-green-600">0</h3>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-5 rounded-2xl shadow-sm border-b-4 border-amber-500 flex items-center gap-4">
+                            <div class="w-10 h-10 rounded-full bg-amber-100 text-amber-600 flex items-center justify-center shrink-0">
+                                <i class="fa-solid fa-pause text-sm"></i>
+                            </div>
+                            <div>
+                                <p class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Banco (Mês)</p>
+                                <h3 id="kpi-month-standby" class="text-2xl font-black text-amber-600">0</h3>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <h3 class="font-bold text-[#211E16] mb-6 flex items-center gap-2 uppercase text-xs tracking-wider border-b border-slate-100 pb-2">
+                            <i class="fa-solid fa-chart-pie text-[#FFCD00]"></i> Candidatos por Vaga (Mês)
+                        </h3>
+                        <div class="chart-container relative h-64">
+                            <canvas id="chart-roles"></canvas>
+                        </div>
+                    </div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                        <h3 class="font-bold text-[#211E16] mb-6 flex items-center gap-2 uppercase text-xs tracking-wider border-b border-slate-100 pb-2">
+                            <i class="fa-solid fa-calendar-week text-[#FFCD00]"></i> Entrevistas da Semana
+                        </h3>
+                        <div class="chart-container relative h-64">
+                            <canvas id="chart-week"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>            <section id="view-candidates" class="hidden space-y-6">
+                <div class="flex justify-between items-center">
+                    <div class="border-l-4 border-[#FFCD00] pl-4">
+                        <h2 class="text-3xl font-black text-[#211E16] uppercase">Candidatos</h2>
+                        <p class="text-slate-500 font-medium">Gestão de talentos</p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button id="btn-export" onclick="app.exportToExcel()" class="hidden bg-green-600 text-white px-6 py-3 rounded-lg shadow-md flex items-center gap-2 hover:bg-green-700 font-bold uppercase transition"><i class="fa-solid fa-file-csv"></i> <span class="hidden md:inline">Exportar Planilha</span></button>
+                        <button onclick="router.navigate('new-interview')" class="btn-baly px-6 py-3 rounded-lg shadow-md flex items-center gap-2"><i class="fa-solid fa-plus"></i> <span class="hidden md:inline">NOVO CANDIDATO</span></button>
+                    </div>
+                </div>
+                <div class="flex justify-end mb-4 no-print">
+                <div class="bg-white p-1 rounded-lg border border-slate-200 shadow-sm flex gap-1">
+                    <button onclick="app.toggleViewMode('list')" id="btn-view-list" class="px-3 py-1.5 rounded text-xs font-bold uppercase bg-[#211E16] text-[#FFCD00] shadow transition">
+                        <i class="fa-solid fa-list"></i> Lista
+                    </button>
+                    <button onclick="app.toggleViewMode('kanban')" id="btn-view-kanban" class="px-3 py-1.5 rounded text-xs font-bold uppercase text-slate-400 hover:text-[#211E16] transition">
+                        <i class="fa-solid fa-border-all"></i> Kanban
+                    </button>
+                </div>
+            </div>
+        <div class="bg-white p-5 rounded-xl shadow-sm border border-slate-200 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+
+    <div class="md:col-span-3">
+        <label class="text-xs font-bold text-[#211E16] uppercase mb-1 block">Nome</label>
+        <div class="relative">
+            <i class="fa-solid fa-search absolute left-3 top-2.5 text-slate-400"></i>
+            <input type="text" id="search-input" onkeyup="app.filterCandidates()" class="w-full border-2 border-slate-200 rounded-lg pl-10 pr-3 py-2 text-sm outline-none bg-slate-50 focus:border-[#FFCD00]" placeholder="Buscar...">
+        </div>
+    </div>
+
+    <div class="md:col-span-2">
+        <label class="text-xs font-bold text-[#211E16] uppercase mb-1 block">Vaga</label>
+        <select id="filter-role" onchange="app.filterCandidates()" class="w-full border-2 border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 outline-none focus:border-[#FFCD00]">
+            <option value="">Todas</option>
+        </select>
+    </div>
+
+    <div id="div-filter-recruiter" class="md:col-span-3 hidden">
+        <label class="text-xs font-bold text-[#211E16] uppercase mb-1 block">Recrutador</label>
+        <select id="filter-recruiter" onchange="app.filterCandidates()" class="w-full border-2 border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 outline-none focus:border-[#FFCD00] cursor-pointer font-bold text-slate-700">
+            <option value="">Todos</option>
+        </select>
+    </div>
+
+    <div class="md:col-span-2">
+        <label class="text-xs font-bold text-[#211E16] uppercase mb-1 block">Status</label>
+        <select id="filter-status" onchange="app.filterCandidates()" class="w-full border-2 border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50 outline-none focus:border-[#FFCD00]">
+            <option value="">Todos</option>
+            <option value="Aprovado">Aprovado</option>
+            <option value="Reprovado">Reprovado</option>
+            <option value="Banco">Banco</option>
+            <option value="Em Análise">Em Análise</option>
+        </select>
+    </div>
+
+    <div class="md:col-span-2">
+        <button onclick="app.resetFilters()" class="w-full bg-[#211E16] text-[#EAEAEA] py-2.5 rounded-lg text-sm font-bold uppercase hover:bg-black transition flex items-center justify-center gap-2 shadow-md">
+            <i class="fa-solid fa-filter-circle-xmark"></i> Limpar
+        </button>
+    </div>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+    <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+            <thead class="bg-[#211E16] text-white text-xs uppercase tracking-wider sticky top-0 z-10 shadow-md">
+                <tr>
+                    <th class="p-4 font-black text-[#FFCD00] w-24">Data</th>
+                    <th class="p-4 font-bold text-slate-300 w-24">Chamado</th>
+                    <th class="p-4 font-bold text-slate-300">Recrutador</th>
+                    <th class="p-4 font-black text-white text-sm">Candidato</th>
+                    <th class="p-4 font-bold text-slate-300">Contato</th>
+                    <th class="p-4 font-bold text-slate-300">Origem</th>
+                    <th class="p-4 font-black text-[#FFCD00] text-center">Status</th>
+                    <th class="p-4 font-bold text-slate-300 w-48">Motivo</th>
+                    <th class="p-4 font-black text-white text-right w-[180px] whitespace-nowrap">Vaga</th>
+                    <th class="p-4 w-12"></th>
+                </tr>
+            </thead>
+            <tbody id="candidates-list-body" class="divide-y divide-slate-100"></tbody>
+        </table>
+    </div>
+</div>
+<div id="kanban-view" class="hidden overflow-x-auto pb-4">
+<div class="flex gap-6 min-w-[1000px]">
+
+    <div class="flex-1 min-w-[280px] flex flex-col h-full">
+        <div class="bg-slate-200 p-3 rounded-t-xl border-b-4 border-slate-400 flex justify-between items-center sticky top-0 z-10">
+            <h3 class="font-black text-slate-600 uppercase text-xs">Em Análise</h3>
+            <span id="count-analise" class="bg-white text-slate-600 px-2 py-0.5 rounded text-[10px] font-bold">0</span>
+        </div>
+        <div id="col-analise" class="bg-slate-100 p-3 rounded-b-xl space-y-3 min-h-[400px]"></div>
+    </div>
+
+    <div class="flex-1 min-w-[280px] flex flex-col h-full">
+        <div class="bg-green-100 p-3 rounded-t-xl border-b-4 border-green-500 flex justify-between items-center sticky top-0 z-10">
+            <h3 class="font-black text-green-800 uppercase text-xs">Aprovados</h3>
+            <span id="count-aprovado" class="bg-white text-green-800 px-2 py-0.5 rounded text-[10px] font-bold">0</span>
+        </div>
+        <div id="col-aprovado" class="bg-green-50/50 p-3 rounded-b-xl space-y-3 min-h-[400px]"></div>
+    </div>
+
+    <div class="flex-1 min-w-[280px] flex flex-col h-full">
+        <div class="bg-[#FFFBEB] p-3 rounded-t-xl border-b-4 border-[#FFCD00] flex justify-between items-center sticky top-0 z-10">
+            <h3 class="font-black text-[#b45309] uppercase text-xs">Banco de Talentos</h3>
+            <span id="count-banco" class="bg-white text-[#b45309] px-2 py-0.5 rounded text-[10px] font-bold">0</span>
+        </div>
+        <div id="col-banco" class="bg-[#FFCD00]/10 p-3 rounded-b-xl space-y-3 min-h-[400px]"></div>
+    </div>
+
+    <div class="flex-1 min-w-[280px] flex flex-col h-full">
+        <div class="bg-red-100 p-3 rounded-t-xl border-b-4 border-red-500 flex justify-between items-center sticky top-0 z-10">
+            <h3 class="font-black text-red-800 uppercase text-xs">Reprovados</h3>
+            <span id="count-reprovado" class="bg-white text-red-800 px-2 py-0.5 rounded text-[10px] font-bold">0</span>
+        </div>
+        <div id="col-reprovado" class="bg-red-50/50 p-3 rounded-b-xl space-y-3 min-h-[400px]"></div>
+    </div>
+
+</div>
+            <section id="view-new-interview" class="hidden relative min-h-screen pb-20 overflow-x-hidden bg-[#EAEAEA]">
+
+                <div class="absolute inset-0 z-0 pointer-events-none">
+                    <div class="absolute inset-0 opacity-[0.03]"
+                        style="background-image: radial-gradient(#211E16 1px, transparent 1px); background-size: 20px 20px;">
+                    </div>
+                    <div class="absolute top-[-10%] right-[-5%] w-[600px] h-[600px] bg-[#FFCD00] rounded-full blur-[120px] opacity-10"></div>
+                    <div class="absolute bottom-[-10%] left-[-10%] w-[500px] h-[500px] bg-[#211E16] rounded-full blur-[100px] opacity-5"></div>
+                </div>
+
+                <div class="relative z-10 max-w-5xl mx-auto px-4 md:px-8 pt-8">
+
+                    <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8 no-print">
+                        <div class="flex items-center gap-5">
+                            <button onclick="router.back()" class="group w-12 h-12 rounded-2xl bg-white border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-[#211E16] hover:border-[#211E16] hover:text-[#FFCD00] transition-all shadow-sm hover:shadow-lg hover:-translate-x-1">
+                                <i class="fa-solid fa-arrow-left text-lg group-hover:scale-110 transition-transform"></i>
+                            </button>
+                            <div>
+                                <h2 class="text-3xl font-black text-[#211E16] uppercase tracking-tighter leading-none">
+                                    Nova <span class="relative inline-block">
+                                        Entrevista
+                                        <span class="absolute bottom-1 left-0 w-full h-3 bg-[#FFCD00]/30 -z-10 -skew-x-12"></span>
+                                    </span>
+                                </h2>
+                                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1 flex items-center gap-2">
+                                    <i class="fa-solid fa-pen-nib text-[#FFCD00]"></i> Ficha de Avaliação
+                                </p>
+                            </div>
+                        </div>
+
+                        <div class="hidden md:flex items-center gap-3 bg-white/60 backdrop-blur-md px-4 py-2 rounded-xl border border-white shadow-sm">
+                            <div class="text-right leading-tight">
+                                <p class="text-[9px] font-bold text-slate-400 uppercase">Recrutador Logado</p>
+                                <p id="header-recruiter-name" class="text-xs font-black text-[#211E16] uppercase">...</p>
+                            </div>
+                            <div class="w-10 h-10 rounded-full bg-gradient-to-br from-[#211E16] to-black text-[#FFCD00] flex items-center justify-center shadow-lg">
+                                <i class="fa-solid fa-user-tie"></i>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-2xl shadow-xl shadow-slate-200/60 border border-slate-100 p-4 mb-8 relative overflow-hidden sticky top-4 z-40 transition-all">
+                        <div class="absolute top-1/2 left-8 right-8 h-1 bg-slate-100 -translate-y-1/2 rounded-full z-0"></div>
+                        <div id="wizard-line" class="absolute top-1/2 left-8 h-1 bg-[#FFCD00] -translate-y-1/2 rounded-full z-0 transition-all duration-700 ease-out shadow-[0_0_8px_#FFCD00]" style="width: 0%"></div>
+
+                        <div class="relative z-10 flex justify-between px-4 max-w-3xl mx-auto">
+                            <button onclick="app.goToStep(1)" class="flex flex-col items-center gap-2 group focus:outline-none w-20">
+                                <div id="step-ind-1" class="w-10 h-10 rounded-xl bg-[#FFCD00] text-[#211E16] font-black flex items-center justify-center shadow-lg shadow-yellow-200 border-2 border-white transition-transform group-hover:-translate-y-1">1</div>
+                                <span class="text-[10px] font-bold uppercase text-[#211E16] tracking-wider">Dados</span>
+                            </button>
+                            <button onclick="app.goToStep(2)" class="flex flex-col items-center gap-2 group focus:outline-none w-20">
+                                <div id="step-ind-2" class="w-10 h-10 rounded-xl bg-slate-100 text-slate-400 font-bold flex items-center justify-center border-2 border-white transition-transform group-hover:-translate-y-1">2</div>
+                                <span class="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Educação</span>
+                            </button>
+                            <button onclick="app.goToStep(3)" class="flex flex-col items-center gap-2 group focus:outline-none w-20">
+                                <div id="step-ind-3" class="w-10 h-10 rounded-xl bg-slate-100 text-slate-400 font-bold flex items-center justify-center border-2 border-white transition-transform group-hover:-translate-y-1">3</div>
+                                <span class="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Perfil</span>
+                            </button>
+                            <button onclick="app.goToStep(4)" class="flex flex-col items-center gap-2 group focus:outline-none w-20">
+                                <div id="step-ind-4" class="w-10 h-10 rounded-xl bg-slate-100 text-slate-400 font-bold flex items-center justify-center border-2 border-white transition-transform group-hover:-translate-y-1">4</div>
+                                <span class="text-[10px] font-bold uppercase text-slate-400 tracking-wider">Análise</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="bg-white rounded-[24px] shadow-2xl shadow-slate-300/40 border border-white p-8 md:p-10 relative overflow-hidden min-h-[600px]">
+                        <div class="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-[#FFCD00] via-[#211E16] to-[#FFCD00]"></div>
+
+                        <form id="interview-form" onsubmit="return false;">
+                    <div id="step-content-1" class="space-y-8 animate-fade-in">
+
+            <div id="admin-owner-container" class="hidden bg-yellow-50/50 border border-[#FFCD00] rounded-xl p-4 flex items-center justify-between">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-[#FFCD00] flex items-center justify-center text-[#211E16] shadow-sm"><i class="fa-solid fa-shield-halved"></i></div>
+                    <div>
+                        <p class="text-[10px] font-black text-[#b45309] uppercase">Modo Administrador</p>
+                        <p class="text-xs text-[#b45309]">Atribuir entrevista a outro recrutador</p>
+                    </div>
+                </div>
+                <select id="sel-admin-owner" class="bg-white border border-yellow-200 text-[#b45309] text-xs font-bold rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-[#FFCD00] cursor-pointer shadow-sm">
+                    <option value="">-- Eu Mesmo --</option>
+                </select>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+                <div class="md:col-span-8">
+                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 block ml-1">Nome Completo <span class="text-red-500">*</span></label>
+                    <div class="relative group">
+                        <i class="fa-solid fa-user absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors"></i>
+                        <input type="text" id="inp-name" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm placeholder-slate-300" placeholder="Nome do candidato">
+                    </div>
+                </div>
+
+                <div class="md:col-span-4 relative">
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1 flex justify-between">
+                        <span>Código da Vaga <span class="text-red-500">*</span></span>
+                    </label>
+
+                    <div class="relative group">
+                        <i class="fa-solid fa-hashtag absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors text-sm z-10"></i>
+
+                        <input type="text"
+                            id="inp-job-code"
+                            onkeyup="app.searchJobSuggestions(this.value)"
+                            oninput="this.value = this.value.replace(/[^0-9]/g, '')"
+                            onblur="setTimeout(() => document.getElementById('job-suggestions-list').classList.add('hidden'), 200)"
+                            autocomplete="off"
+                            class="w-full pl-10 pr-4 py-3 bg-slate-50 border-2 border-slate-200 rounded-xl text-sm font-black text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm font-mono placeholder-slate-300 tracking-wide"
+                            placeholder="Ex: 1054">
+
+                        <ul id="job-suggestions-list" class="hidden absolute left-0 right-0 top-full mt-2 bg-white border border-slate-100 rounded-xl shadow-2xl z-50 max-h-48 overflow-y-auto custom-scrollbar divide-y divide-slate-50"></ul>
+                    </div>
+
+                    <div id="job-found-badge" class="mt-2 min-h-[20px]"></div>
+                </div>
+
+                <div class="md:col-span-4">
+                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 block ml-1">WhatsApp <span class="text-red-500">*</span></label>
+                    <div class="relative group">
+                        <i class="fa-brands fa-whatsapp absolute left-4 top-3.5 text-slate-300 group-focus-within:text-green-500 transition-colors text-lg"></i>
+                        <input type="text" id="inp-phone" oninput="app.maskPhone(this)" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-green-500 focus:ring-4 focus:ring-green-500/10 transition-all shadow-sm" placeholder="(00) 00000-0000">
+                    </div>
+                </div>
+
+                <div class="md:col-span-8">
+                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2 block ml-1">Onde viu a vaga? <span class="text-red-500">*</span></label>
+                    <div class="flex flex-col md:flex-row gap-4 w-full">
+                        <div class="relative flex-1 group transition-all duration-300">
+                            <i class="fa-solid fa-bullhorn absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors"></i>
+                            <select id="sel-source" onchange="app.toggleSourceInput()" class="w-full pl-10 pr-8 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm appearance-none cursor-pointer">
+                                <option value="">-- Selecione --</option>
+                                <option value="WhatsApp">WhatsApp</option>
+                                <option value="Facebook">Facebook</option>
+                                <option value="Instagram">Instagram</option>
+                                <option value="LinkedIn">LinkedIn</option>
+                                <option value="Indicação">Indicação</option>
+                                <option value="Outros">Outros / Especifique</option>
+                            </select>
+                            <div class="absolute right-3 top-3.5 pointer-events-none text-slate-400"><i class="fa-solid fa-chevron-down text-xs"></i></div>
+                        </div>
+
+                        <div id="div-source-other" class="hidden flex-1 animate-fade-in-right">
+                            <div class="relative w-full">
+                                <i class="fa-solid fa-pen absolute left-4 top-3.5 text-[#FFCD00]"></i>
+                                <input type="text" id="inp-source-other" class="w-full pl-10 pr-4 py-3 bg-[#FFFBEB] border-2 border-[#FFCD00] rounded-xl text-sm font-bold text-[#211E16] outline-none focus:ring-4 focus:ring-[#FFCD00]/20 transition-all shadow-sm placeholder-slate-400" placeholder="Digite qual local...">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="md:col-span-12 grid grid-cols-2 md:grid-cols-4 gap-4 pt-2">
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase mb-1 block">Data Entrevista</label><input type="date" id="inp-interview-date" class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#211E16] outline-none focus:border-[#FFCD00]"></div>
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase mb-1 block">Nascimento</label><input type="date" id="inp-dob" class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#211E16] outline-none focus:border-[#FFCD00]"></div>
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase mb-1 block">Cidade</label><input type="text" id="inp-city" class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#211E16] outline-none focus:border-[#FFCD00]" placeholder="Cidade"></div>
+                    <div><label class="text-[10px] font-bold text-slate-400 uppercase mb-1 block">CPF</label><input type="text" id="inp-cpf" oninput="app.maskCPF(this)" class="w-full px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-[#211E16] outline-none focus:border-[#FFCD00]" placeholder="000.000.000-00"></div>
+                </div>
+            </div>
+        </div>
+                        <div id="step-content-2" class="space-y-8 hidden animate-fade-in">
+
+                        <div class="flex items-center gap-4 pb-2 border-b border-slate-100">
+                            <div class="w-10 h-10 rounded-xl bg-[#211E16] text-[#FFCD00] flex items-center justify-center shadow-lg shadow-black/10">
+                                <span class="font-black text-lg">2</span>
+                            </div>
+                            <div>
+                                <h3 class="font-black text-lg text-[#211E16] uppercase tracking-tight">Formação & Logística</h3>
+                                <p class="text-xs text-slate-400 font-medium">Escolaridade, transporte e pretensão</p>
+                            </div>
+                        </div>
+
+                        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
+                            <div class="absolute top-0 left-0 w-1 h-full bg-[#FFCD00]"></div> <h4 class="font-black text-xs text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
+                                <i class="fa-solid fa-graduation-cap text-[#FFCD00]"></i> Dados Acadêmicos
+                            </h4>
+
+                            <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+
+                                <div class="md:col-span-6">
+                                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1">Escolaridade</label>
+                                    <div class="relative group">
+                                        <select id="sel-education" onchange="app.handleEducationChange()" class="w-full pl-4 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm appearance-none cursor-pointer">
+                                            <option value="">Selecione...</option>
+                                            <option value="Fundamental - Incompleto">Fundamental - Incompleto</option>
+                                            <option value="Fundamental - Completo">Fundamental - Completo</option>
+                                            <option value="Médio - Incompleto">Médio - Incompleto</option>
+                                            <option value="Médio - Completo">Médio - Completo</option>
+                                            <option value="Superior - Incompleto">Superior - Incompleto</option>
+                                            <option value="Superior - Completo">Superior - Completo</option>
+                                            <option value="Pós-Graduação">Pós-Graduação</option>
+                                        </select>
+                                        <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-slate-400">
+                                            <i class="fa-solid fa-chevron-down text-xs"></i>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="div-education-stage" class="hidden md:col-span-6 animate-fade-in-right">
+                                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1">Ano / Semestre Atual</label>
+                                    <div class="relative">
+                                        <select id="sel-education-stage" class="w-full pl-4 pr-10 py-3 bg-[#FFFBEB] border border-[#FFCD00] rounded-xl text-sm font-bold text-[#211E16] outline-none shadow-sm appearance-none cursor-pointer">
+                                            </select>
+                                        <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-[#b45309]">
+                                            <i class="fa-solid fa-chevron-down text-xs"></i>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div id="div-college" class="hidden md:col-span-12 animate-fade-in">
+                                    <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1">Instituição de Ensino & Curso</label>
+                                    <div class="relative group">
+                                        <i class="fa-solid fa-building-columns absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors"></i>
+                                        <input type="text" id="inp-college" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm placeholder-slate-300" placeholder="Ex: Engenharia Civil - USP">
+                                    </div>
+                                </div>
+
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+
+                            <div class="md:col-span-4">
+                            <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1">Transporte</label>
+                            <div class="relative group">
+                                <div class="absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors text-lg w-6 text-center">
+                                    <i id="icon-transport" class="fa-solid fa-car"></i>
+                                </div>
+
+                                <select id="sel-transport" onchange="app.updateTransportIcon()" class="w-full pl-12 pr-10 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm appearance-none cursor-pointer">
+                                    <option value="Carro">Carro Próprio</option>
+                                    <option value="Moto">Moto Própria</option>
+                                    <option value="Ônibus">Transporte Público</option>
+                                    <option value="Carona">Carona</option>
+                                    <option value="Outros">A pé / Bike / Outros</option>
+                                </select>
+
+                                <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none text-slate-400">
+                                    <i class="fa-solid fa-chevron-down text-xs"></i>
+                                </div>
+                            </div>
+                        </div>
+
+                            <div class="md:col-span-4">
+                                <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 block ml-1">Tempo Deslocamento (Min)</label>
+                                <div class="relative group">
+                                    <i class="fa-regular fa-clock absolute left-4 top-3.5 text-slate-300 group-focus-within:text-[#FFCD00] transition-colors"></i>
+                                    <input type="number" id="inp-commute" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-[#211E16] outline-none focus:bg-white focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm placeholder-slate-300" placeholder="Ex: 40">
+                                </div>
+                            </div>
+
+                            <div class="md:col-span-4">
+                                <label class="text-[11px] font-bold text-green-600 uppercase tracking-wider mb-1.5 block ml-1">Pretensão Salarial</label>
+                                <div class="relative group">
+                                    <span class="absolute left-4 top-3.5 text-green-600 font-black text-sm group-focus-within:scale-110 transition-transform">R$</span>
+                                    <input type="text" id="inp-salary" oninput="app.maskMoney(this)" class="w-full pl-10 pr-4 py-3 bg-green-50/50 border border-green-200 rounded-xl text-sm font-black text-green-700 outline-none focus:bg-white focus:border-green-500 focus:ring-4 focus:ring-green-500/10 transition-all shadow-sm placeholder-green-300/50" placeholder="0,00">
+                                </div>
+                            </div>
+
+                        </div>
+
+                        <div class="bg-slate-50 p-6 rounded-xl border border-slate-200 shadow-inner">
+                            <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3 block flex items-center gap-2">
+                                <i class="fa-solid fa-certificate text-[#FFCD00]"></i> Cursos Complementares / Certificações
+                            </label>
+
+                            <div class="flex gap-2 mb-4">
+                                <input type="text" id="new-course-name" class="flex-1 px-4 py-3 bg-white border border-slate-200 rounded-xl text-sm font-medium text-[#211E16] outline-none focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 transition-all shadow-sm placeholder-slate-300" placeholder="Digite o nome do curso e clique em adicionar...">
+
+                                <button onclick="app.addCourse()" class="bg-[#211E16] text-[#FFCD00] px-6 rounded-xl text-xs font-black uppercase hover:bg-black hover:scale-105 transition-all shadow-md flex items-center gap-2">
+                                    <i class="fa-solid fa-plus"></i> <span class="hidden md:inline">Adicionar</span>
+                                </button>
+                            </div>
+
+                            <ul id="list-courses" class="flex flex-wrap gap-2 empty:hidden">
+                                </ul>
+                            <p id="empty-courses-msg" class="text-xs text-slate-400 italic text-center py-2">Nenhum curso adicionado ainda.</p>
+                        </div>
+
+                    </div>
+                        <div id="step-content-3" class="space-y-8 hidden animate-fade-in">
+
+                            <div class="flex items-center gap-4 pb-2 border-b border-slate-100">
+                                <div class="w-10 h-10 rounded-xl bg-[#211E16] text-[#FFCD00] flex items-center justify-center shadow-lg shadow-black/10">
+                                    <span class="font-black text-lg">3</span>
+                                </div>
+                                <div>
+                                    <h3 class="font-black text-lg text-[#211E16] uppercase tracking-tight">Experiência & Entrevista</h3>
+                                    <p class="text-xs text-slate-400 font-medium">Transcrição inteligente e análise de perfil</p>
+                                </div>
+                            </div>
+
+                            <div class="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden flex flex-col transition-all duration-300 ring-1 ring-slate-100 hover:ring-[#FFCD00]/50">
+
+                                <div class="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
+                                    <div class="flex items-center gap-2">
+                                        <div class="flex gap-1.5">
+                                            <div class="w-2.5 h-2.5 rounded-full bg-red-400"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-yellow-400"></div>
+                                            <div class="w-2.5 h-2.5 rounded-full bg-green-400"></div>
+                                        </div>
+                                        <span class="ml-3 text-[10px] font-black text-slate-400 uppercase tracking-widest">Baly AI Recorder 2.0</span>
+                                    </div>
+
+                                    <div class="relative">
+                                        <i class="fa-solid fa-earth-americas absolute left-2.5 top-2 text-slate-400 text-xs"></i>
+                                        <select id="mic-lang" class="bg-white border border-slate-200 text-slate-600 text-[10px] font-bold uppercase py-1.5 pl-7 pr-6 rounded-lg cursor-pointer hover:border-[#FFCD00] outline-none shadow-sm appearance-none">
+                                            <option value="pt-BR">🇧🇷 PT-BR</option>
+                                            <option value="es-ES">🇪🇸 ES</option>
+                                            <option value="fr-FR">🇫🇷 FR</option>
+                                            <option value="ht">🇭🇹 HT</option>
+                                            <option value="en-US">🇺🇸 EN</option>
+                                        </select>
+                                        <i class="fa-solid fa-chevron-down absolute right-2 top-2.5 text-[8px] text-slate-300"></i>
+                                    </div>
+                                </div>
+
+                                <div class="relative h-[300px] bg-slate-50/30 group">
+                                    <div id="inp-notes"
+                                        contenteditable="true"
+                                        class="w-full h-full p-6 outline-none text-[#211E16] text-base leading-relaxed font-medium bg-transparent overflow-y-auto font-sans"
+                                        placeholder="Clique no microfone abaixo para iniciar a entrevista..."></div>
+
+                                    <button type="button" onclick="document.getElementById('inp-notes').innerText=''"
+                                        class="absolute top-4 right-4 text-slate-300 hover:text-red-400 transition p-2 bg-white/80 rounded-lg shadow-sm backdrop-blur-sm opacity-0 group-hover:opacity-100" title="Limpar Texto">
+                                        <i class="fa-solid fa-trash"></i>
+                                    </button>
+                                </div>
+
+                                <div class="p-4 bg-white border-t border-slate-100 flex items-center justify-between gap-4 relative z-10">
+
+                                    <button type="button" onclick="app.analyzeTranscriptAI()"
+                                        class="group flex items-center gap-3 px-5 py-2.5 bg-[#211E16] text-[#FFCD00] rounded-xl hover:bg-black hover:scale-105 transition-all shadow-lg shadow-black/10">
+                                        <i class="fa-solid fa-wand-magic-sparkles text-lg group-hover:rotate-12 transition-transform"></i>
+                                        <div class="text-left leading-none">
+                                            <span class="block text-[9px] font-bold opacity-60 uppercase">Processar</span>
+                                            <span class="block text-xs font-black uppercase">Analisar Dados</span>
+                                        </div>
+                                    </button>
+
+                                    <div class="flex items-center gap-4 absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+
+                                        <div id="mic-ui-container" class="hidden flex items-center gap-1.5 h-10 px-4 bg-red-50 rounded-full border border-red-100">
+                                            <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                                            <span class="text-[10px] font-bold text-red-500 uppercase mr-2">Gravando...</span>
+                                            <div class="audio-wave-bar bg-red-400 w-1 h-3 rounded-full animate-bounce"></div>
+                                            <div class="audio-wave-bar bg-red-400 w-1 h-5 rounded-full animate-bounce delay-75"></div>
+                                            <div class="audio-wave-bar bg-red-400 w-1 h-3 rounded-full animate-bounce delay-150"></div>
+                                        </div>
+
+                                        <button type="button" onclick="app.toggleGeminiMic()" id="btn-mic-gemini"
+                                            class="w-16 h-16 rounded-2xl bg-white border border-slate-200 text-slate-400 shadow-[0_4px_0_#e2e8f0] active:shadow-none active:translate-y-[4px] hover:text-[#FFCD00] hover:border-[#FFCD00] transition-all flex items-center justify-center group relative overflow-hidden">
+                                            <div class="absolute inset-0 bg-[#FFCD00] opacity-0 group-hover:opacity-10 transition-opacity"></div>
+                                            <i class="fa-solid fa-microphone text-2xl group-hover:scale-110 transition-transform"></i>
+                                        </button>
+                                    </div>
+
+                                    <div class="w-[140px]"></div>
+                                </div>
+                            </div>
+
+                            <div class="bg-slate-50 p-6 rounded-2xl border border-slate-200 shadow-inner">
+                                <label class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-4 block flex items-center gap-2">
+                                    <i class="fa-solid fa-briefcase text-[#FFCD00]"></i> Histórico Profissional
+                                </label>
+
+                                <div class="flex flex-col md:flex-row gap-2 mb-6 bg-white p-2 rounded-xl shadow-sm border border-slate-200">
+                                    <input type="text" id="exp-company" placeholder="Empresa" class="flex-1 px-3 py-2 text-sm font-bold text-[#211E16] outline-none border-r border-slate-100 placeholder-slate-300 bg-transparent">
+                                    <input type="text" id="exp-role" placeholder="Cargo Ocupado" class="flex-1 px-3 py-2 text-sm font-bold text-[#211E16] outline-none border-r border-slate-100 placeholder-slate-300 bg-transparent">
+                                    <input type="text" id="exp-time" placeholder="Duração (ex: 2 anos)" class="w-full md:w-40 px-3 py-2 text-sm font-bold text-[#211E16] outline-none placeholder-slate-300 bg-transparent">
+                                    <button onclick="app.addExperience()" class="bg-[#211E16] text-[#FFCD00] px-4 rounded-lg hover:bg-black transition shadow-sm">
+                                        <i class="fa-solid fa-plus"></i>
+                                    </button>
+                                </div>
+
+                                <ul id="list-experiences" class="space-y-3 pl-2">
+                                    </ul>
+                                <p id="empty-exp-msg" class="text-xs text-slate-400 italic text-center py-2">Nenhuma experiência registrada.</p>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                                <div class="bg-white p-5 rounded-xl border-l-4 border-green-500 shadow-sm hover:shadow-md transition-shadow">
+                                    <h4 class="font-black text-xs text-green-700 uppercase mb-4 flex items-center gap-2">
+                                        <div class="w-6 h-6 rounded bg-green-100 flex items-center justify-center"><i class="fa-solid fa-arrow-trend-up text-green-600"></i></div>
+                                        Pontos Fortes
+                                    </h4>
+                                    <div class="space-y-2">
+                                        <input id="inp-strong-1" placeholder="Ex: Comunicação Clara" class="w-full text-xs font-bold text-[#211E16] bg-green-50/30 border border-green-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-green-400 focus:ring-2 focus:ring-green-200 transition-all">
+                                        <input id="inp-strong-2" placeholder="Ex: Proatividade" class="w-full text-xs font-bold text-[#211E16] bg-green-50/30 border border-green-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-green-400 focus:ring-2 focus:ring-green-200 transition-all">
+                                        <input id="inp-strong-3" placeholder="Ex: Liderança Técnica" class="w-full text-xs font-bold text-[#211E16] bg-green-50/30 border border-green-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-green-400 focus:ring-2 focus:ring-green-200 transition-all">
+                                    </div>
+                                </div>
+
+                                <div class="bg-white p-5 rounded-xl border-l-4 border-red-500 shadow-sm hover:shadow-md transition-shadow">
+                                    <h4 class="font-black text-xs text-red-700 uppercase mb-4 flex items-center gap-2">
+                                        <div class="w-6 h-6 rounded bg-red-100 flex items-center justify-center"><i class="fa-solid fa-arrow-trend-down text-red-600"></i></div>
+                                        Pontos de Melhoria
+                                    </h4>
+                                    <div class="space-y-2">
+                                        <input id="inp-weak-1" placeholder="Ex: Inglês Básico" class="w-full text-xs font-bold text-[#211E16] bg-red-50/30 border border-red-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-red-400 focus:ring-2 focus:ring-red-200 transition-all">
+                                        <input id="inp-weak-2" placeholder="Ex: Tímido em Público" class="w-full text-xs font-bold text-[#211E16] bg-red-50/30 border border-red-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-red-400 focus:ring-2 focus:ring-red-200 transition-all">
+                                        <input id="inp-weak-3" placeholder="Ex: Ansiedade" class="w-full text-xs font-bold text-[#211E16] bg-red-50/30 border border-red-100 rounded-lg px-3 py-2.5 outline-none focus:bg-white focus:border-red-400 focus:ring-2 focus:ring-red-200 transition-all">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="step-content-4" class="space-y-8 hidden animate-fade-in">
+
+                        <style>
+                            #ai-result-container:not(.hidden) + #ai-placeholder-state { display: none !important; }
+                        </style>
+
+                        <div class="flex items-center gap-4 pb-2 border-b border-slate-100">
+                            <div class="w-10 h-10 rounded-xl bg-[#211E16] text-[#FFCD00] flex items-center justify-center shadow-lg shadow-black/10">
+                                <span class="font-black text-lg">4</span>
+                            </div>
+                            <div>
+                                <h3 class="font-black text-lg text-[#211E16] uppercase tracking-tight">Análise & Finalização</h3>
+                                <p class="text-xs text-slate-400 font-medium">Perfil comportamental e revisão final</p>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+
+                            <div class="lg:col-span-4 flex flex-col gap-6">
+
+                                <div class="bg-white p-6 rounded-2xl shadow-lg border border-slate-200 relative overflow-hidden group">
+                                    <div class="absolute top-0 right-0 w-32 h-32 bg-[#FFCD00]/10 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110"></div>
+
+                                    <div class="relative z-10 text-center">
+                                        <div class="w-16 h-16 mx-auto bg-[#211E16] text-[#FFCD00] rounded-2xl flex items-center justify-center text-2xl shadow-lg mb-4 group-hover:rotate-12 transition-transform">
+                                            <i class="fa-solid fa-wand-magic-sparkles"></i>
+                                        </div>
+
+                                        <h4 class="font-black text-[#211E16] uppercase text-sm mb-2">Gerar Perfil Baly AI</h4>
+                                        <p class="text-xs text-slate-500 mb-6 leading-relaxed font-medium">
+                                            A Inteligência Artificial cruzará os dados de voz, SWOT e histórico para gerar um parecer técnico.
+                                        </p>
+
+                                        <button onclick="app.generateNewInterviewAI()" class="w-full py-4 bg-[#211E16] text-[#FFCD00] font-black uppercase rounded-xl hover:bg-black hover:scale-[1.02] shadow-xl transition-all flex items-center justify-center gap-2 group/btn">
+                                            <span>Gerar Análise</span>
+                                            <i class="fa-solid fa-bolt group-hover/btn:animate-pulse"></i>
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div class="bg-slate-50 p-6 rounded-2xl border border-slate-200 flex-1 flex flex-col justify-end">
+                                    <h4 class="font-bold text-slate-400 uppercase text-[10px] tracking-widest mb-4 text-center border-b border-slate-200 pb-2">Finalização</h4>
+
+                                    <div class="space-y-3">
+                                        <button onclick="app.saveInterview()" class="w-full py-3.5 bg-green-600 text-white font-bold rounded-xl hover:bg-green-700 shadow-md uppercase text-xs tracking-wider flex items-center justify-center gap-2 transition-transform active:scale-95">
+                                            <i class="fa-solid fa-check"></i> Salvar Ficha
+                                        </button>
+
+                                        <button onclick="app.clearForm()" class="w-full py-3 bg-white text-red-500 border border-red-100 font-bold rounded-xl hover:bg-red-50 hover:border-red-200 uppercase text-xs tracking-wider flex items-center justify-center gap-2 transition-colors">
+                                            <i class="fa-solid fa-trash"></i> Limpar Tudo
+                                        </button>
+                                    </div>
+                                </div>
+
+                            </div>
+
+                            <div class="lg:col-span-8 flex flex-col h-full min-h-[400px]">
+
+                                <div id="ai-result-container" class="hidden h-full flex flex-col gap-6 animate-fade-in">
+
+                                    <div class="bg-white p-2 rounded-2xl border border-slate-200 shadow-sm flex-1 relative">
+                                        <div class="absolute top-4 left-4 bg-slate-100 px-3 py-1 rounded-lg text-[10px] font-bold text-slate-500 uppercase flex items-center gap-2">
+                                            <i class="fa-solid fa-chart-radar text-[#FFCD00]"></i> Radar de Competências
+                                        </div>
+                                        <div class="h-full w-full flex items-center justify-center p-4">
+                                            <div class="w-full h-[300px] lg:h-[350px]">
+                                                <canvas id="ai-score-chart"></canvas>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="bg-[#211E16] p-6 rounded-2xl border-l-4 border-[#FFCD00] shadow-md relative overflow-hidden group">
+                                        <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
+                                            <i class="fa-solid fa-quote-right text-5xl text-white"></i>
+                                        </div>
+                                        <h4 class="text-[#FFCD00] font-black uppercase text-xs mb-3 tracking-widest flex items-center gap-2">
+                                            <i class="fa-solid fa-robot"></i> Parecer Técnico da IA
+                                        </h4>
+                                        <p id="ai-summary-text" class="text-sm text-slate-300 leading-relaxed font-medium italic h-32 overflow-y-auto custom-scrollbar pr-2">
+                                            </p>
+                                    </div>
+                                </div>
+
+                                <div id="ai-placeholder-state" class="h-full flex flex-col items-center justify-center bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl p-12 text-center opacity-70">
+                                    <div class="w-24 h-24 bg-white rounded-full flex items-center justify-center text-slate-300 text-4xl mb-6 shadow-sm animate-pulse border border-slate-100">
+                                        <i class="fa-solid fa-microchip"></i>
+                                    </div>
+                                    <h3 class="text-slate-600 font-black uppercase text-sm tracking-wide">Aguardando Processamento</h3>
+                                    <p class="text-slate-400 text-xs mt-2 max-w-xs font-medium">
+                                        Preencha os passos anteriores e clique em <br>
+                                        <span class="text-[#FFCD00] font-bold bg-[#211E16] px-1 rounded">GERAR ANÁLISE</span> para visualizar o perfil.
+                                    </p>
+                                </div>
+
+                            </div>
+                        </div>
+                    </div>
+                        <div class="flex justify-between mt-8 pt-6 border-t border-slate-200">
+                            <button id="btn-prev" onclick="app.prevStep()" class="text-slate-500 hover:text-[#211E16] font-bold px-4 py-2 rounded uppercase text-sm disabled:opacity-50">Anterior</button>
+                            <button id="btn-next" onclick="app.nextStep()" class="btn-baly px-8 py-3 rounded-lg shadow">Próximo</button>
+                        </div>
+                    </form>
+                </div>
+            </section>            <section id="view-management" class="hidden space-y-6 animate-fade-in pb-20">
+
+                <div class="bg-[#211E16] rounded-[2rem] p-8 md:p-10 shadow-2xl shadow-[#211E16]/40 relative overflow-hidden group highlight-border">
+
+                    <div class="absolute top-0 right-0 w-[500px] h-[500px] bg-[#FFCD00] rounded-full blur-[150px] opacity-[0.08] pointer-events-none translate-x-1/3 -translate-y-1/2"></div>
+                    <div class="absolute bottom-0 left-0 w-[300px] h-[300px] bg-[#FFCD00] rounded-full blur-[100px] opacity-[0.05] pointer-events-none -translate-x-1/3 translate-y-1/2"></div>
+                    <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-[0.03] mix-blend-overlay pointer-events-none"></div>
+
+                    <div class="relative z-10 flex flex-col lg:flex-row gap-8 items-start lg:items-stretch">
+
+                        <div class="lg:w-5/12 flex flex-col justify-between gap-6">
+                            <div class="flex items-center gap-4">
+                                <div class="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#FFCD00] to-[#b49205] flex items-center justify-center text-[#211E16] text-3xl shadow-lg shadow-[#FFCD00]/30 rotate-3 group-hover:rotate-0 transition-transform duration-500">
+                                    <i class="fa-solid fa-briefcase-code"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-3xl font-black text-white uppercase tracking-tighter leading-none">
+                                        Central de <span class="text-[#FFCD00]">Vagas</span>
+                                    </h2>
+                                    <p class="text-xs font-bold text-white/50 uppercase tracking-widest mt-1 flex items-center gap-2">
+                                        <span class="w-2 h-2 rounded-full bg-[#FFCD00] animate-pulse"></span> Painel de Controle de vagas
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-2 gap-3 flex-1 items-end">
+                                <div class="bg-white/5 border border-white/10 rounded-xl p-4 backdrop-blur-sm relative overflow-hidden hover:bg-white/10 transition-colors group/card">
+                                    <div class="absolute top-0 left-0 w-1 h-full bg-[#FFCD00]"></div>
+                                    <i class="fa-solid fa-folder-open absolute right-3 bottom-3 text-4xl text-white/5 group-hover/card:text-[#FFCD00]/10 transition-colors -rotate-12"></i>
+                                    <p class="text-[9px] font-black text-white/60 uppercase tracking-widest mb-1">Em Aberto</p>
+                                    <h3 id="mgmt-count-open" class="text-4xl font-black text-white tracking-tight">0</h3>
+                                </div>
+                                <div class="bg-red-500/10 border border-red-500/20 rounded-xl p-4 backdrop-blur-sm relative overflow-hidden hover:bg-red-500/20 transition-colors group/card">
+                                    <div class="absolute top-0 left-0 w-1 h-full bg-red-500"></div>
+                                    <i class="fa-solid fa-triangle-exclamation absolute right-3 bottom-3 text-4xl text-red-500/10 group-hover/card:text-red-500/20 transition-colors -rotate-12"></i>
+                                    <p class="text-[9px] font-black text-red-400 uppercase tracking-widest mb-1">Críticas (>20d)</p>
+                                    <h3 id="mgmt-count-critical" class="text-4xl font-black text-red-500 tracking-tight">0</h3>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="lg:w-7/12 bg-white/5 rounded-3xl border border-white/10 p-6 backdrop-blur-md relative flex flex-col justify-center">
+                            <div class="absolute -top-3 left-6 bg-[#FFCD00] text-[#211E16] text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full shadow-lg shadow-[#FFCD00]/20">
+                                <i class="fa-solid fa-plus-circle mr-1"></i> Nova Demanda
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-12 gap-4 mt-2">
+                                <div class="md:col-span-6 group/input">
+                                    <label class="text-[9px] font-bold text-white/40 uppercase mb-1.5 block pl-1 group-focus-within/input:text-[#FFCD00] transition-colors">Nome do Cargo / Vaga</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-pen-nib absolute left-4 top-3.5 text-white/20 group-focus-within/input:text-[#FFCD00] transition-colors"></i>
+                                        <input id="new-job-name" class="w-full bg-black/20 border-2 border-white/10 rounded-2xl pl-10 pr-4 py-3 text-sm font-bold text-white outline-none focus:border-[#FFCD00] focus:bg-black/40 focus:shadow-[0_0_20px_#FFCD0030] transition-all placeholder-white/20" placeholder="Ex: Analista Sênior...">
+                                    </div>
+                                </div>
+
+                                <div class="md:col-span-3 group/input">
+                                    <label class="text-[9px] font-bold text-white/40 uppercase mb-1.5 block pl-1 group-focus-within/input:text-[#FFCD00] transition-colors">Cód. Chamado</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-hashtag absolute left-4 top-3.5 text-white/20 group-focus-within/input:text-[#FFCD00] transition-colors text-xs"></i>
+                                        <input id="new-job-code" class="w-full bg-black/20 border-2 border-white/10 rounded-2xl pl-10 pr-3 py-3 text-sm font-mono font-bold text-white outline-none focus:border-[#FFCD00] focus:bg-black/40 focus:shadow-[0_0_20px_#FFCD0030] transition-all placeholder-white/20" placeholder="0000">
+                                    </div>
+                                </div>
+
+                                <div class="md:col-span-3 group/input">
+                                    <label class="text-[9px] font-bold text-white/40 uppercase mb-1.5 block pl-1 group-focus-within/input:text-[#FFCD00] transition-colors">Prioridade</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-layer-group absolute left-4 top-3.5 text-white/20 group-focus-within/input:text-[#FFCD00] transition-colors"></i>
+                                        <select id="new-job-level" class="w-full bg-black/20 border-2 border-white/10 rounded-2xl pl-10 pr-8 py-3 text-sm font-bold text-white outline-none focus:border-[#FFCD00] focus:bg-black/40 focus:shadow-[0_0_20px_#FFCD0030] cursor-pointer appearance-none transition-all">
+                                            <option class="text-black bg-white">Média</option>
+                                            <option class="text-black bg-white">Alta</option>
+                                            <option class="text-black bg-white">Baixa</option>
+                                        </select>
+                                        <i class="fa-solid fa-chevron-down absolute right-4 top-4 text-white/30 text-xs pointer-events-none"></i>
+                                    </div>
+                                </div>
+
+                                <div class="md:col-span-12 mt-2">
+                                    <button onclick="app.addJob()" class="w-full bg-gradient-to-r from-[#FFCD00] to-[#e6b800] text-[#211E16] py-4 rounded-2xl text-sm font-black uppercase tracking-widest hover:shadow-[0_0_30px_#FFCD0060] hover:scale-[1.01] active:scale-99 transition-all flex items-center justify-center gap-3 group/btn relative overflow-hidden">
+                                        <span class="relative z-10 flex items-center gap-2">Cadastrar Vaga <i class="fa-solid fa-arrow-right group-hover/btn:translate-x-1 transition-transform"></i></span>
+                                        <div class="absolute inset-0 bg-white/20 skew-x-12 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-700"></div>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="relative z-20 -mt-12 mx-4 md:mx-8">
+                    <div class="bg-white rounded-[2rem] shadow-2xl shadow-slate-300/50 border border-white/50 backdrop-blur-xl overflow-hidden">
+
+                        <div class="p-6 border-b border-slate-100 flex flex-col md:flex-row items-center justify-between gap-4 bg-gradient-to-b from-white to-slate-50/50">
+                            <div class="flex items-center gap-3">
+                                <div class="w-10 h-10 rounded-xl bg-[#FFCD00] text-[#211E16] flex items-center justify-center shadow-md">
+                                    <i class="fa-solid fa-list-ul"></i>
+                                </div>
+                                <h3 class="text-lg font-black text-[#211E16] uppercase tracking-tight">Listagem Ativa</h3>
+                            </div>
+
+                            <div class="relative w-full md:max-w-md group">
+                                <i class="fa-solid fa-magnifying-glass absolute left-5 top-4 text-slate-400 group-focus-within:text-[#FFCD00] transition-colors"></i>
+                                <input type="text" id="search-job-input" onkeyup="app.renderManagement()" class="w-full bg-white border-2 border-slate-100 rounded-2xl pl-12 pr-6 py-3.5 text-sm font-bold text-[#211E16] outline-none focus:border-[#FFCD00] focus:ring-4 focus:ring-[#FFCD00]/10 shadow-sm transition-all placeholder-slate-400" placeholder="Buscar por cargo, código ou status...">
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left text-sm">
+                                <thead class="text-[#211E16] uppercase text-[10px] font-black tracking-wider border-b border-slate-200/60">
+                                    <tr>
+                                        <th class="py-5 pl-8 w-1/4">
+                                            <span class="flex items-center gap-2"><i class="fa-solid fa-arrow-down-a-z text-[#FFCD00]"></i> Cargo / Vaga</span>
+                                        </th>
+                                        <th class="py-5 w-1/6 text-slate-500">Código</th>
+                                        <th class="py-5 w-1/4 text-slate-500">Candidato Vinculado</th>
+                                        <th class="py-5 w-1/6 text-center text-slate-500">Prioridade</th>
+                                        <th class="py-5 w-[10%] text-right pr-8 text-slate-500">Ações</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="jobs-list-body" class="divide-y divide-slate-100 bg-white/80">
+                                    </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mx-6 md:mx-12 mt-4">
+                    <div class="bg-[#211E16] rounded-t-none rounded-b-2xl border-t-4 border-[#FFCD00] shadow-inner overflow-hidden opacity-90 hover:opacity-100 transition-all group">
+
+                        <div class="px-6 py-6 bg-black/20 flex items-center justify-between cursor-pointer hover:bg-black/30 transition-colors relative overflow-hidden" onclick="this.parentElement.classList.toggle('max-h-24'); this.parentElement.classList.toggle('max-h-[500px]')" title="Clique para acessar o arquivo">
+
+                            <div class="absolute left-10 top-1/2 -translate-y-1/2 w-20 h-20 bg-[#FFCD00] rounded-full blur-[40px] opacity-20 group-hover:opacity-40 transition-opacity"></div>
+
+                            <div class="flex items-center gap-6 relative z-10">
+
+                                <div class="relative w-14 h-14 shrink-0 group-hover:-translate-y-1 transition-transform duration-300">
+                                    <div class="absolute inset-0 bg-[#FFCD00] rounded-xl transform translate-x-1 translate-y-1 opacity-30"></div>
+
+                                    <div class="absolute inset-0 bg-[#211E16] border-2 border-[#FFCD00] rounded-lg flex flex-col items-center justify-center shadow-[0_0_15px_rgba(255,205,0,0.4)]">
+                                        <div class="absolute top-0 w-full h-1/3 border-b-2 border-[#FFCD00] bg-[#FFCD00]/10"></div>
+
+                                        <div class="mt-1 relative">
+                                            <i class="fa-solid fa-folder-open text-[#FFCD00] text-xl drop-shadow-md"></i>
+                                            <div class="absolute inset-0 bg-[#FFCD00] blur-md opacity-40"></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <h3 class="text-base font-black text-[#FFCD00] uppercase tracking-wider leading-none group-hover:text-white transition-colors">
+                                        Arquivo Baly
+                                    </h3>
+                                    <p class="text-[10px] font-bold text-[#FFCD00]/60 uppercase mt-1 tracking-widest flex items-center gap-2">
+                                        <span class="w-1.5 h-1.5 rounded-full bg-[#FFCD00]"></span> Vagas Encerradas
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-4">
+                                <div class="text-right hidden sm:block">
+                                    <span class="block text-[10px] font-bold text-slate-500 uppercase">Total Arquivado</span>
+                                    <span id="closed-jobs-count" class="text-xl font-black text-white leading-none">0</span>
+                                </div>
+                                <div class="w-8 h-8 rounded-full bg-[#FFCD00]/10 flex items-center justify-center border border-[#FFCD00]/20 group-hover:bg-[#FFCD00] group-hover:text-[#211E16] transition-all">
+                                    <i class="fa-solid fa-chevron-down text-xs"></i>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto max-h-0 overflow-y-auto custom-scrollbar transition-[max-height] duration-500 ease-in-out group-[.max-h-[500px]]:max-h-[300px] border-t border-[#FFCD00]/20 bg-black/40">
+                            <table class="w-full text-left text-sm text-slate-300">
+                                <tbody id="closed-jobs-list-body" class="divide-y divide-white/5 p-4"></tbody>
+                            </table>
+                            <div class="p-2 text-center text-[10px] text-slate-500 uppercase tracking-widest">Fim do Arquivo</div>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+            <section id="view-schedule" class="hidden space-y-6">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-4">
+                        <div class="w-12 h-12 rounded-2xl bg-[#211E16] flex items-center justify-center text-[#FFCD00] text-xl shadow-lg shadow-[#FFCD00]/20">
+                            <i class="fa-solid fa-calendar-days"></i>
+                        </div>
+                        <div>
+                            <h2 class="text-3xl font-black text-[#211E16] uppercase tracking-tighter">Agenda Tech</h2>
+                            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest">Monitoramento em Tempo Real</p>
+                        </div>
+                    </div>
+
+                    <div class="flex gap-4">
+                        <div class="bg-[#211E16] text-[#FFCD00] px-6 py-2 rounded-xl shadow-lg border-b-4 border-[#FFCD00] flex flex-col items-center">
+                            <span class="text-[10px] font-bold uppercase opacity-60">Hoje</span>
+                            <span id="sch-count-today" class="text-2xl font-black leading-none">0</span>
+                        </div>
+                        <div class="bg-white text-slate-400 px-6 py-2 rounded-xl border border-slate-200 flex flex-col items-center">
+                            <span class="text-[10px] font-bold uppercase">7 Dias</span>
+                            <span id="sch-count-week" class="text-2xl font-black text-[#211E16] leading-none">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+
+                    <div class="lg:col-span-4 sticky top-4">
+                        <div class="bg-[#211E16] p-6 rounded-2xl shadow-2xl shadow-black/20 border border-gray-800 relative overflow-hidden group">
+                            <div class="absolute -right-10 -top-10 w-32 h-32 bg-[#FFCD00] rounded-full blur-[80px] opacity-10 group-hover:opacity-20 transition duration-500"></div>
+
+                            <h3 class="font-black text-white uppercase text-sm mb-6 flex items-center gap-2 relative z-10">
+                                <i class="fa-solid fa-plus text-[#FFCD00]"></i> Novo Agendamento
+                            </h3>
+
+                            <div class="space-y-5 relative z-10">
+                                <div>
+                                    <label class="text-[10px] font-bold text-[#FFCD00] uppercase mb-1 block">Candidato</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-user absolute left-3 top-3 text-slate-500 text-xs"></i>
+                                        <input type="text" id="sch-name" class="w-full bg-[#1a1812] border border-gray-700 rounded-lg pl-9 pr-3 py-2.5 text-sm font-bold text-white outline-none focus:border-[#FFCD00] focus:shadow-[0_0_10px_rgba(255,205,0,0.2)] transition-all placeholder-gray-600" placeholder="Nome completo">
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label class="text-[10px] font-bold text-[#FFCD00] uppercase mb-1 block">Vaga / Chamado</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-briefcase absolute left-3 top-3 text-slate-500 text-xs"></i>
+                                        <input type="text" id="sch-role" class="w-full bg-[#1a1812] border border-gray-700 rounded-lg pl-9 pr-3 py-2.5 text-sm font-bold text-white outline-none focus:border-[#FFCD00] transition-all placeholder-gray-600" placeholder="Cargo pretendido">
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <label class="text-[10px] font-bold text-[#FFCD00] uppercase mb-1 block">Data</label>
+                                        <input type="date" id="sch-date" class="w-full bg-[#1a1812] border border-gray-700 rounded-lg px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-[#FFCD00] transition-all scheme-dark">
+                                    </div>
+                                    <div>
+                                        <label class="text-[10px] font-bold text-[#FFCD00] uppercase mb-1 block">Hora</label>
+                                        <input type="time" id="sch-time" class="w-full bg-[#1a1812] border border-gray-700 rounded-lg px-3 py-2.5 text-sm font-bold text-white outline-none focus:border-[#FFCD00] transition-all scheme-dark">
+                                    </div>
+                                </div>
+
+                                <div>
+                                    <label class="text-[10px] font-bold text-[#FFCD00] uppercase mb-1 block">Recrutador Responsável</label>
+                                    <div class="relative">
+                                        <i class="fa-solid fa-id-badge absolute left-3 top-3 text-slate-500 text-xs"></i>
+                                        <select id="sch-recruiter" class="w-full bg-[#1a1812] border border-gray-700 rounded-lg pl-9 pr-3 py-2.5 text-xs font-bold text-gray-400 outline-none appearance-none cursor-not-allowed disabled:opacity-70">
+                                            </select>
+                                    </div>
+                                </div>
+
+                                <button onclick="app.quickSchedule()" class="w-full bg-[#FFCD00] text-[#211E16] py-3.5 rounded-lg font-black uppercase text-xs tracking-wider hover:bg-[#e6b800] hover:scale-[1.02] transition-all shadow-lg flex justify-center items-center gap-2 mt-4 group/btn">
+                                    <i class="fa-brands fa-google group-hover/btn:animate-bounce"></i> Agendar & Gerar Link
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="lg:col-span-8 space-y-4">
+                        <div class="flex justify-between items-center px-2">
+                            <h3 class="font-black text-slate-400 uppercase text-xs tracking-widest flex items-center gap-2">
+                                <i class="fa-solid fa-list-ul"></i> Próximos Compromissos
+                            </h3>
+                            <button onclick="app.renderSchedule()" class="w-8 h-8 rounded-full bg-white hover:bg-[#FFCD00] hover:text-[#211E16] text-slate-400 shadow-sm border border-slate-200 transition flex items-center justify-center">
+                                <i class="fa-solid fa-rotate text-xs"></i>
+                            </button>
+                        </div>
+
+                        <div id="schedule-list-body" class="space-y-3 pb-10">
+                            </div>
+                    </div>
+                </div>
+            </section>
+            <section id="view-details" class="hidden space-y-6">
+                <div class="flex justify-between items-center no-print">
+                    <button onclick="router.back()" class="text-slate-500 gap-2 flex items-center hover:text-[#211E16] font-bold uppercase text-sm"><i class="fa-solid fa-arrow-left"></i> Voltar</button>
+                    <div class="flex gap-2">
+                        <button id="btn-pdf" onclick="app.downloadPDF()" class="p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 text-[#211E16] transition shadow-sm" title="Baixar PDF">
+                            <i class="fa-solid fa-file-pdf text-red-600"></i>
+                        </button>
+                        <button onclick="app.deleteCurrentCandidate()" class="p-3 bg-white border border-red-200 rounded-lg text-red-500 hover:bg-red-50"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                </div>
+                <div id="print-area" class="bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden p-10 space-y-8 relative">
+                    <div class="absolute top-10 right-10 opacity-5 pointer-events-none text-9xl font-black text-[#211E16] -rotate-12">BALY</div>
+                    <div class="flex justify-between border-b-2 border-[#211E16] pb-6">
+                        <div>
+                            <h1 id="det-name" class="text-4xl font-black text-[#211E16] uppercase tracking-tight">Nome</h1>
+                            <div class="flex gap-4 text-sm text-slate-500 mt-2"><span id="det-role" class="bg-[#FFCD00] text-[#211E16] px-3 py-1 rounded font-bold uppercase text-xs tracking-wider">Cargo</span><span id="det-date" class="font-medium flex items-center gap-1"><i class="fa-regular fa-calendar"></i> Data</span></div>
+                        </div>
+                        <div class="text-right"><div class="text-[10px] uppercase font-bold text-slate-400 tracking-widest mb-1">Score IA</div><div id="det-score" class="text-5xl font-black text-[#FFCD00] drop-shadow-sm">0</div></div>
+                    </div>
+                    <div class="mt-4 mb-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <h4 class="font-black text-[#211E16] uppercase text-xs mb-3 flex items-center gap-2">
+                            <i class="fa-solid fa-clock-rotate-left text-[#FFCD00]"></i> Histórico de Ações (Audit Log)
+                        </h4>
+                        <div id="det-history-list" class="max-h-40 overflow-y-auto pr-2">
+                            <p class="text-xs text-slate-400 italic">Carregando histórico...</p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div class="bg-gray-50 p-6 rounded-xl border-l-4 border-[#211E16]">
+                            <h3 class="font-black text-[#211E16] mb-4 uppercase text-sm flex items-center gap-2"><i class="fa-solid fa-graduation-cap text-[#FFCD00]"></i> Formação & Logística</h3>
+                            <div class="space-y-3 text-sm text-slate-700">
+                                <p><span class="font-bold uppercase text-xs text-slate-400 block">CPF</span> <span id="det-cpf" class="font-mono font-bold text-lg"></span></p>
+
+                                <div class="grid grid-cols-2 gap-4 mt-2">
+                                    <div>
+                                        <span class="font-bold uppercase text-xs text-slate-400 block">Contato</span>
+                                        <span id="det-phone" class="font-medium"></span>
+                                    </div>
+                                <div>
+                                    <span class="font-bold uppercase text-xs text-slate-400 block">Nascimento</span>
+                                    <span id="det-dob" class="font-medium"></span>
+                                    </div>
+                                </div>
+                                <div class="h-px bg-slate-200 my-2"></div>
+                                <p><span class="font-bold uppercase text-xs text-slate-400 block">Escolaridade</span> <span id="det-education" class="font-medium"></span></p>
+                                <p><span class="font-bold uppercase text-xs text-slate-400 block">Instituição</span> <span id="det-college" class="font-medium"></span></p>
+                                <p><span class="font-bold uppercase text-xs text-slate-400 block">Cursos</span> <span id="det-courses" class="font-medium"></span></p>
+                                <div class="h-px bg-slate-200 my-2"></div>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+                                    <div><span class="font-bold uppercase text-xs text-slate-400 block">Transporte</span> <span id="det-transport" class="font-medium"></span></div>
+                                    <div><span class="font-bold uppercase text-xs text-slate-400 block">Tempo</span> <span id="det-commute" class="font-medium"></span> min</div>
+                                    <div><span class="font-bold uppercase text-xs text-slate-400 block">Pretensão</span> R$ <span id="det-salary" class="font-bold text-[#211E16]"></span></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="bg-gray-50 p-6 rounded-xl border-l-4 border-[#FFCD00]">
+                            <h3 class="font-black text-[#211E16] mb-4 uppercase text-sm flex items-center gap-2"><i class="fa-solid fa-briefcase text-[#FFCD00]"></i> Experiência Profissional</h3>
+                            <ul id="det-experiences" class="space-y-4 text-sm"></ul>
+                        </div>
+                        <div class="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                            <h3 class="font-black text-[#211E16] mb-4 uppercase text-sm flex items-center gap-2"><i class="fa-solid fa-scale-balanced text-[#FFCD00]"></i> Análise SWOT</h3>
+                            <div class="grid grid-cols-2 gap-6 text-sm">
+                                <div><p class="font-bold text-green-700 mb-2 uppercase text-xs border-b border-green-200 pb-1">Fortes</p><ul id="det-strengths" class="list-disc pl-4 text-slate-600 space-y-1"></ul></div>
+                                <div><p class="font-bold text-red-700 mb-2 uppercase text-xs border-b border-red-200 pb-1">Fracos</p><ul id="det-weaknesses" class="list-disc pl-4 text-slate-600 space-y-1"></ul></div>
+                            </div>
+                        </div>
+                        <div class="bg-[#FFFBEB] p-6 rounded-xl border border-[#FFCD00]">
+                            <h3 class="font-black text-[#211E16] mb-4 uppercase text-sm flex items-center gap-2"><i class="fa-regular fa-clipboard text-[#FFCD00]"></i> Anotações do Recrutador</h3>
+                            <p id="det-notes-full" class="text-sm text-slate-800 italic leading-relaxed whitespace-pre-wrap font-medium"></p>
+                        </div>
+                    </div>
+                    <div class="border-t-2 border-slate-100 pt-8 mt-4">
+                        <h3 class="font-black text-[#211E16] text-lg mb-6 flex items-center gap-2 uppercase"><i class="fa-solid fa-robot text-[#FFCD00]"></i> Parecer Inteligente (Baly AI)</h3>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 items-center">
+                            <div class="md:col-span-1 bg-slate-50 p-4 rounded-xl border border-slate-200"><div class="chart-container h-64"><canvas id="details-radarChart"></canvas></div></div>
+                            <div class="md:col-span-2">
+                                <div class="bg-[#211E16] p-6 rounded-xl border border-gray-800 text-[#EAEAEA] text-sm leading-relaxed italic border-l-4 border-l-[#FFCD00]" id="det-ai-full">Carregando análise...</div>
+                                <div class="flex gap-3 mt-4 no-print">
+                                    <button onclick="app.generateFeedbackEmail()" class="text-xs bg-white border-2 border-slate-200 px-4 py-3 rounded-lg font-bold text-[#211E16] uppercase hover:bg-slate-50 transition">Gerar Email Feedback</button>
+                                    <button onclick="app.generateInterviewQuestions()" class="text-xs bg-white border-2 border-slate-200 px-4 py-3 rounded-lg font-bold text-[#211E16] uppercase hover:bg-slate-50 transition">Gerar Perguntas</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+</div>
+
+            // Ordenação por Data e Hora
+            candidates.sort((a,b) => {
+                const dA = new Date(a.interviewDate + (a.interviewTime ? 'T'+a.interviewTime : 'T12:00'));
+                const dB = new Date(b.interviewDate + (b.interviewTime ? 'T'+b.interviewTime : 'T12:00'));
+                return dA - dB;
+            });
+
+            // Atualiza KPIs (Contadores)
+            const todayCount = candidates.filter(c => c.interviewDate === todayStr).length;
+            document.getElementById('sch-count-today').innerText = todayCount;
+            document.getElementById('sch-count-week').innerText = candidates.length;
+
+            // Renderização (Visual)
+            if(candidates.length === 0) {
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center p-10 bg-white rounded-2xl border-2 border-dashed border-slate-200 opacity-50">
+                        <i class="fa-regular fa-calendar-xmark text-4xl mb-2"></i>
+                        <p class="text-sm font-bold uppercase">Agenda Vazia</p>
+                    </div>`;
+            } else {
+                container.innerHTML = candidates.map(c => {
+                    const dateParts = c.interviewDate.split('-');
+                    const day = dateParts[2];
+                    const month = new Date(c.interviewDate).toLocaleString('pt-BR', { month: 'short' }).toUpperCase().replace('.','');
+                    const time = c.interviewTime || '09:00'; // Usa a hora salva ou padrão
+                    const recName = window.appState.usersMap[c.recruiterEmail] || c.recruiterEmail.split('@')[0];
+                    const isToday = c.interviewDate === todayStr;
+
+                    const cardBorder = isToday ? 'border-l-4 border-l-[#FFCD00]' : 'border-l-4 border-l-slate-300';
+                    const timeColor = isToday ? 'bg-[#FFCD00] text-[#211E16]' : 'bg-slate-100 text-slate-500';
+                    const glowEffect = isToday ? 'shadow-md shadow-yellow-100' : 'hover:shadow-md';
+
+                    return `
+                    <div class="bg-white p-4 rounded-xl border border-slate-100 ${cardBorder} ${glowEffect} transition-all duration-300 flex flex-col md:flex-row items-center gap-4 group">
+                        <div class="flex flex-col items-center justify-center min-w-[70px]">
+                            <span class="text-2xl font-black text-[#211E16] leading-none">${day}</span>
+                            <span class="text-[10px] font-bold text-slate-400 uppercase mb-1">${month}</span>
+                            <span class="${timeColor} px-2 py-0.5 rounded text-[10px] font-bold font-mono">${time}</span>
+                        </div>
+                        <div class="hidden md:block w-px h-10 bg-slate-100"></div>
+                        <div class="flex-1 text-center md:text-left w-full">
+                            <h4 class="font-black text-[#211E16] uppercase text-sm truncate" title="${c.name}">${c.name}</h4>
+                            <div class="flex items-center justify-center md:justify-start gap-2 mt-1">
+                                <span class="text-[10px] font-bold text-slate-500 bg-slate-50 px-2 py-0.5 rounded border border-slate-200 truncate max-w-[150px]">
+                                    <i class="fa-solid fa-briefcase text-[#FFCD00] mr-1"></i> ${c.role}
+                                </span>
+                                <span class="text-[10px] font-bold text-slate-400 uppercase flex items-center">
+                                    <i class="fa-solid fa-user-tag mr-1 opacity-50"></i> ${recName}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="flex gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
+                            <button onclick="app.openGoogleCalendar('${c.name}', '${c.interviewDate}', '${c.role}')" class="w-9 h-9 rounded-lg bg-slate-50 text-slate-400 hover:bg-[#4285F4] hover:text-white border border-slate-200 transition-all flex items-center justify-center shadow-sm" title="Google Agenda"><i class="fa-brands fa-google"></i></button>
+
+                            <button onclick="app.editCandidate('${c.id}')" class="w-9 h-9 rounded-lg bg-[#211E16] text-[#FFCD00] hover:scale-110 border border-[#211E16] transition-all flex items-center justify-center shadow-lg shadow-black/20" title="Realizar Entrevista"><i class="fa-solid fa-arrow-right"></i></button>
+
+                            <button onclick="app.deleteCandidate('${c.id}')" class="w-9 h-9 rounded-lg bg-red-50 text-red-500 hover:bg-red-500 hover:text-white border border-red-100 transition-all flex items-center justify-center shadow-sm" title="Cancelar Agendamento"><i class="fa-solid fa-trash"></i></button>
+                        </div>
+                    </div>`;
+                }).join('');
+            }
+        },
+
+        // --- NOVA FUNÇÃO: AGENDAMENTO RÁPIDO ---
+        quickSchedule: async () => {
+            const name = document.getElementById('sch-name').value;
+            const role = document.getElementById('sch-role').value;
+            const date = document.getElementById('sch-date').value;
+            const time = document.getElementById('sch-time').value || '09:00';
+            const recruiter = document.getElementById('sch-recruiter').value;
+
+            if(!name || !role || !date) return alert("Preencha Nome, Vaga e Data!");
+
+            try {
+                // 1. Salva no banco como "Agendado"
+                const docRef = await addDoc(collection(db, "interviews"), {
+                    name: name,
+                    role: role,
+                    interviewDate: date,
+                    interviewTime: time, // Novo campo para guardar a hora
+                    recruiterEmail: recruiter || window.appState.user.email,
+                    status: 'Agendado', // Status novo específico para isso
+                    createdAt: serverTimestamp(),
+                    history: [{ // Já cria com log
+                        date: new Date().toISOString(),
+                        userEmail: window.appState.user.email,
+                        userName: "Sistema",
+                        action: "Agendamento Rápido criado"
+                    }]
+                });
+
+                // 2. Abre o Google Calendar
+                // Monta datas ISO para o link do Google
+                const startFull = new Date(`${date}T${time}:00`);
+                const endFull = new Date(startFull.getTime() + 60*60*1000); // +1 hora
+
+                const fmt = (d) => d.toISOString().replace(/-|:|\.\d\d\d/g,"").slice(0,15) + "Z";
+
+                const title = encodeURIComponent(`Entrevista: ${name} - ${role}`);
+                const details = encodeURIComponent(`Candidato: ${name}\nVaga: ${role}\nAgendado via Baly RH.`);
+
+                const url = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${fmt(startFull)}/${fmt(endFull)}&details=${details}`;
+
+                window.open(url, '_blank');
+
+                // 3. Limpa e Atualiza
+                document.getElementById('sch-name').value = '';
+                document.getElementById('sch-role').value = '';
+                alert("✅ Agendado com sucesso!\nAbrindo agenda...");
+
+                app.renderSchedule();
+
+            } catch(e) {
+                console.error(e);
+                alert("Erro ao agendar.");
+            }
+        },
+
+        filterCandidates: () => {
+            const txt = document.getElementById('search-input')?.value.toLowerCase() || '';
+            const role = document.getElementById('filter-role')?.value || '';
+            const status = document.getElementById('filter-status')?.value || '';
+            const recruiter = document.getElementById('filter-recruiter')?.value || '';
+            const currentUserEmail = window.appState.user.email; // Movi para o topo para usar depois
+
+            const filtered = window.appState.candidates.filter(c => {
+                // 1. Filtro de segurança
+                const contasMescladas = ["jackson.prux@baly.com.br", "mateus.prux@baly.com.br"];
+                const myEmail = window.appState.user.email.toLowerCase().trim();
+                const cEmail = (c.recruiterEmail || "").toLowerCase().trim();
+
+                // Lógica inteligente de permissão
+                let isMyCandidate = window.appState.isAdmin || (cEmail === myEmail);
+
+                // Se for um dos irmãos Prux, libera o acesso ao outro
+                if (contasMescladas.includes(myEmail) && contasMescladas.includes(cEmail)) {
+                    isMyCandidate = true;
+                }
+
+                if (!isMyCandidate) return false;
+                                if (!isMyCandidate) return false;
+
+                // 2. Filtros visuais
+                const mText = (c.name?.toLowerCase().includes(txt)) || (c.role?.toLowerCase().includes(txt));
+                const mRole = role ? c.role === role : true;
+                const mStatus = status ? c.status === status : true;
+                const mRecruiter = recruiter ? c.recruiterEmail === recruiter : true;
+
+                // 3. Filtro de Agendamento (O IMPORTANTE)
+                const isRealCandidate = c.status !== 'Agendado';
+
+                return mText && mRole && mStatus && mRecruiter && isRealCandidate;
+            });
+
+            const tbody = document.getElementById('candidates-list-body');
+            if(!tbody) return;
+
+            if(filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="p-8 text-center text-slate-400 italic">Nenhum candidato encontrado.</td></tr>`;
+                return;
+            }
+            if(window.appState.viewMode === 'kanban') {
+                app.renderKanbanItems(filtered);
+            } else {
+
+            // Renderização da Tabela
+            tbody.innerHTML = filtered.map(c => {
+                let dateDisplay = '-';
+                if(c.interviewDate) {
+                    const dateObj = new Date(c.interviewDate + "T12:00:00");
+                    const day = dateObj.getDate();
+                    const month = dateObj.toLocaleString('pt-BR', { month: 'short' }).replace('.','').toUpperCase();
+                    const year = dateObj.getFullYear();
+                    dateDisplay = ` <div class="flex flex-col items-center leading-none"> <span class="font-black text-[#211E16] text-lg">${day}</span> <span class="text-[10px] font-bold text-slate-500 uppercase mt-0.5">${month}</span> <span class="text-[9px] text-slate-300 font-medium mt-0.5">${year}</span> </div>`;
+                }
+
+                let statusClass = "bg-slate-100 text-slate-600 border-slate-200";
+                if(c.status === 'Aprovado') statusClass = "bg-green-100 text-green-700 border-green-200 ring-green-500";
+                else if(c.status === 'Reprovado') statusClass = "bg-red-50 text-red-600 border-red-200 ring-red-500";
+                else if(c.status === 'Banco') statusClass = "bg-[#FFFBEB] text-[#b45309] border-[#FFCD00] ring-[#FFCD00]";
+
+                const isCreator = c.recruiterEmail === currentUserEmail;
+                const recruiterName = window.appState.usersMap[c.recruiterEmail] || c.recruiterEmail.split('@')[0];
+                const enableReason = c.status === 'Reprovado' || c.status === 'Banco';
+
+                // Botão de editar: permite se for criador OU Admin
+                const canEdit = isCreator || window.appState.isAdmin;
+                const editBtn = canEdit ? `<button onclick="app.editCandidate('${c.id}')" class="w-8 h-8 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-[#211E16] hover:border-[#FFCD00] transition shadow-sm flex items-center justify-center"><i class="fa-solid fa-pen text-xs"></i></button>` : '';
+
+                return ` <tr class="hover:bg-slate-50 border-b border-slate-100 transition-all group relative"> <td class="p-3 text-center border-r border-slate-100 bg-slate-50/30"> ${dateDisplay} </td> <td class="p-3"> <span class="font-mono text-[11px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">${c.jobCode || '-'}</span> </td> <td class="p-3"> <div class="flex items-center gap-2" title="${c.recruiterEmail}"> <div class="w-6 h-6 shrink-0 rounded-full bg-[#211E16] text-[#FFCD00] flex items-center justify-center text-[10px] font-bold shadow-sm"> ${recruiterName.charAt(0).toUpperCase()} </div> <span class="text-xs font-medium text-slate-600 truncate max-w-[90px]">${recruiterName}</span> </div> </td> <td class="p-3"> <div class="font-black text-[#211E16] text-sm uppercase leading-tight truncate max-w-[180px]" title="${c.name}">${c.name}</div> <div class="text-[10px] text-slate-400 font-medium mt-0.5">CPF: ${c.cpf || '...'}</div> </td> <td class="p-3"> <button onclick="app.openWhatsApp('${c.phone}', '${c.name}')" class="flex items-center gap-1.5 text-xs font-bold text-slate-600 hover:text-green-600 hover:bg-green-50 px-2 py-1 rounded transition group whitespace-nowrap" title="Chamar no Whats"> <i class="fa-brands fa-whatsapp text-green-500 text-sm group-hover:scale-110 transition-transform"></i> ${c.phone || '-'} </button> </div> </td> <td class="p-3"> <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">${c.source || '-'}</span> </td> <td class="p-3 text-center"> <div class="relative inline-block w-32"> <select onchange="app.updateStatusRow('${c.id}',this.value); app.filterCandidates();" class="appearance-none w-full text-[11px] font-black uppercase text-center py-1.5 pl-2 pr-6 rounded-md border cursor-pointer outline-none focus:ring-2 focus:ring-offset-1 transition-all shadow-sm ${statusClass}"> <option value="Em Análise" ${c.status==='Em Análise'?'selected':''}>Análise</option> <option value="Aprovado" ${c.status==='Aprovado'?'selected':''}>Aprovado</option> <option value="Banco" ${c.status==='Banco'?'selected':''}>Banco</option> <option value="Reprovado" ${c.status==='Reprovado'?'selected':''}>Reprovado</option> </select> <div class="pointer-events-none absolute inset-y-0 right-2 flex items-center text-current opacity-60"> <i class="fa-solid fa-sort text-[10px]"></i> </div> </div> </td> <td class="p-3"> <input id="reason-${c.id}" value="${c.rejectionReason||''}" onchange="app.saveRejectionReason('${c.id}',this.value)" class="w-full bg-transparent border-b border-transparent hover:border-slate-300 focus:border-[#FFCD00] text-xs py-1 outline-none text-slate-600 placeholder-slate-300 transition-colors disabled:opacity-30 disabled:cursor-not-allowed truncate" placeholder="Escreva o motivo..." ${!enableReason?'disabled':''}> </td> <td class="p-3 text-right"> <div class="flex justify-end"> <span class="bg-[#211E16] text-[#FFCD00] px-3 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide shadow-sm max-w-[150px] truncate whitespace-nowrap cursor-help border border-slate-800" title="${c.role}"> ${c.role} </span> </div> </td> <td class="p-3 text-right"> <div class="flex items-center justify-end gap-1 opacity-100"> <button onclick="app.viewDetails('${c.id}')" class="w-8 h-8 rounded-full bg-[#FFCD00] text-[#211E16] hover:scale-110 hover:shadow-lg transition flex items-center justify-center font-bold shadow-sm" title="Ver Detalhes"> <i class="fa-solid fa-arrow-right text-xs"></i> </button> ${editBtn} </div> </td> </tr>`;
+            }).join('');
+        }
+        },
+        openWhatsApp: (phone, name) => {
+            if(!phone) return;
+
+            const cleanPhone = phone.replace(/\D/g, '');
+            const msg = `Olá ${name}, tudo bem? Sou do RH da Baly e gostaria de falar sobre sua entrevista.`;
+
+            // URL Web
+            const url = `https://web.whatsapp.com/send?phone=55${cleanPhone}&text=${encodeURIComponent(msg)}`;
+            window.open(url, 'BALY_ZAP_OFFICIAL');
+        },
+        handleRejectionFlow: async (candidate) => {
+            // 1. Verifica se tem telefone
+            if (!candidate.phone) {
+                Swal.fire('Atenção', 'Este candidato não tem telefone cadastrado.', 'warning');
+                return;
+            }
+
+            // 2. Pergunta se deseja enviar
+            const result = await Swal.fire({
+                title: 'Enviar Feedback?',
+                html: `O candidato <b>${candidate.name}</b> foi reprovado.<br>Deseja enviar a mensagem padrão no WhatsApp?`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonColor: '#25D366', // Verde WhatsApp
+                cancelButtonColor: '#211E16', // Preto Baly
+                confirmButtonText: '<i class="fa-brands fa-whatsapp"></i> Sim, Enviar Whats',
+                cancelButtonText: 'Não, apenas salvar'
+            });
+
+            if (result.isConfirmed) {
+                // 3. Limpa o telefone (remove ( ) - e espaços)
+                let cleanPhone = candidate.phone.replace(/\D/g, '');
+
+                // Se não tiver o 55 (Brasil), adiciona
+                if (cleanPhone.length >= 10 && cleanPhone.length <= 11) {
+                    cleanPhone = '55' + cleanPhone;
+                }
+
+                // 4. Texto da Mensagem (Mais direto para WhatsApp)
+                const primeiroNome = candidate.name.split(' ')[0];
+
+                const mensagem = `Olá ${primeiroNome}, tudo bem? 💛\n\n` +
+                    `Aqui é do RH da *Baly Energy Drink*.\n\n` +
+                    `Agradecemos muito seu interesse na vaga de *${candidate.role}* e o tempo que dedicou ao nosso processo.\n\n` +
+                    `Neste momento, optamos por seguir com um perfil que atende a requisitos mais específicos desta posição. ` +
+                    `Porém, manteremos seu currículo em nosso banco de talentos para futuras oportunidades!\n\n` +
+                    `Desejamos muito sucesso na sua trajetória. Um abraço!`;
+
+                // Codifica para URL
+                const url = `https://web.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(mensagem)}`;
+
+                // 5. Abre em nova aba
+                window.open(url, '_blank');
+            }
+        },
+        editCandidate: (id) => {
+            const c = window.appState.candidates.find(x => x.id === id);
+            if(!c) return;
+
+            if(c.recruiterEmail !== window.appState.user.email && !window.appState.isAdmin) {
+                alert("Apenas o recrutador responsável pode editar esta entrevista.");
+                return;
+            }
+
+            router.navigate('new-interview');
+            window.appState.editingId = id;
+            document.querySelector('#view-new-interview h2').innerText = "EDITAR ENTREVISTA";
+
+            document.getElementById('inp-name').value = c.name || '';
+            document.getElementById('inp-job-code').value = c.jobCode || '';
+            if(c.jobCode) app.searchJobByCode(c.jobCode);
+
+            document.getElementById('inp-phone').value = c.phone || '';
+
+            // --- AQUI ESTAVA O ERRO DO "OUTROS" NA EDIÇÃO ---
+            const validOptions = ["WhatsApp", "Facebook", "Instagram", "LinkedIn", "Indicação"];
+            const sourceVal = c.source || '';
+            const divOther = document.getElementById('div-source-other'); // ALVO CORRETO
+            const inpOther = document.getElementById('inp-source-other');
+
+            if (validOptions.includes(sourceVal)) {
+                document.getElementById('sel-source').value = sourceVal;
+                divOther.classList.add('hidden'); // Esconde a DIV
+            } else if (sourceVal) {
+                document.getElementById('sel-source').value = 'Outros';
+                inpOther.value = sourceVal;
+                divOther.classList.remove('hidden'); // Mostra a DIV
+            } else {
+                document.getElementById('sel-source').value = '';
+                divOther.classList.add('hidden');
+            }
+            // ------------------------------------------------
+
+            document.getElementById('inp-interview-date').value = c.interviewDate || '';
+            document.getElementById('inp-city').value = c.city || '';
+            document.getElementById('inp-dob').value = c.dob || '';
+            document.getElementById('inp-cpf').value = c.cpf || '';
+
+            let eduSimple = c.education || '';
+            let eduStage = '';
+            if(c.education && c.education.includes('(')) {
+                const parts = c.education.split(' (');
+                eduSimple = parts[0];
+                eduStage = parts[1].replace(')', '');
+            }
+            document.getElementById('sel-education').value = eduSimple;
+            app.handleEducationChange();
+            if(eduStage) setTimeout(() => document.getElementById('sel-education-stage').value = eduStage, 100);
+
+            document.getElementById('inp-college').value = c.college || '';
+            document.getElementById('sel-transport').value = c.transport || 'Carro';
+            app.updateTransportIcon(); // Atualiza ícone visualmente
+            document.getElementById('inp-commute').value = c.commuteTime || '';
+            document.getElementById('inp-salary').value = c.salaryExpectation || '';
+
+            window.appState.tempCourses = c.courses || [];
+            app.renderCourses();
+            window.appState.tempExp = c.experiences || [];
+            app.renderExp();
+
+            const strengths = c.strengths || [];
+            const weaknesses = c.weaknesses || [];
+            [1, 2, 3].forEach((num, idx) => {
+                const sEl = document.getElementById(`inp-strong-${num}`);
+                const wEl = document.getElementById(`inp-weak-${num}`);
+                if(sEl) sEl.value = strengths[idx] || '';
+                if(wEl) wEl.value = weaknesses[idx] || '';
+            });
+
+            document.getElementById('inp-notes').innerText = c.notes || ''; // Use innerText para div editável
+
+            if (window.appState.isAdmin) {
+                app.renderAdminOwnerSelect();
+                const adminSel = document.getElementById('sel-admin-owner');
+                if (adminSel) {
+                    if (c.recruiterEmail !== window.appState.user.email) adminSel.value = c.recruiterEmail;
+                    else adminSel.value = "";
+                }
+            }
+
+            if(c.aiStats) {
+                window.appState.aiStats = { stats: c.aiStats, summary: c.aiSummary, score: c.totalScore };
+                document.getElementById('ai-result-container').classList.remove('hidden');
+                document.getElementById('ai-summary-text').innerText = c.aiSummary;
+            }
+        },
+    };
+
+    window.app.init();
+</script>
