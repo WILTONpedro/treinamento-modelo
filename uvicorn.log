@@ -1,0 +1,20 @@
+/app/api.py:12: FutureWarning:
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  import google.generativeai as genai
+INFO:     Started server process [3226]
+INFO:     Waiting for application startup.
+16:35:48 | INFO | 🚀 SERVIDOR INICIADO
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58392 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58392 - "GET /LOGOS/logo-baly-branca.png HTTP/1.1" 404 Not Found
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3226]

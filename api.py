@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import docx
 import google.generativeai as genai
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from typing_extensions import TypedDict
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from datetime import datetime
@@ -245,6 +247,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="API Triagem", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+app.mount("/LOGOS", StaticFiles(directory="static/LOGOS"), name="logos")
+app.mount("/wallpapers", StaticFiles(directory="static/wallpapers"), name="wallpapers")
+
+@app.get("/")
+async def read_index():
+    return FileResponse('static/index.html')
 
 @app.post("/triagem")
 async def triar_curriculo(file: UploadFile = File(...)):
