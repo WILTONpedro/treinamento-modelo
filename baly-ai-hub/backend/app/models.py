@@ -46,6 +46,7 @@ class Agente(Base):
     funcao: Mapped[str] = mapped_column(String(20))  # supervisor|recepcao|analista
     especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"))
     personalidade: Mapped[str] = mapped_column(Text, default="")
+    perfil: Mapped[dict | None] = mapped_column(JSON, default=dict)  # jeito de falar, bordões, papo (personalidade.py)
     aparencia: Mapped[dict] = mapped_column(JSON, default=dict)
     estacao: Mapped[int | None] = mapped_column(Integer)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)  # cadastrado ≠ ativo
@@ -127,6 +128,9 @@ class Candidatura(Base):
     vaga_id: Mapped[int] = mapped_column(ForeignKey("vagas.id"))
     candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"))
     status: Mapped[str] = mapped_column(String(20), default="na_fila")  # na_fila|em_analise|analisada|erro
+    # como chegou à vaga: triagem (pasta) | banco (banco de talentos) | atlas (encaminhado) | indicacao (colega)
+    origem: Mapped[str | None] = mapped_column(String(20), default="triagem")
+    indicado_por_id: Mapped[int | None] = mapped_column(Integer)  # agente cuja conversa originou a indicação
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
 
     curriculo: Mapped[Curriculo] = relationship()
@@ -168,7 +172,7 @@ class Tarefa(Base):
     __tablename__ = "tarefas"
     __table_args__ = (Index("ix_tarefa_fila", "status", "tipo", "agente_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    tipo: Mapped[str] = mapped_column(String(20))  # TRIAGEM|DISTRIBUICAO|ANALISE
+    tipo: Mapped[str] = mapped_column(String(20))  # TRIAGEM|DISTRIBUICAO|ANALISE|CONSULTA|REVISAO
     curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"))
     candidatura_id: Mapped[int | None] = mapped_column(ForeignKey("candidaturas.id"))
     agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
@@ -176,6 +180,7 @@ class Tarefa(Base):
     status: Mapped[str] = mapped_column(String(20), default="pendente")  # pendente|executando|concluida|erro
     tentativas: Mapped[int] = mapped_column(Integer, default=0)
     erro: Mapped[str | None] = mapped_column(Text)
+    dados: Mapped[dict | None] = mapped_column(JSON)  # consulta entre colegas: pergunta, análise preliminar, resposta
     criada_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
     iniciada_em: Mapped[datetime | None] = mapped_column(DateTime)
     concluida_em: Mapped[datetime | None] = mapped_column(DateTime)
@@ -184,7 +189,8 @@ class Tarefa(Base):
 class Pendencia(Base):
     __tablename__ = "pendencias"
     id: Mapped[int] = mapped_column(primary_key=True)
-    tipo: Mapped[str] = mapped_column(String(40))  # ARQUIVO_ILEGIVEL|SEM_ESPECIALISTA|TRIAGEM_MANUAL|ERRO_IA
+    # ARQUIVO_ILEGIVEL|SEM_ESPECIALISTA|TRIAGEM_MANUAL|ERRO_IA|PROPOSTA_CONTRATACAO|ESTACOES_LOTADAS
+    tipo: Mapped[str] = mapped_column(String(40))
     descricao: Mapped[str] = mapped_column(Text)
     agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
     curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"))
@@ -198,14 +204,31 @@ class Pendencia(Base):
 
 
 class Evento(Base):
-    """Linha do tempo do escritório: alimenta animações, histórico e o chat."""
+    """Linha do tempo do escritório: alimenta animações, balões, histórico e o chat.
+
+    `pensamento` e `conversa` são as falas dos agentes; ficam só RETENCAO_CONVERSAS_HORAS.
+    """
     __tablename__ = "eventos"
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=agora, index=True)
     tipo: Mapped[str] = mapped_column(String(40))
     agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"), index=True)
+    candidato_id: Mapped[int | None] = mapped_column(Integer, index=True)  # permite apagar tudo de um titular (LGPD)
     mensagem: Mapped[str] = mapped_column(Text)
     dados: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Contratacao(Base):
+    """Histórico de contratações (ativações) e dispensas feitas pelo Atlas ou pelo recrutador."""
+    __tablename__ = "contratacoes"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"))
+    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
+    acao: Mapped[str] = mapped_column(String(20), default="contratacao")  # contratacao|retorno|dispensa|sem_estacao
+    motivo: Mapped[str] = mapped_column(String(30), default="manual")  # sem_especialista|sobrecarga|consulta|manual|estacao
+    descricao: Mapped[str] = mapped_column(Text, default="")
+    por: Mapped[str] = mapped_column(String(120), default="Atlas")
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora, index=True)
 
 
 class Auditoria(Base):

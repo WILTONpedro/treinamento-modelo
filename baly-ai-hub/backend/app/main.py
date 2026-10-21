@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from . import config, eventos, servicos as S
 from .catalogo import CATEGORIAS_DISPONIVEIS
-from .db import Base, engine, obter_db, sessao
+from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
                      SolicitacaoTitular, Usuario, Vaga, agora, iso)
 from .seguranca import (COOKIE, auditar, conferir_chave_triagem, conferir_senha, criar_token, exigir, gerar_hash,
@@ -41,11 +41,43 @@ async def trabalhador():
         await asyncio.sleep(0.5)
 
 
+async def supervisao():
+    """O Atlas acompanha o time sozinho: contrata, reforça, tenta de novo o que falhou e manda o boletim."""
+    ultimo_reproc = ultimo_boletim = ultima_limpeza = 0.0
+    while True:
+        t = asyncio.get_running_loop().time()
+        try:
+            await asyncio.to_thread(S.supervisionar)
+            if t - ultimo_reproc > 60:
+                ultimo_reproc = t
+                await asyncio.to_thread(S.reprocessar_automatico)
+            if t - ultimo_boletim > 60:
+                ultimo_boletim = t
+                await asyncio.to_thread(S.boletim)
+            if t - ultima_limpeza > 600:
+                ultima_limpeza = t
+                await asyncio.to_thread(S.limpar_conversas)
+        except Exception:
+            log.exception("Falha na supervisão")
+        await asyncio.sleep(max(0.2, config.SUPERVISAO_SEGUNDOS))
+
+
+def _lotes_demo() -> list[list[Path]]:
+    """Currículos fictícios em ordem; arquivos com "_lote_" chegam juntos (como um lote de e-mails)."""
+    lotes: list[list[Path]] = []
+    for arq in sorted((Path(__file__).resolve().parent.parent / "demo").glob("*.txt")):
+        if "_lote_" in arq.name and lotes and "_lote_" in lotes[-1][0].name:
+            lotes[-1].append(arq)
+        else:
+            lotes.append([arq])
+    return lotes
+
+
 async def rotinas():
     """Retenção (LGPD), leitura de e-mail opcional e alimentação da demonstração."""
     from . import email_imap
     ultimo_imap = ultimo_ret = 0.0
-    demo = sorted((Path(__file__).resolve().parent.parent / "demo").glob("*.txt")) if config.SEED_DEMO else []
+    demo = _lotes_demo() if config.SEED_DEMO else []
     proximo_demo = 2.0
     while True:
         t = asyncio.get_running_loop().time()
@@ -60,11 +92,12 @@ async def rotinas():
                 await asyncio.to_thread(email_imap.ler_caixa)
             if demo and t > proximo_demo:
                 proximo_demo = t + config.DEMO_INTERVALO
-                arq = demo.pop(0)
+                lote = demo.pop(0)
 
-                def _registrar(a=arq):
+                def _registrar(arqs=lote):
                     with sessao() as db:
-                        S.registrar_curriculo(db, a.read_bytes(), a.name, "text/plain", "demo")
+                        for a in arqs:
+                            S.registrar_curriculo(db, a.read_bytes(), a.name, "text/plain", "demo")
                 await asyncio.to_thread(_registrar)
         except Exception:
             log.exception("Falha nas rotinas")
@@ -91,6 +124,7 @@ def _semear_demo(db):
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
     Base.metadata.create_all(engine)
+    migrar()
     eventos.configurar_loop(asyncio.get_running_loop())
     with sessao() as db:
         S.semear_basico(db)
@@ -103,7 +137,7 @@ async def ciclo_de_vida(app: FastAPI):
     if not config.TRIAGEM_API_KEY:
         log.warning("TRIAGEM_API_KEY não definida: POST /triagem aceita chamadas sem chave. Defina em produção.")
     log.info("IA em modo %s", config.IA_MODO)
-    tarefas = [asyncio.create_task(trabalhador()), asyncio.create_task(rotinas())]
+    tarefas = [asyncio.create_task(trabalhador()), asyncio.create_task(rotinas()), asyncio.create_task(supervisao())]
     yield
     for t in tarefas:
         t.cancel()
@@ -277,12 +311,14 @@ class Mensagem(BaseModel):
     historico: list[dict] = []
 
 
+def _ctx_chat(ag_id):
+    with sessao() as db:
+        return S.contexto_chat(db, _agente(db, ag_id))
+
+
 @app.post("/api/agentes/{ag_id}/chat")
 async def chat(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atual)):
-    def _ctx():
-        with sessao() as db:
-            return S.contexto_chat(db, _agente(db, ag_id))
-    ctx = await asyncio.to_thread(_ctx)
+    ctx = await asyncio.to_thread(_ctx_chat, ag_id)
     try:
         resp = await asyncio.to_thread(S.ia.responder_chat, ctx, m.mensagem, m.historico[-6:])
     except Exception as e:
@@ -291,19 +327,76 @@ async def chat(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atual)):
     return {"resposta": resp, "modo": config.IA_MODO}  # o conteúdo da conversa não é armazenado
 
 
+@app.post("/api/agentes/{ag_id}/chat/stream")
+async def chat_stream(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atual)):
+    """Mesmo chat, entregue aos pedaços: o agente aparece 'digitando' no painel."""
+    ctx = await asyncio.to_thread(_ctx_chat, ag_id)
+
+    def gerar():
+        enviou = False
+        try:
+            for parte in S.ia.responder_chat_stream(ctx, m.mensagem, m.historico[-6:]):
+                enviou = True
+                yield parte
+        except Exception as e:
+            log.warning("Chat (stream) falhou: %s", type(e).__name__)
+            yield ("\n" if enviou else "") + "Não consegui consultar a IA agora. Tente de novo em instantes."
+
+    return StreamingResponse(gerar(), media_type="text/plain; charset=utf-8",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/equipe/conversas")
+def conversas(limite: int = 60, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+    """Canal da equipe: o que os agentes disseram uns aos outros (consultas, contratações, boletins)."""
+    return S.conversas_equipe(db, min(max(limite, 1), 200))
+
+
+@app.post("/api/equipe/chat")
+async def chat_equipe(m: Mensagem, u: Usuario = Depends(usuario_atual)):
+    """O recrutador fala com o time; quem tem a informação responde (o conteúdo não é armazenado)."""
+    def _ctx():
+        with sessao() as db:
+            return S.contexto_equipe(db, por_agente=config.IA_MODO != "gemini")
+    ctx = await asyncio.to_thread(_ctx)
+    try:
+        falas = await asyncio.to_thread(S.ia.conversa_equipe, ctx, m.mensagem, m.historico[-8:])
+    except Exception as e:
+        log.warning("Chat da equipe falhou: %s", type(e).__name__)
+        atlas = next(a for a in ctx["equipe"] if a["funcao"] == "supervisor")
+        falas = [{"agente_id": atlas["id"], "texto": "Não consegui consultar a IA agora. Tente de novo em instantes."}]
+    nomes = {a["id"]: a["nome"] for a in ctx["equipe"]}
+    return {"respostas": [f | {"nome": nomes.get(f["agente_id"], "")} for f in falas], "modo": config.IA_MODO}
+
+
 class NovoAgente(BaseModel):
     especialidade_id: int
-    nome: str | None = None
+    nome: str | None = Field(None, max_length=40)
 
 
 @app.post("/api/agentes")
-def novo_agente(d: NovoAgente, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db)):
-    esp = db.get(Especialidade, d.especialidade_id)
-    if not esp:
-        raise HTTPException(404, "Especialidade não encontrada.")
-    ag = S.ativar_agente(db, esp, por="O recrutador", nome=(d.nome or "").strip() or None)
-    auditar(db, u, "ativar_agente", "agente", ag.id, request)
-    return S.agente_json(db, ag)
+def novo_agente(d: NovoAgente, request: Request, u: Usuario = Depends(exigir("supervisor"))):
+    with S.trava_equipe, sessao() as db:  # estações de trabalho: uma contratação de cada vez
+        esp = db.get(Especialidade, d.especialidade_id)
+        if not esp:
+            raise HTTPException(404, "Especialidade não encontrada.")
+        ag = S.contratar(db, esp, "manual", por=u.nome, nome=(d.nome or "").strip() or None)
+        auditar(db, u, "contratar_agente", "agente", ag.id, request)
+        return S.agente_json(db, ag)
+
+
+@app.post("/api/agentes/{ag_id}/dispensar")
+def dispensar(ag_id: int, request: Request, u: Usuario = Depends(exigir("supervisor"))):
+    with S.trava_equipe, sessao() as db:
+        ag = _agente(db, ag_id)
+        S.dispensar_agente(db, ag, por=u.nome)
+        auditar(db, u, "dispensar_agente", "agente", ag.id, request)
+        return {"ok": True}
+
+
+@app.get("/api/contratacoes")
+def contratacoes(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+    return S.contratacoes_recentes(db, 30)
 
 
 @app.get("/api/especialidades")
@@ -394,7 +487,22 @@ class NovaVaga(BaseModel):
     local: str = ""
     descricao: str = ""
     requisitos: list[str] = []
-    setores: list[str] = Field(min_length=1)
+    setores: list[str] = []  # vazio: o Atlas deduz as pastas pelo título e pela descrição
+
+
+class RascunhoVaga(BaseModel):
+    titulo: str = Field(min_length=3, max_length=160)
+    descricao: str = Field("", max_length=4000)
+
+
+@app.post("/api/vagas/sugerir")
+async def sugerir_vaga(d: RascunhoVaga, u: Usuario = Depends(exigir("supervisor"))):
+    """O Atlas sugere as pastas da triagem (e, com Gemini, requisitos) para uma vaga nova."""
+    try:
+        return await asyncio.to_thread(S.ia.sugerir_setores, d.titulo, d.descricao)
+    except Exception as e:
+        log.warning("Sugestão de vaga falhou: %s", type(e).__name__)
+        raise HTTPException(503, "Não consegui consultar a IA agora.")
 
 
 @app.post("/api/vagas")
@@ -439,13 +547,14 @@ class Resolucao(BaseModel):
 
 
 @app.post("/api/pendencias/{pid}/resolver")
-def resolver(pid: int, d: Resolucao, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db)):
-    p = db.get(Pendencia, pid)
-    if not p:
-        raise HTTPException(404, "Pendência não encontrada.")
-    S.resolver_pendencia(db, p, d.acao, u.id, d.setor)
-    auditar(db, u, "resolver_pendencia", "pendencia", pid, request, tipo_acao=d.acao)
-    return {"ok": True}
+def resolver(pid: int, d: Resolucao, request: Request, u: Usuario = Depends(exigir("supervisor"))):
+    with S.trava_equipe, sessao() as db:  # "ativar" contrata: mesma trava das contratações do Atlas
+        p = db.get(Pendencia, pid)
+        if not p:
+            raise HTTPException(404, "Pendência não encontrada.")
+        S.resolver_pendencia(db, p, d.acao, u.id, d.setor)
+        auditar(db, u, "resolver_pendencia", "pendencia", pid, request, tipo_acao=d.acao)
+        return {"ok": True}
 
 
 # =========================================================================== administração e LGPD

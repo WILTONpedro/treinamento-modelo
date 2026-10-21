@@ -30,7 +30,7 @@ def serializar(e: Evento) -> dict:
 
 
 def registrar(db: Session, tipo: str, mensagem: str, agente_id: int | None = None, **dados) -> Evento:
-    ev = Evento(tipo=tipo, mensagem=mensagem, agente_id=agente_id, dados=dados)
+    ev = Evento(tipo=tipo, mensagem=mensagem, agente_id=agente_id, candidato_id=dados.get("candidato_id"), dados=dados)
     db.add(ev)
     db.flush()
     payload = serializar(ev)

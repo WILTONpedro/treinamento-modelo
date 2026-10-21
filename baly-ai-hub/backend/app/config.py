@@ -45,6 +45,8 @@ PASTA_ARQUIVOS.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{PASTA_DADOS / 'baly.db'}")
 
+SEED_DEMO = _bool("SEED_DEMO", False)  # demonstração: nunca em produção
+
 # --- IA -------------------------------------------------------------------
 # IA_MODO=gemini usa a API do Google; IA_MODO=demo usa heurísticas locais
 # (sem enviar dados para fora) — útil para testar o sistema sem chave.
@@ -76,10 +78,31 @@ ADMIN_NOME = os.environ.get("ADMIN_NOME", "Administrador")
 
 # --- LGPD -------------------------------------------------------------------
 RETENCAO_DIAS = _int("RETENCAO_DIAS", 180)
+# Pensamentos e conversas entre agentes (podem citar o primeiro nome do candidato) são apagados depois disto
+RETENCAO_CONVERSAS_HORAS = _int("RETENCAO_CONVERSAS_HORAS", 72)
 TAMANHO_MAX_MB = _int("TAMANHO_MAX_MB", 10)
 
 # --- Comportamento dos agentes ------------------------------------------------
-ATIVACAO_AUTOMATICA = _bool("ATIVACAO_AUTOMATICA", False)
+# O Atlas contrata (ativa) especialistas sozinho quando falta alguém, quando a fila cresce
+# ou quando a equipe pede ajuda de uma área que ainda não existe. false = ele só propõe,
+# e o supervisor aprova no quadro geral. (ATIVACAO_AUTOMATICA é o nome antigo.)
+CONTRATACAO_AUTOMATICA = _bool("CONTRATACAO_AUTOMATICA", _bool("ATIVACAO_AUTOMATICA", True))
+# Média de currículos na fila por agente da mesma especialidade que faz o Atlas reforçar o time
+LIMITE_FILA_POR_AGENTE = _int("LIMITE_FILA_POR_AGENTE", 2 if SEED_DEMO else 5)
+MAX_AGENTES_POR_ESPECIALIDADE = _int("MAX_AGENTES_POR_ESPECIALIDADE", 3)
+# Espera mínima entre duas contratações para a mesma especialidade
+INTERVALO_CONTRATACAO = _int("INTERVALO_CONTRATACAO", 30 if SEED_DEMO else 600)
+# Quantos pedidos de ajuda sem especialista (em 7 dias) fazem o Atlas contratar alguém da área
+DEMANDA_PARA_CONTRATAR = _int("DEMANDA_PARA_CONTRATAR", 2)
+# Analistas consultam colegas de outra especialidade quando têm dúvida sobre o currículo
+COLABORACAO = _bool("COLABORACAO", True)
+# Currículos sem pasta (OUTROS): o Atlas lê e encaminha sozinho quando combinam com uma vaga aberta
+ENCAMINHAMENTO_AUTOMATICO = _bool("ENCAMINHAMENTO_AUTOMATICO", True)
+# Falhas de IA: o Atlas tenta de novo sozinho depois deste tempo (até 2 vezes) antes de depender do recrutador
+REPROCESSAR_APOS_MIN = _int("REPROCESSAR_APOS_MIN", 10)
+# Boletim do Atlas para o time (0 desliga)
+BOLETIM_MINUTOS = _int("BOLETIM_MINUTOS", 60)
+SUPERVISAO_SEGUNDOS = float(os.environ.get("SUPERVISAO_SEGUNDOS", "2" if SEED_DEMO else "5"))
 SEGUNDOS_PARA_DESCANSO = _int("SEGUNDOS_PARA_DESCANSO", 300)
 SEGUNDOS_CONCLUIDO = _int("SEGUNDOS_CONCLUIDO", 8)
 
@@ -92,5 +115,6 @@ IMAP_PASTA = os.environ.get("IMAP_PASTA", "INBOX")
 IMAP_INTERVALO = _int("IMAP_INTERVALO", 120)
 
 # --- Demonstração -------------------------------------------------------------
-SEED_DEMO = _bool("SEED_DEMO", False)
 DEMO_INTERVALO = float(os.environ.get("DEMO_INTERVALO", "5"))
+# Velocidade da "digitação" do chat em modo demonstração (ms por palavra)
+DEMO_DIGITACAO_MS = _int("DEMO_DIGITACAO_MS", 18)

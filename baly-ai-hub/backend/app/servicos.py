@@ -1,26 +1,38 @@
-"""Regras do negócio: recepção, triagem, Atlas (supervisor), análises, estados e LGPD.
+"""Regras do negócio: recepção, triagem, Atlas (supervisor e contratações), análises,
+consultas entre colegas, estados e LGPD.
 
 Cada etapa é uma Tarefa real na fila. O estado de cada agente é derivado das tarefas
-e registros — o escritório nunca mostra trabalho que não está acontecendo.
+e registros — o escritório nunca mostra trabalho que não está acontecendo. Os pensamentos
+e falas dos agentes são eventos gerados a partir desse trabalho (o que a leitura encontrou,
+a dúvida enviada ao colega, a resposta dele, a contratação feita pelo Atlas).
 """
 import hashlib
 import logging
 import os
-from datetime import timedelta
+import threading
+import time
+from collections import Counter
+from datetime import datetime, timedelta
 
-from sqlalchemy import func, select, or_
+from sqlalchemy import delete, func, select, or_
 from sqlalchemy.orm import Session
 
 from . import config, eventos, ia, triagem
-from .catalogo import CATEGORIAS_SENSIVEIS, ESPECIALIDADES, aparencia_para
+from .catalogo import CATEGORIAS_SENSIVEIS, ESPECIALIDADES, NOMES_EXTRAS, aparencia_para
 from .db import sessao
-from .models import (Agente, Analise, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Evento,
-                     Pendencia, Tarefa, Vaga, VagaAgente, agora, iso)
+from .models import (Agente, Analise, Candidato, Candidatura, Configuracao, Contratacao, Curriculo, Decisao,
+                     Especialidade, Evento, Pendencia, Tarefa, Vaga, VagaAgente, agora, iso)
+from .personalidade import bordao, falar, maiuscula, perfil_para, publico
 from .seguranca import apagar_arquivo, ler_arquivo, salvar_arquivo
 
 log = logging.getLogger("baly.servicos")
 MAX_ESTACOES = 8
 STATUS_VAGA = ("aberta", "suspensa", "encerrada", "cancelada")
+TAREFAS_DE_ANALISTA = ("ANALISE", "CONSULTA", "REVISAO")
+FALAS = ("pensamento", "conversa")  # eventos com retenção curta (podem citar o primeiro nome do candidato)
+ROTULO_COMPAT = {"ALTA": "alta", "MEDIA": "média", "BAIXA": "baixa"}
+# contratações e dispensas mexem nas estações de trabalho: uma de cada vez
+trava_equipe = threading.Lock()
 
 
 class ErroNegocio(Exception):
@@ -33,12 +45,20 @@ def primeiro_nome(nome):
     return partes[0] + (f" {partes[-1][0]}." if len(partes) > 1 else "")
 
 
+def rotulo(c: Candidatura) -> str:
+    return primeiro_nome(c.candidato.nome if c.candidato else "Candidato")
+
+
 def recepcao(db) -> Agente:
     return db.scalar(select(Agente).where(Agente.funcao == "recepcao"))
 
 
 def atlas(db) -> Agente:
     return db.scalar(select(Agente).where(Agente.funcao == "supervisor"))
+
+
+def perfil(ag: Agente) -> dict:
+    return ag.perfil or perfil_para(ag.nome, ag.especialidade.nome if ag.especialidade else None)
 
 
 def _ocupar(ag: Agente, tarefa: Tarefa, atividade: str):
@@ -57,6 +77,24 @@ def _liberar(db, ag: Agente):
         ag.atividade = ""
 
 
+def _pensar(db, ag: Agente | None, texto: str, **dados):
+    if ag and texto:
+        eventos.registrar(db, "pensamento", texto[:160], ag.id, **dados)
+
+
+def pensar(agente_id: int, texto: str, **dados):
+    """Pensamento emitido durante a leitura da IA (fora da transação principal)."""
+    if texto:
+        with sessao() as db:
+            eventos.registrar(db, "pensamento", texto[:160], agente_id, **dados)
+
+
+def _dizer(db, ag: Agente, texto: str, para: Agente | None = None, **dados):
+    """Fala de um agente (para um colega ou para o time) — vira balão no escritório e mensagem no canal da equipe."""
+    if ag and texto:
+        eventos.registrar(db, "conversa", texto[:500], ag.id, destino_id=para.id if para else None, **dados)
+
+
 def _abrir_pendencia(db, tipo, descricao, agente=None, **refs) -> Pendencia | None:
     filtro = [Pendencia.tipo == tipo, Pendencia.status == "aberta"]
     for k, v in refs.items():
@@ -69,6 +107,12 @@ def _abrir_pendencia(db, tipo, descricao, agente=None, **refs) -> Pendencia | No
     eventos.registrar(db, "pendencia_aberta", f"{agente.nome if agente else 'Sistema'} sinalizou: {descricao}",
                       agente.id if agente else None, pendencia_id=p.id)
     return p
+
+
+def _resolver_pendencias(db, tipo, **refs):
+    filtro = [Pendencia.tipo == tipo, Pendencia.status == "aberta"] + [getattr(Pendencia, k) == v for k, v in refs.items()]
+    for p in db.scalars(select(Pendencia).where(*filtro)).all():
+        p.status, p.resolvido_em = "resolvida", agora()
 
 
 # =========================================================================== recepção
@@ -106,6 +150,7 @@ def executar_triagem(tarefa_id: int):
         cur = db.get(Curriculo, t.curriculo_id)
         rec = recepcao(db)
         _ocupar(rec, t, f"triando o currículo #{cur.id}")
+        _pensar(db, rec, falar(perfil(rec), "pensando"))
         dados = (ler_arquivo(cur.caminho), cur.arquivo_nome, cur.mime, cur.texto)
     resultado = triagem.triar(*dados)  # fora da transação: a IA pode demorar
     with sessao() as db:
@@ -126,6 +171,7 @@ def executar_triagem(tarefa_id: int):
                              rec, curriculo_id=cur.id)
         elif setor == "ARQUIVO_INVALIDO":
             cur.status = "invalido"
+            _pensar(db, rec, "Isso não é um currículo… vai para o descarte.")
             eventos.registrar(db, "arquivo_invalido",
                               f"{rec.nome} descartou o arquivo #{cur.id}: não é um currículo ({resultado.get('motivo') or resultado.get('resumo') or 'inválido'})",
                               rec.id, curriculo_id=cur.id)
@@ -134,6 +180,7 @@ def executar_triagem(tarefa_id: int):
             cand.dado_sensivel = cand.dado_sensivel or setor in CATEGORIAS_SENSIVEIS
             cur.candidato_id = cand.id
             cur.status = "triado"
+            _pensar(db, rec, falar(perfil(rec), "concluir", rotulo=setor), candidato_id=cand.id)
             eventos.registrar(db, "triagem_concluida",
                               f"{rec.nome} registrou o currículo de {primeiro_nome(cand.nome)} na pasta {setor}",
                               rec.id, curriculo_id=cur.id, candidato_id=cand.id, setor=setor)
@@ -184,25 +231,27 @@ def responsaveis(db, vaga: Vaga) -> list[Agente]:
                       .where(VagaAgente.vaga_id == vaga.id, Agente.ativo.is_(True))).all()
 
 
+def _vagas_abertas_de(db, ag: Agente) -> list[Vaga]:
+    return db.scalars(select(Vaga).join(VagaAgente, VagaAgente.vaga_id == Vaga.id)
+                      .where(VagaAgente.agente_id == ag.id, Vaga.status == "aberta")).all()
+
+
 def garantir_responsavel(db, vaga: Vaga) -> Agente | None:
+    """Escolhe quem cuida da vaga. Sem especialista na equipe, o Atlas sinaliza — e, com
+    CONTRATACAO_AUTOMATICA, contrata na próxima rodada de supervisão."""
     atuais = responsaveis(db, vaga)
     if atuais:
         return min(atuais, key=lambda a: carga(db, a))
-    sup = atlas(db)
     esp = especialidade_para(db, vaga.setores or [])
     candidatos = [a for a in analistas_ativos(db) if esp and a.especialidade_id == esp.id]
-    if not candidatos and esp and config.ATIVACAO_AUTOMATICA:
-        try:
-            novo = ativar_agente(db, esp, por="Atlas")
-        except ErroNegocio:
-            novo = None
-        if novo and responsaveis(db, vaga):
-            return novo
-        candidatos = [novo] if novo else []
     if not candidatos:
-        _abrir_pendencia(db, "SEM_ESPECIALISTA",
-                         f"nenhum agente da equipe cobre {esp.nome if esp else 'a área'} para a vaga “{vaga.titulo}”",
-                         sup, vaga_id=vaga.id, especialidade_id=esp.id if esp else None)
+        sup = atlas(db)
+        auto = bool(config.CONTRATACAO_AUTOMATICA and esp)
+        desc = (f"nenhum agente da equipe cobre {esp.nome if esp else 'a área'} para a vaga “{vaga.titulo}”"
+                + ("; vou contratar alguém" if auto else ""))
+        if _abrir_pendencia(db, "SEM_ESPECIALISTA", desc, sup, vaga_id=vaga.id,
+                            especialidade_id=esp.id if esp else None) and auto:
+            _pensar(db, sup, f"Ninguém cobre {esp.nome.lower()}… vou contratar.")
         return None
     ag = min(candidatos, key=lambda a: carga(db, a))
     db.add(VagaAgente(vaga_id=vaga.id, agente_id=ag.id))
@@ -211,11 +260,12 @@ def garantir_responsavel(db, vaga: Vaga) -> Agente | None:
     return ag
 
 
-def _encaminhar(db, cur: Curriculo, vaga: Vaga) -> bool:
+def _encaminhar(db, cur: Curriculo, vaga: Vaga, origem: str = "triagem", indicado_por: Agente | None = None) -> bool:
     """Cria a candidatura (uma por currículo × vaga) e a tarefa de análise."""
     if db.scalar(select(Candidatura).where(Candidatura.curriculo_id == cur.id, Candidatura.vaga_id == vaga.id)):
         return False
-    cand = Candidatura(curriculo_id=cur.id, vaga_id=vaga.id, candidato_id=cur.candidato_id)
+    cand = Candidatura(curriculo_id=cur.id, vaga_id=vaga.id, candidato_id=cur.candidato_id, origem=origem,
+                       indicado_por_id=indicado_por.id if indicado_por else None)
     db.add(cand)
     db.flush()
     ag = garantir_responsavel(db, vaga)
@@ -223,10 +273,10 @@ def _encaminhar(db, cur: Curriculo, vaga: Vaga) -> bool:
     if ag:
         db.add(Tarefa(tipo="ANALISE", candidatura_id=cand.id, agente_id=ag.id))
         eventos.registrar(db, "candidatura_encaminhada", f"Atlas encaminhou {nome} para a vaga “{vaga.titulo}” ({ag.nome})",
-                          atlas(db).id, vaga_id=vaga.id, candidatura_id=cand.id, destino_id=ag.id)
+                          atlas(db).id, vaga_id=vaga.id, candidatura_id=cand.id, destino_id=ag.id, candidato_id=cur.candidato_id)
     else:
         eventos.registrar(db, "candidatura_em_espera", f"{nome} aguarda um agente para a vaga “{vaga.titulo}”",
-                          atlas(db).id, vaga_id=vaga.id, candidatura_id=cand.id)
+                          atlas(db).id, vaga_id=vaga.id, candidatura_id=cand.id, candidato_id=cur.candidato_id)
     return True
 
 
@@ -236,21 +286,46 @@ def executar_distribuicao(tarefa_id: int):
         cur = db.get(Curriculo, t.curriculo_id)
         sup = atlas(db)
         _ocupar(sup, t, f"distribuindo o currículo #{cur.id}")
+        ler = cur.setor == "OUTROS" and config.ENCAMINHAMENTO_AUTOMATICO and bool(cur.texto)
+        abertas = [{"id": v.id, "titulo": v.titulo, "area": v.area, "descricao": v.descricao, "requisitos": v.requisitos}
+                   for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all()] if ler else []
+        if abertas:
+            _pensar(db, sup, "Esse não caiu em nenhuma pasta… deixa eu ler com calma.")
+        texto = cur.texto
+    sugestao = None
+    if abertas:
+        try:
+            sugestao = ia.sugerir_vaga(texto, abertas)  # fora da transação: a IA pode demorar
+        except Exception as e:
+            log.warning("Atlas não conseguiu sugerir vaga: %s", type(e).__name__)
     with sessao() as db:
         t = db.get(Tarefa, tarefa_id)
         cur = db.get(Curriculo, t.curriculo_id)
         sup = atlas(db)
         nome = primeiro_nome(cur.candidato.nome if cur.candidato else "Candidato")
         if cur.setor == "OUTROS":
-            _abrir_pendencia(db, "TRIAGEM_MANUAL", f"o currículo de {nome} (#{cur.id}) não se encaixou em nenhuma pasta; defina a área",
-                             sup, curriculo_id=cur.id)
+            vaga = db.get(Vaga, sugestao["vaga_id"]) if sugestao and sugestao.get("confianca") in ("ALTA", "MEDIA") else None
+            if vaga and vaga.status == "aberta":
+                _pensar(db, sup, f"Lembra a vaga “{vaga.titulo}”. Vou encaminhar.", candidato_id=cur.candidato_id)
+                eventos.registrar(db, "encaminhamento_automatico",
+                                  f"Atlas leu o currículo de {nome} e o encaminhou para “{vaga.titulo}” ({sugestao.get('motivo', '')})",
+                                  sup.id, vaga_id=vaga.id, curriculo_id=cur.id, candidato_id=cur.candidato_id)
+                _encaminhar(db, cur, vaga, origem="atlas")
+            else:
+                desc = f"o currículo de {nome} (#{cur.id}) não se encaixou em nenhuma pasta; defina a área"
+                if sugestao and sugestao.get("vaga_id"):
+                    v = db.get(Vaga, sugestao["vaga_id"])
+                    if v:
+                        desc += f" (palpite do Atlas, com pouca confiança: “{v.titulo}”)"
+                _abrir_pendencia(db, "TRIAGEM_MANUAL", desc, sup, curriculo_id=cur.id)
         else:
             vagas = [v for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all() if cur.setor in (v.setores or [])]
             novas = sum(_encaminhar(db, cur, v) for v in vagas)
             if not vagas:
+                _pensar(db, sup, f"Sem vaga aberta para {cur.setor.lower()}… banco de talentos.", candidato_id=cur.candidato_id)
                 eventos.registrar(db, "banco_talentos",
                                   f"Atlas guardou {nome} no banco de talentos: nenhuma vaga aberta para {cur.setor}",
-                                  sup.id, curriculo_id=cur.id)
+                                  sup.id, curriculo_id=cur.id, candidato_id=cur.candidato_id)
             elif not novas:
                 eventos.registrar(db, "sem_duplicidade", f"Atlas viu que {nome} já está nas vagas compatíveis",
                                   sup.id, curriculo_id=cur.id)
@@ -258,43 +333,193 @@ def executar_distribuicao(tarefa_id: int):
         _liberar(db, sup)
 
 
-def ativar_agente(db, esp: Especialidade, por="Atlas", nome: str | None = None) -> Agente | None:
-    inativo = db.scalar(select(Agente).where(Agente.funcao == "analista", Agente.especialidade_id == esp.id,
-                                             Agente.ativo.is_(False)))
+# =========================================================================== Atlas: contratações e dispensas
+def _estacoes_livres(db) -> list[int]:
     ocupadas = {a.estacao for a in analistas_ativos(db)}
-    livres = [i for i in range(MAX_ESTACOES) if i not in ocupadas]
+    return [i for i in range(MAX_ESTACOES) if i not in ocupadas]
+
+
+def _admitir(db, esp: Especialidade, nome: str | None = None) -> tuple[Agente, bool]:
+    """Ocupa uma estação: chama de volta alguém da especialidade que saiu ou cria um novo agente."""
+    livres = _estacoes_livres(db)
     if not livres:
         raise ErroNegocio("Todas as estações de trabalho estão ocupadas.")
-    if inativo and not nome:
+    inativo = None if nome else db.scalar(select(Agente).where(
+        Agente.funcao == "analista", Agente.especialidade_id == esp.id, Agente.ativo.is_(False)).order_by(Agente.id))
+    if inativo:
         ag = inativo
         ag.ativo, ag.estacao, ag.ativado_em = True, livres[0], agora()
-    else:
-        usados = {a.nome for a in db.scalars(select(Agente)).all()}
-        nome = nome or next((n for n in (esp.nomes_sugeridos or []) if n not in usados), f"Agente {len(usados) + 1}")
-        ag = Agente(nome=nome, funcao="analista", especialidade_id=esp.id, estacao=livres[0],
-                    aparencia=aparencia_para(nome), ativado_em=agora(),
-                    personalidade=f"Analista dedicado a {esp.nome.lower()}, objetivo e cuidadoso com evidências.")
-        db.add(ag)
+        ag.ultima_atividade_em, ag.concluido_em, ag.tarefa_atual_id = agora(), None, None
+        ag.perfil = ag.perfil or perfil_para(ag.nome, esp.nome)
+        db.flush()
+        return ag, True
+    usados = {a.nome for a in db.scalars(select(Agente)).all()}
+    if nome and nome in usados:
+        raise ErroNegocio(f"Já existe um agente chamado {nome}.")
+    nome = nome or next((n for n in list(esp.nomes_sugeridos or []) + NOMES_EXTRAS if n not in usados),
+                        f"Agente {len(usados) + 1}")
+    p = perfil_para(nome, esp.nome)
+    ag = Agente(nome=nome, funcao="analista", especialidade_id=esp.id, estacao=livres[0],
+                aparencia=aparencia_para(nome), ativado_em=agora(), ultima_atividade_em=agora(), perfil=p,
+                personalidade=f"Analista de {esp.nome.lower()}; {p['resumo']}.")
+    db.add(ag)
     db.flush()
-    eventos.registrar(db, "agente_ativado", f"{por} ativou {ag.nome} ({esp.nome})", ag.id, especialidade=esp.codigo)
-    # assume vagas sem responsável dessa especialidade e resolve as pendências correspondentes
-    for p in db.scalars(select(Pendencia).where(Pendencia.tipo == "SEM_ESPECIALISTA", Pendencia.status == "aberta",
-                                                Pendencia.especialidade_id == esp.id)).all():
-        p.status, p.resolvido_em = "resolvida", agora()
-        vaga = db.get(Vaga, p.vaga_id)
-        if vaga and not responsaveis(db, vaga):
-            db.add(VagaAgente(vaga_id=vaga.id, agente_id=ag.id))
-            db.flush()
-            eventos.registrar(db, "vaga_atribuida", f"Atlas atribuiu a vaga “{vaga.titulo}” a {ag.nome}", ag.id, vaga_id=vaga.id)
-            for c in db.scalars(select(Candidatura).where(Candidatura.vaga_id == vaga.id, Candidatura.status == "na_fila")).all():
-                if not db.scalar(select(Tarefa).where(Tarefa.candidatura_id == c.id, Tarefa.status.in_(("pendente", "executando")))):
-                    db.add(Tarefa(tipo="ANALISE", candidatura_id=c.id, agente_id=ag.id))
+    return ag, False
+
+
+def _assumir_vagas_sem_responsavel(db, ag: Agente) -> int:
+    """O novo agente assume as vagas abertas da sua especialidade que estão sem ninguém."""
+    n = 0
+    for vaga in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all():
+        if responsaveis(db, vaga):
+            continue
+        esp = especialidade_para(db, vaga.setores or [])
+        if not esp or esp.id != ag.especialidade_id:
+            continue
+        db.add(VagaAgente(vaga_id=vaga.id, agente_id=ag.id))
+        db.flush()
+        n += 1
+        eventos.registrar(db, "vaga_atribuida", f"Atlas atribuiu a vaga “{vaga.titulo}” a {ag.nome}", ag.id, vaga_id=vaga.id)
+        _resolver_pendencias(db, "SEM_ESPECIALISTA", vaga_id=vaga.id)
+        _enfileirar_espera(db, vaga, ag)
+    return n
+
+
+def _enfileirar_espera(db, vaga: Vaga, ag: Agente):
+    """Candidaturas que esperavam alguém para a vaga entram na fila do agente."""
+    for c in db.scalars(select(Candidatura).where(Candidatura.vaga_id == vaga.id,
+                                                  Candidatura.status.in_(("na_fila", "em_analise")))).all():
+        if not db.scalar(select(Tarefa).where(Tarefa.candidatura_id == c.id, Tarefa.status.in_(("pendente", "executando")))):
+            db.add(Tarefa(tipo="ANALISE", candidatura_id=c.id, agente_id=ag.id))
+
+
+def _reforcar(db, novo: Agente) -> int:
+    """Contratação por sobrecarga: o novo agente divide as vagas e parte da fila dos colegas."""
+    colegas = [a for a in analistas_ativos(db) if a.especialidade_id == novo.especialidade_id and a.id != novo.id]
+    for vaga in {v.id: v for a in colegas for v in _vagas_abertas_de(db, a)}.values():
+        if not db.get(VagaAgente, (vaga.id, novo.id)):
+            db.add(VagaAgente(vaga_id=vaga.id, agente_id=novo.id))
+    db.flush()
+    total = sum(carga(db, a) for a in colegas)
+    alvo = total // (len(colegas) + 1)
+    movidas = 0
+    while movidas < alvo:
+        mais = max(colegas, key=lambda a: carga(db, a), default=None)
+        t = mais and db.scalar(select(Tarefa).where(Tarefa.agente_id == mais.id, Tarefa.tipo == "ANALISE",
+                                                     Tarefa.status == "pendente", Tarefa.tentativas == 0)
+                               .order_by(Tarefa.id.desc()))
+        if not t:
+            break
+        t.agente_id = novo.id
+        db.flush()
+        movidas += 1
+    if movidas:
+        sup = atlas(db)
+        eventos.registrar(db, "fila_redistribuida", f"Atlas passou {movidas} currículo(s) da fila para {novo.nome}", sup.id,
+                          destino_id=novo.id)
+        _dizer(db, sup, f"{novo.nome}, separei {movidas} currículo(s) da fila para você começar.", para=novo)
+    return movidas
+
+
+MOTIVOS = {
+    "sem_especialista": "faltava alguém de {esp} para uma vaga aberta",
+    "sobrecarga": "a fila de {esp} passou de {limite} currículos por pessoa",
+    "consulta": "o time pediu ajuda de {esp} mais de uma vez",
+    "manual": "pedido do recrutador",
+}
+
+
+def contratar(db, esp: Especialidade, motivo: str = "manual", por: str = "Atlas", nome: str | None = None) -> Agente:
+    """Atlas (ou o recrutador) traz um agente para o time. Libera a estação de alguém ocioso se precisar."""
+    if not _estacoes_livres(db) and por == "Atlas":
+        _dispensar_ocioso(db, f"liberar uma estação para {esp.nome.lower()}")
+    ag, voltou = _admitir(db, esp, nome)
+    sup = atlas(db)
+    txt_motivo = MOTIVOS.get(motivo, motivo).format(esp=esp.nome.lower(), limite=config.LIMITE_FILA_POR_AGENTE)
+    desc = f"{por} {'chamou de volta' if voltou else 'contratou'} {ag.nome} ({esp.nome}): {txt_motivo}"
+    db.add(Contratacao(especialidade_id=esp.id, agente_id=ag.id, acao="retorno" if voltou else "contratacao",
+                       motivo=motivo, descricao=desc, por=por))
+    eventos.registrar(db, "contratacao", desc, ag.id, especialidade=esp.codigo, motivo=motivo, por=por, retorno=voltou)
+    p = perfil(ag)
+    if voltou:
+        _dizer(db, sup, f"Que bom ter você de volta, {ag.nome}! {txt_motivo.capitalize()}.", para=ag)
+    else:
+        _dizer(db, sup, f"Boas-vindas ao time, {ag.nome}! Você cuida de {esp.nome.lower()}. {bordao(perfil(sup))}", para=ag)
+    _dizer(db, ag, f"Oi, time! {ag.nome} aqui — {p.get('apresentacao', p.get('resumo', ''))}. {bordao(p)}", para=sup)
+    _assumir_vagas_sem_responsavel(db, ag)
+    if motivo == "sobrecarga":
+        _reforcar(db, ag)
+    _resolver_pendencias(db, "PROPOSTA_CONTRATACAO", especialidade_id=esp.id)
+    _resolver_pendencias(db, "ESTACOES_LOTADAS", especialidade_id=esp.id)
     return ag
 
 
-# =========================================================================== análises
+def _dispensar(db, ag: Agente, por: str, motivo: str):
+    ag.ativo, ag.estacao, ag.tarefa_atual_id, ag.atividade = False, None, None, ""
+    db.execute(delete(VagaAgente).where(VagaAgente.agente_id == ag.id))
+    desc = f"{por} liberou {ag.nome} da equipe: {motivo}"
+    db.add(Contratacao(especialidade_id=ag.especialidade_id, agente_id=ag.id, acao="dispensa", motivo="estacao", descricao=desc, por=por))
+    eventos.registrar(db, "agente_dispensado", desc, ag.id, por=por)
+    _dizer(db, ag, "Combinado! Se precisarem, é só chamar.", para=atlas(db))
+
+
+def _dispensar_ocioso(db, motivo: str) -> Agente | None:
+    """Libera a estação de quem está sem vagas e sem fila (quem está há mais tempo parado sai primeiro)."""
+    ociosos = [a for a in analistas_ativos(db) if not a.tarefa_atual_id and not carga(db, a)
+               and not db.scalar(select(func.count()).select_from(VagaAgente).where(VagaAgente.agente_id == a.id))]
+    if not ociosos:
+        return None
+    ag = min(ociosos, key=lambda a: a.ultima_atividade_em or a.ativado_em or agora())
+    _pensar(db, atlas(db), f"{ag.nome} está sem vagas… vou liberar a estação.")
+    _dispensar(db, ag, "Atlas", f"sem vagas no momento ({motivo})")
+    return ag
+
+
+def dispensar_agente(db, ag: Agente, por: str):
+    """Dispensa pedida pelo recrutador. As vagas e a fila passam para colegas da mesma especialidade."""
+    if ag.funcao != "analista":
+        raise ErroNegocio("Só analistas podem ser dispensados.")
+    if not ag.ativo:
+        raise ErroNegocio(f"{ag.nome} já está fora da equipe.")
+    if ag.tarefa_atual_id or db.scalar(select(Tarefa).where(Tarefa.agente_id == ag.id, Tarefa.tipo.in_(("CONSULTA", "REVISAO")),
+                                                             Tarefa.status.in_(("pendente", "executando")))):
+        raise ErroNegocio(f"{ag.nome} está no meio de uma análise; tente de novo em instantes.")
+    colegas = [a for a in analistas_ativos(db) if a.especialidade_id == ag.especialidade_id and a.id != ag.id]
+    vagas = _vagas_abertas_de(db, ag)
+    if vagas and not colegas:
+        raise ErroNegocio(f"{ag.nome} é quem cuida de “{vagas[0].titulo}”. Contrate outro agente da área ou "
+                          "suspenda a vaga antes de dispensar.")
+    fila = db.scalars(select(Tarefa).where(Tarefa.agente_id == ag.id, Tarefa.status == "pendente")).all()
+    _dispensar(db, ag, por, "decisão do recrutador")
+    for t in fila:
+        c = db.get(Candidatura, t.candidatura_id) if t.candidatura_id else None
+        novo = garantir_responsavel(db, c.vaga) if c else None
+        if novo:
+            t.agente_id = novo.id
+        else:
+            t.status = "cancelada"
+
+
+# =========================================================================== análises e consultas entre colegas
 def _esp_dicts(db):
     return [{"codigo": e.codigo, "nome": e.nome, "setores": e.setores} for e in db.scalars(select(Especialidade)).all()]
+
+
+def _agente_dict(db, ag: Agente) -> dict:
+    return {"nome": ag.nome, "personalidade": ag.personalidade, "perfil": publico(perfil(ag)),
+            "especialidade": ag.especialidade.nome if ag.especialidade else None,
+            "especialidade_codigo": ag.especialidade.codigo if ag.especialidade else None,
+            "setores": ag.especialidade.setores if ag.especialidade else [],
+            "vagas": [{"titulo": v.titulo, "requisitos": v.requisitos} for v in _vagas_abertas_de(db, ag)]}
+
+
+def _vaga_dict(v: Vaga) -> dict:
+    return {"titulo": v.titulo, "area": v.area, "local": v.local, "descricao": v.descricao, "requisitos": v.requisitos}
+
+
+def _leitura(cur: Curriculo):
+    """(texto, arquivo) — o arquivo só é lido quando não há texto extraído (PDF escaneado, imagem)."""
+    return cur.texto, (None if cur.texto else (ler_arquivo(cur.caminho), cur.mime))
 
 
 def executar_analise(tarefa_id: int):
@@ -311,22 +536,20 @@ def executar_analise(tarefa_id: int):
         ocioso = not ag.ultima_atividade_em or agora() - ag.ultima_atividade_em > timedelta(seconds=20)
         if ocioso:
             eventos.registrar(db, "curriculos_retirados", f"{ag.nome} foi à recepção buscar currículos", ag.id)
-        nome = primeiro_nome(c.candidato.nome if c.candidato else "Candidato")
+        nome = rotulo(c)
         _ocupar(ag, t, f"analisando {nome} para “{c.vaga.titulo}”")
-        if t.motivo == "" and c.status == "na_fila":
+        if c.status == "na_fila":
             c.status = "em_analise"
-        cur = c.curriculo
-        agente = {"nome": ag.nome, "personalidade": ag.personalidade,
-                  "especialidade": ag.especialidade.nome if ag.especialidade else None,
-                  "especialidade_codigo": ag.especialidade.codigo if ag.especialidade else None}
-        vaga = {"titulo": c.vaga.titulo, "area": c.vaga.area, "local": c.vaga.local,
-                "descricao": c.vaga.descricao, "requisitos": c.vaga.requisitos}
-        texto, setor = cur.texto, cur.setor
-        arquivo = None if texto else (ler_arquivo(cur.caminho), cur.mime)
-        esps = _esp_dicts(db)
-        inicio = agora()
+        agente, vaga = _agente_dict(db, ag), _vaga_dict(c.vaga)
+        colegas = [_agente_dict(db, a) for a in analistas_ativos(db) if a.id != ag.id]
+        indicador = db.get(Agente, c.indicado_por_id) if c.indicado_por_id else None
+        evitar = {indicador.especialidade.codigo} if indicador and indicador.especialidade else set()
+        texto, arquivo = _leitura(c.curriculo)
+        setor, esps, ag_id, cand_id = c.curriculo.setor, _esp_dicts(db), ag.id, c.candidato_id
+        inicio = time.time()
     try:
-        resultado, modelo = ia.analisar(agente, vaga, texto, arquivo, esps, setor)
+        resultado, modelo = ia.analisar(agente, vaga, texto, arquivo, esps, setor, colegas, evitar, nome,
+                                        lambda p: pensar(ag_id, p, candidato_id=cand_id))
         falha = None
     except Exception as e:
         resultado, modelo, falha = None, "", e
@@ -334,7 +557,6 @@ def executar_analise(tarefa_id: int):
         t = db.get(Tarefa, tarefa_id)
         c = db.get(Candidatura, t.candidatura_id)
         ag = db.get(Agente, t.agente_id)
-        nome = primeiro_nome(c.candidato.nome if c.candidato else "Candidato")
         if falha:
             t.erro = f"{type(falha).__name__}: {str(falha)[:200]}"
             if t.tentativas < 3:
@@ -342,55 +564,177 @@ def executar_analise(tarefa_id: int):
             else:
                 t.status = "erro"
                 c.status = "erro"
-                _abrir_pendencia(db, "ERRO_IA", f"não consegui analisar o currículo de {nome} para “{c.vaga.titulo}”",
+                _abrir_pendencia(db, "ERRO_IA", f"não consegui analisar o currículo de {rotulo(c)} para “{c.vaga.titulo}”",
                                  ag, candidatura_id=c.id)
             _liberar(db, ag)
             return
-        segunda = bool(t.motivo)
-        db.add(Analise(candidatura_id=c.id, agente_id=ag.id, tipo="segunda_opiniao" if segunda else "principal",
-                       compatibilidade=resultado["compatibilidade"], recomendado=bool(resultado.get("recomendado")),
-                       avaliacao_humana=bool(resultado.get("avaliacao_humana")), resultado=resultado, modelo=modelo,
-                       duracao_ms=int((agora() - inicio).total_seconds() * 1000)))
-        if not segunda:
-            c.status = "analisada"
-        if c.candidato:
-            c.candidato.ultima_atividade_em = agora()
-        rotulo = {"ALTA": "alta", "MEDIA": "média", "BAIXA": "baixa"}[resultado["compatibilidade"]]
-        extra = " · recomendado" if resultado.get("recomendado") else (" · avaliação humana" if resultado.get("avaliacao_humana") else "")
-        if segunda:
-            eventos.registrar(db, "colaboracao", f"{ag.nome} deu a segunda opinião sobre {nome} (“{c.vaga.titulo}”): compatibilidade {rotulo}",
-                              ag.id, candidatura_id=c.id)
-        else:
-            eventos.registrar(db, "analise_concluida", f"{ag.nome} concluiu a análise de {nome} para “{c.vaga.titulo}”: compatibilidade {rotulo}{extra}",
-                              ag.id, candidatura_id=c.id, vaga_id=c.vaga_id)
+        codigo = resultado.get("ajuda_especialidade") or ""
+        if config.COLABORACAO and resultado.get("pedir_ajuda") and codigo not in evitar:
+            if _pedir_ajuda(db, c, ag, resultado, modelo, inicio):
+                t.status, t.concluida_em = "concluida", agora()
+                _liberar(db, ag)
+                return
+        _finalizar_analise(db, c, ag, resultado, modelo, inicio)
         t.status, t.concluida_em = "concluida", agora()
-        if not segunda and resultado.get("pedir_segunda_opiniao"):
-            _segunda_opiniao(db, c, ag, resultado.get("segunda_opiniao_especialidade", ""), resultado.get("segunda_opiniao_motivo", ""))
         _liberar(db, ag)
 
 
-def _segunda_opiniao(db, c: Candidatura, solicitante: Agente, codigo: str, motivo: str):
-    """O agente pede apoio ao Atlas; o Atlas decide se outro especialista participa."""
-    nome = primeiro_nome(c.candidato.nome if c.candidato else "Candidato")
-    eventos.registrar(db, "colaboracao", f"{solicitante.nome} pediu ao Atlas uma segunda opinião sobre {nome}: {motivo or 'perfil de outra área'}",
-                      solicitante.id, candidatura_id=c.id)
-    esp = db.scalar(select(Especialidade).where(Especialidade.codigo == codigo))
-    apoio = [a for a in analistas_ativos(db) if esp and a.especialidade_id == esp.id and a.id != solicitante.id]
-    sup = atlas(db)
-    if not apoio:
-        eventos.registrar(db, "colaboracao", f"Atlas registrou o pedido, mas não há agente ativo de {esp.nome if esp else codigo or 'outra área'}",
-                          sup.id, candidatura_id=c.id)
+def _finalizar_analise(db, c: Candidatura, ag: Agente, resultado: dict, modelo: str, inicio: float,
+                       consulta: dict | None = None):
+    resultado.pop("pedir_ajuda", None)
+    if consulta:
+        resultado["colaboracoes"] = [consulta]
+    db.add(Analise(candidatura_id=c.id, agente_id=ag.id, tipo="principal",
+                   compatibilidade=resultado["compatibilidade"], recomendado=bool(resultado.get("recomendado")),
+                   avaliacao_humana=bool(resultado.get("avaliacao_humana")), resultado=resultado, modelo=modelo,
+                   duracao_ms=int((time.time() - inicio) * 1000)))
+    c.status = "analisada"
+    if c.candidato:
+        c.candidato.ultima_atividade_em = agora()
+    rot = ROTULO_COMPAT[resultado["compatibilidade"]]
+    extra = " · recomendado" if resultado.get("recomendado") else (" · avaliação humana" if resultado.get("avaliacao_humana") else "")
+    ajuda = f" (com a ajuda de {consulta['colega']})" if consulta and consulta.get("resposta_ok") else ""
+    _pensar(db, ag, falar(perfil(ag), "concluir", rotulo=rot), candidato_id=c.candidato_id)
+    eventos.registrar(db, "analise_concluida",
+                      f"{ag.nome} concluiu a análise de {rotulo(c)} para “{c.vaga.titulo}”: compatibilidade {rot}{extra}{ajuda}",
+                      ag.id, candidatura_id=c.id, vaga_id=c.vaga_id, candidato_id=c.candidato_id)
+
+
+def _pedir_ajuda(db, c: Candidatura, ag: Agente, resultado: dict, modelo: str, inicio: float) -> bool:
+    """O analista leva a dúvida a um colega de outra especialidade. Retorna False se não houver quem ajude."""
+    esp = db.scalar(select(Especialidade).where(Especialidade.codigo == resultado.get("ajuda_especialidade")))
+    if not esp or esp.id == ag.especialidade_id:
+        return False
+    pergunta = maiuscula((resultado.get("ajuda_pergunta") or "pode dar uma olhada neste currículo?")[:240])
+    nome = rotulo(c)
+    colegas = [a for a in analistas_ativos(db) if a.especialidade_id == esp.id and a.id != ag.id]
+    if not colegas:
+        sup = atlas(db)
+        _dizer(db, ag, falar(perfil(ag), "pedir_ajuda", colega="Atlas", pergunta=f"Temos alguém de {esp.nome.lower()}? {pergunta}"),
+               para=sup, candidato_id=c.candidato_id)
+        _dizer(db, sup, f"{ag.nome}, ainda não temos ninguém de {esp.nome.lower()}. Anotei a necessidade; siga com a sua "
+                        "leitura e deixe o ponto para o recrutador verificar.", para=ag)
+        eventos.registrar(db, "consulta_sem_especialista", f"Atlas anotou: {ag.nome} precisou de alguém de {esp.nome} ({nome})",
+                          sup.id, especialidade_id=esp.id, especialidade=esp.codigo, candidatura_id=c.id)
+        resultado.setdefault("a_verificar", []).append(f"Ponto para alguém de {esp.nome.lower()}: {pergunta}")
+        return False
+    colega = min(colegas, key=lambda a: carga(db, a))
+    db.add(Tarefa(tipo="CONSULTA", candidatura_id=c.id, agente_id=colega.id, motivo=pergunta[:200],
+                  dados={"solicitante_id": ag.id, "pergunta": pergunta, "preliminar": resultado, "modelo": modelo,
+                         "inicio": inicio}))
+    eventos.registrar(db, "consulta_pedida", f"{ag.nome} pediu ajuda a {colega.nome} com o currículo de {nome} (“{c.vaga.titulo}”)",
+                      ag.id, destino_id=colega.id, candidatura_id=c.id, candidato_id=c.candidato_id)
+    _dizer(db, ag, falar(perfil(ag), "pedir_ajuda", colega=colega.nome, pergunta=pergunta), para=colega, candidato_id=c.candidato_id)
+    return True
+
+
+def executar_consulta(tarefa_id: int):
+    """O colega lê o currículo e responde. Depois o solicitante revisa a análise (tarefa REVISAO)."""
+    with sessao() as db:
+        t = db.get(Tarefa, tarefa_id)
+        c = db.get(Candidatura, t.candidatura_id)
+        colega = db.get(Agente, t.agente_id)
+        d = t.dados or {}
+        sol = db.get(Agente, d.get("solicitante_id"))
+        if c.vaga.status != "aberta" or not sol:
+            t.status = "cancelada"
+            return
+        nome = rotulo(c)
+        _ocupar(colega, t, f"ajudando {sol.nome} com o currículo de {nome}")
+        args = (_agente_dict(db, colega), _agente_dict(db, sol), _vaga_dict(c.vaga), *_leitura(c.curriculo),
+                d.get("pergunta", ""), d.get("preliminar", {}), nome)
+        colega_id, cand_id = colega.id, c.candidato_id
+    try:
+        resp, _ = ia.consultar(*args, ao_pensar=lambda p: pensar(colega_id, p, candidato_id=cand_id))
+        falha = None
+    except Exception as e:
+        resp, falha = None, e
+    with sessao() as db:
+        t = db.get(Tarefa, tarefa_id)
+        c = db.get(Candidatura, t.candidatura_id)
+        colega = db.get(Agente, t.agente_id)
+        d = dict(t.dados or {})
+        sol = db.get(Agente, d.get("solicitante_id"))
+        nome = rotulo(c)
+        if falha and t.tentativas < 3:
+            t.status, t.erro = "pendente", f"{type(falha).__name__}: {str(falha)[:200]}"
+            _liberar(db, colega)
+            return
+        consulta = {"colega_id": colega.id, "colega": colega.nome,
+                    "especialidade": colega.especialidade.nome if colega.especialidade else "",
+                    "pergunta": d.get("pergunta", ""), "resposta_ok": bool(resp),
+                    "resposta": (resp or {}).get("resposta") or "não consegui ler o currículo agora.",
+                    "evidencias": (resp or {}).get("evidencias", [])[:3], "parecer": (resp or {}).get("parecer", "neutro"),
+                    "reforca_requisito": (resp or {}).get("reforca_requisito", "")}
+        if resp:
+            eventos.registrar(db, "consulta_respondida", f"{colega.nome} ajudou {sol.nome} com o currículo de {nome}",
+                              colega.id, destino_id=sol.id, candidatura_id=c.id, candidato_id=c.candidato_id)
+            _dizer(db, colega, falar(perfil(colega), "ajudar", colega=sol.nome, resposta=maiuscula(consulta["resposta"])),
+                   para=sol, candidato_id=c.candidato_id)
+            _indicar(db, c, colega, sol, resp.get("indicar_vaga") or "")
+        else:
+            t.erro = f"{type(falha).__name__}: {str(falha)[:200]}"
+            _dizer(db, colega, f"{sol.nome}, não consegui ler esse currículo agora. Siga com a sua análise.", para=sol)
+        d["consulta"] = consulta
+        db.add(Tarefa(tipo="REVISAO", candidatura_id=c.id, agente_id=sol.id, dados=d))
+        t.status, t.concluida_em = "concluida", agora()
+        _liberar(db, colega)
+
+
+def _indicar(db, c: Candidatura, colega: Agente, sol: Agente, titulo: str):
+    """O colega inclui o candidato numa vaga dele, se a conversa mostrou que combina."""
+    alvo = (titulo or "").strip().lower()
+    if not alvo or not c.curriculo.candidato_id:
         return
-    ag = min(apoio, key=lambda a: carga(db, a))
-    ja = db.scalar(select(Analise).where(Analise.candidatura_id == c.id, Analise.agente_id == ag.id)) or \
-        db.scalar(select(Tarefa).where(Tarefa.candidatura_id == c.id, Tarefa.agente_id == ag.id))
-    if ja:
-        eventos.registrar(db, "colaboracao", f"Atlas viu que {ag.nome} já avaliou {nome} nesta vaga e reaproveitou a análise",
-                          sup.id, candidatura_id=c.id)
+    vaga = next((v for v in _vagas_abertas_de(db, colega) if v.titulo.strip().lower() == alvo), None)
+    if not vaga or vaga.id == c.vaga_id:
         return
-    db.add(Tarefa(tipo="ANALISE", candidatura_id=c.id, agente_id=ag.id, motivo=motivo or "segunda opinião"))
-    eventos.registrar(db, "colaboracao", f"Atlas encaminhou o pedido de {solicitante.nome} a {ag.nome}", sup.id,
-                      candidatura_id=c.id, destino_id=ag.id)
+    if _encaminhar(db, c.curriculo, vaga, origem="indicacao", indicado_por=sol):
+        eventos.registrar(db, "indicacao", f"{colega.nome} incluiu {rotulo(c)} também na vaga “{vaga.titulo}”, "
+                                           f"a partir da conversa com {sol.nome}",
+                          colega.id, vaga_id=vaga.id, destino_id=sol.id, candidato_id=c.candidato_id)
+
+
+def executar_revisao(tarefa_id: int):
+    with sessao() as db:
+        t = db.get(Tarefa, tarefa_id)
+        c = db.get(Candidatura, t.candidatura_id)
+        ag = db.get(Agente, t.agente_id)
+        d = t.dados or {}
+        consulta = d.get("consulta") or {}
+        if c.vaga.status != "aberta":
+            t.status = "cancelada"
+            return
+        if db.scalar(select(Analise).where(Analise.candidatura_id == c.id, Analise.agente_id == ag.id)):
+            t.status, t.concluida_em = "concluida", agora()
+            return
+        nome = rotulo(c)
+        _ocupar(ag, t, f"fechando a análise de {nome} com a ajuda de {consulta.get('colega', 'um colega')}")
+        args = (_agente_dict(db, ag), _vaga_dict(c.vaga), *_leitura(c.curriculo), d.get("preliminar", {}), consulta, nome)
+        ag_id, cand_id = ag.id, c.candidato_id
+    try:
+        resultado, modelo = ia.revisar(*args, ao_pensar=lambda p: pensar(ag_id, p, candidato_id=cand_id))
+        falha = None
+    except Exception as e:
+        resultado, modelo, falha = None, "", e
+    with sessao() as db:
+        t = db.get(Tarefa, tarefa_id)
+        c = db.get(Candidatura, t.candidatura_id)
+        ag = db.get(Agente, t.agente_id)
+        d = t.dados or {}
+        if falha:
+            if t.tentativas < 3:
+                t.status, t.erro = "pendente", f"{type(falha).__name__}: {str(falha)[:200]}"
+                _liberar(db, ag)
+                return
+            resultado, modelo = dict(d.get("preliminar") or {}), d.get("modelo", "")  # fica a leitura preliminar
+        consulta = d.get("consulta") or {}
+        _finalizar_analise(db, c, ag, resultado, modelo, d.get("inicio") or time.time(), consulta)
+        colega = db.get(Agente, consulta.get("colega_id")) if consulta.get("colega_id") else None
+        if colega and consulta.get("resposta_ok"):
+            _dizer(db, ag, falar(perfil(ag), "agradecer", colega=colega.nome), para=colega, candidato_id=c.candidato_id)
+        t.status, t.concluida_em = "concluida", agora()
+        _liberar(db, ag)
 
 
 # =========================================================================== fila (usada pelo trabalhador)
@@ -411,9 +755,13 @@ def reservar_tarefas(ocupadas: set[str]) -> list[tuple[str, int, str]]:
     return saida
 
 
+EXECUTORES = {"TRIAGEM": executar_triagem, "DISTRIBUICAO": executar_distribuicao, "ANALISE": executar_analise,
+              "CONSULTA": executar_consulta, "REVISAO": executar_revisao}
+
+
 def executar(tarefa_id: int, tipo: str):
     try:
-        {"TRIAGEM": executar_triagem, "DISTRIBUICAO": executar_distribuicao, "ANALISE": executar_analise}[tipo](tarefa_id)
+        EXECUTORES[tipo](tarefa_id)
     except Exception:
         log.exception("Tarefa %s (%s) falhou", tarefa_id, tipo)
         with sessao() as db:
@@ -431,6 +779,182 @@ def recuperar_fila():
             t.status = "pendente"
         for a in db.scalars(select(Agente)).all():
             a.tarefa_atual_id = None
+
+
+# =========================================================================== supervisão automática do Atlas
+def supervisionar():
+    """Rodada do Atlas: cobre vagas sem responsável, reforça o time quando a fila cresce e
+    contrata a área que os colegas pediram. Roda em segundo plano a cada SUPERVISAO_SEGUNDOS."""
+    with trava_equipe, sessao() as db:
+        _cobrir_vagas(db)
+        _verificar_carga(db)
+        _verificar_demanda(db)
+
+
+def _ultima_contratacao(db, esp_id):
+    return db.scalar(select(func.max(Contratacao.criado_em)).where(
+        Contratacao.especialidade_id == esp_id, Contratacao.acao.in_(("contratacao", "retorno", "sem_estacao"))))
+
+
+def _pode_contratar(db, esp: Especialidade) -> bool:
+    ultima = _ultima_contratacao(db, esp.id)
+    return not ultima or agora() - ultima >= timedelta(seconds=config.INTERVALO_CONTRATACAO)
+
+
+def _tentar_contratar(db, esp: Especialidade, motivo: str, descricao_proposta: str, pensamento: str = "") -> Agente | None:
+    """Com CONTRATACAO_AUTOMATICA o Atlas contrata; sem ela, propõe ao recrutador (uma vez)."""
+    sup = atlas(db)
+    if not config.CONTRATACAO_AUTOMATICA:
+        if not db.scalar(select(Pendencia).where(Pendencia.tipo == "PROPOSTA_CONTRATACAO", Pendencia.status == "aberta",
+                                                 Pendencia.especialidade_id == esp.id)):
+            _pensar(db, sup, pensamento)
+            _abrir_pendencia(db, "PROPOSTA_CONTRATACAO", descricao_proposta, sup, especialidade_id=esp.id)
+        return None
+    _pensar(db, sup, pensamento)
+    try:
+        return contratar(db, esp, motivo)
+    except ErroNegocio:
+        # registra a tentativa para respeitar o intervalo e pede ajuda ao recrutador uma vez
+        db.add(Contratacao(especialidade_id=esp.id, acao="sem_estacao", motivo=motivo, por="Atlas",
+                           descricao=f"Atlas queria contratar alguém de {esp.nome}, mas todas as estações estão ocupadas"))
+        _abrir_pendencia(db, "ESTACOES_LOTADAS", f"preciso de alguém de {esp.nome.lower()}, mas as {MAX_ESTACOES} estações "
+                                                 "estão ocupadas; dispense um agente ou encerre vagas", sup, especialidade_id=esp.id)
+        return None
+
+
+def _cobrir_vagas(db):
+    for vaga in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all():
+        if responsaveis(db, vaga):
+            continue
+        esp = especialidade_para(db, vaga.setores or [])
+        if not esp:
+            continue
+        ag = next((a for a in analistas_ativos(db) if a.especialidade_id == esp.id), None)
+        if ag:  # alguém da área já está no time (ex.: depois de uma dispensa): assume
+            garantir_responsavel(db, vaga)
+            _resolver_pendencias(db, "SEM_ESPECIALISTA", vaga_id=vaga.id)
+            _enfileirar_espera(db, vaga, min(responsaveis(db, vaga), key=lambda a: carga(db, a)))
+        elif config.CONTRATACAO_AUTOMATICA and _pode_contratar(db, esp):
+            # sem contratação automática, a pendência SEM_ESPECIALISTA já é a proposta ao recrutador
+            _tentar_contratar(db, esp, "sem_especialista", "")
+
+
+def _verificar_carga(db):
+    por_esp: dict[int, list[Agente]] = {}
+    for a in analistas_ativos(db):
+        if a.especialidade_id:
+            por_esp.setdefault(a.especialidade_id, []).append(a)
+    for esp_id, ags in por_esp.items():
+        fila = sum(carga(db, a) for a in ags)
+        if fila / len(ags) <= config.LIMITE_FILA_POR_AGENTE or len(ags) >= config.MAX_AGENTES_POR_ESPECIALIDADE:
+            continue
+        esp = db.get(Especialidade, esp_id)
+        if not _pode_contratar(db, esp):
+            continue
+        _tentar_contratar(db, esp, "sobrecarga",
+                          f"a fila de {esp.nome.lower()} está com {fila} currículo(s) para {len(ags)} agente(s); "
+                          "proponho contratar mais um",
+                          f"A fila de {esp.nome.lower()} está com {fila} currículos para {len(ags)}… hora de reforçar.")
+
+
+def _verificar_demanda(db):
+    limite = agora() - timedelta(days=7)
+    evs = [e for e in db.scalars(select(Evento).where(Evento.tipo == "consulta_sem_especialista", Evento.ts >= limite)).all()
+           if not (e.dados or {}).get("atendida")]
+    for esp_id, n in Counter((e.dados or {}).get("especialidade_id") for e in evs).items():
+        esp = db.get(Especialidade, esp_id) if esp_id else None
+        if not esp or n < config.DEMANDA_PARA_CONTRATAR:
+            continue
+        atendida = any(a.especialidade_id == esp.id for a in analistas_ativos(db))  # alguém da área já chegou
+        if not atendida:
+            if not _pode_contratar(db, esp):
+                continue
+            novo = _tentar_contratar(db, esp, "consulta",
+                                     f"o time pediu ajuda de {esp.nome.lower()} {n} vez(es); proponho contratar alguém da área",
+                                     f"Já pediram ajuda de {esp.nome.lower()} {n} vezes. Vou trazer alguém.")
+            # contratou, ou deixou a proposta para o recrutador; se faltou estação, tenta de novo depois
+            atendida = bool(novo) or not config.CONTRATACAO_AUTOMATICA
+        if atendida:
+            for e in evs:
+                if (e.dados or {}).get("especialidade_id") == esp_id:
+                    e.dados = {**e.dados, "atendida": True}
+
+
+def reprocessar_automatico() -> int:
+    """Falhas de IA: o Atlas tenta de novo sozinho (até 2 vezes por item) antes de depender do recrutador."""
+    limite = agora() - timedelta(minutes=config.REPROCESSAR_APOS_MIN)
+    n = 0
+    with sessao() as db:
+        for p in db.scalars(select(Pendencia).where(Pendencia.tipo == "ERRO_IA", Pendencia.status == "aberta",
+                                                    Pendencia.criado_em <= limite)).all():
+            ref = (Pendencia.curriculo_id == p.curriculo_id) if p.curriculo_id else (Pendencia.candidatura_id == p.candidatura_id)
+            feitas = db.scalar(select(func.count()).select_from(Pendencia).where(
+                Pendencia.tipo == "ERRO_IA", Pendencia.status == "resolvida", Pendencia.resolvido_por_id.is_(None), ref)) or 0
+            if feitas >= 2:
+                continue
+            _reprocessar(db, p)
+            p.status, p.resolvido_em = "resolvida", agora()
+            eventos.registrar(db, "reprocessamento", f"Atlas tentou de novo, sozinho: {p.descricao}", atlas(db).id, pendencia_id=p.id)
+            n += 1
+    return n
+
+
+def _reprocessar(db, p: Pendencia):
+    t = db.scalar(select(Tarefa).where(or_(Tarefa.curriculo_id == p.curriculo_id if p.curriculo_id else False,
+                                           Tarefa.candidatura_id == p.candidatura_id if p.candidatura_id else False),
+                                       Tarefa.status == "erro").order_by(Tarefa.id.desc()))
+    if t:
+        t.status, t.tentativas, t.erro = "pendente", 0, None
+        if t.candidatura_id:
+            c = db.get(Candidatura, t.candidatura_id)
+            if c and c.status == "erro":
+                c.status = "em_analise"
+    elif p.curriculo_id:
+        cur = db.get(Curriculo, p.curriculo_id)
+        if cur and cur.status == "erro":
+            cur.status = "recebido"
+        db.add(Tarefa(tipo="TRIAGEM", curriculo_id=p.curriculo_id, agente_id=recepcao(db).id))
+
+
+def boletim() -> bool:
+    """Boletim periódico do Atlas para o time, só quando houve movimento desde o último."""
+    if config.BOLETIM_MINUTOS <= 0:
+        return False
+    with sessao() as db:
+        reg = db.get(Configuracao, "ultimo_boletim")
+        desde = None
+        if reg:
+            try:
+                desde = datetime.fromisoformat(reg.valor)
+            except ValueError:
+                desde = None
+        if desde and agora() - desde < timedelta(minutes=config.BOLETIM_MINUTOS):
+            return False
+        inicio = desde or agora() - timedelta(minutes=config.BOLETIM_MINUTOS)
+        novos = db.scalar(select(func.count()).select_from(Curriculo).where(Curriculo.recebido_em >= inicio)) or 0
+        analises = db.scalar(select(func.count()).select_from(Analise).where(Analise.criado_em >= inicio)) or 0
+        recomendados = db.scalar(select(func.count()).select_from(Analise).where(
+            Analise.criado_em >= inicio, Analise.recomendado.is_(True))) or 0
+        if reg:
+            reg.valor = agora().isoformat()
+        else:
+            db.add(Configuracao(chave="ultimo_boletim", valor=agora().isoformat()))
+        if not (novos or analises):
+            return False
+        q = quadro(db)
+        sup = atlas(db)
+        _dizer(db, sup, f"Boletim: {novos} currículo(s) novo(s), {analises} análise(s) ({recomendados} recomendado(s)). "
+                        f"Na fila: {q['tarefas_pendentes']}. Pendências: {q['pendencias']}. {bordao(perfil(sup))}",
+               boletim=True)
+        return True
+
+
+def limpar_conversas() -> int:
+    """Pensamentos e conversas têm retenção curta (podem citar o primeiro nome de candidatos)."""
+    limite = agora() - timedelta(hours=config.RETENCAO_CONVERSAS_HORAS)
+    with sessao() as db:
+        r = db.execute(delete(Evento).where(Evento.tipo.in_(FALAS), Evento.ts < limite))
+        return r.rowcount or 0
 
 
 # =========================================================================== estados e leituras
@@ -469,6 +993,7 @@ def agente_json(db, ag: Agente) -> dict:
             ("Supervisão e coordenação" if ag.funcao == "supervisor" else "Recebimento e triagem de currículos"),
             "especialidade_codigo": ag.especialidade.codigo if ag.especialidade else None,
             "estado": est, "atividade": ativ, "estacao": ag.estacao, "aparencia": ag.aparencia,
+            "perfil": publico(perfil(ag)), "carga": carga(db, ag),
             "vagas": list(vagas),
             "pendencias": db.scalar(select(func.count()).select_from(Pendencia).where(
                 Pendencia.agente_id == ag.id, Pendencia.status == "aberta"))}
@@ -506,9 +1031,20 @@ def quadro(db) -> dict:
         "curriculos_triados": db.scalar(select(func.count()).select_from(Curriculo).where(Curriculo.status == "triado")) or 0,
         "analises_concluidas": db.scalar(select(func.count()).select_from(Analise)) or 0,
         "analises_hoje": db.scalar(select(func.count()).select_from(Analise).where(Analise.criado_em >= hoje)) or 0,
+        "consultas_entre_colegas": db.scalar(select(func.count()).select_from(Tarefa).where(
+            Tarefa.tipo == "CONSULTA", Tarefa.status == "concluida")) or 0,
         "tarefas_pendentes": db.scalar(select(func.count()).select_from(Tarefa).where(Tarefa.status.in_(("pendente", "executando")))) or 0,
         "pendencias": db.scalar(select(func.count()).select_from(Pendencia).where(Pendencia.status == "aberta")) or 0,
+        "agentes_ativos": db.scalar(select(func.count()).select_from(Agente).where(Agente.ativo.is_(True), Agente.funcao == "analista")) or 0,
+        "estacoes": MAX_ESTACOES,
     }
+
+
+def _eventos_recentes(db, limite=25, agente_id=None):
+    q = select(Evento).where(Evento.tipo != "pensamento")
+    if agente_id:
+        q = q.where(Evento.agente_id == agente_id)
+    return [eventos.serializar(e) for e in db.scalars(q.order_by(Evento.id.desc()).limit(limite)).all()]
 
 
 def escritorio(db) -> dict:
@@ -517,24 +1053,28 @@ def escritorio(db) -> dict:
         Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0
     fila_analise = db.scalar(select(func.count()).select_from(Tarefa).where(
         Tarefa.tipo == "ANALISE", Tarefa.status == "pendente")) or 0
-    evs = db.scalars(select(Evento).order_by(Evento.id.desc()).limit(25)).all()
     return {"agentes": [agente_json(db, a) for a in ags],
             "fila_triagem": fila_triagem, "fila_analise": fila_analise,
             "vagas": [vaga_json(db, v) for v in db.scalars(select(Vaga).order_by(Vaga.id)).all()],
             "quadro": quadro(db),
-            "eventos": [eventos.serializar(e) for e in evs],
-            "ia_modo": config.IA_MODO}
+            "eventos": _eventos_recentes(db),
+            "ia_modo": config.IA_MODO,
+            "automacao": {"contratacao": config.CONTRATACAO_AUTOMATICA, "colaboracao": config.COLABORACAO,
+                          "encaminhamento": config.ENCAMINHAMENTO_AUTOMATICO, "limite_fila": config.LIMITE_FILA_POR_AGENTE}}
 
 
 def _analise_json(a: Analise, c: Candidatura) -> dict:
     r = a.resultado or {}
     return {"analise_id": a.id, "candidatura_id": c.id, "nome": c.candidato.nome if c.candidato else "Candidato",
-            "vaga_id": c.vaga_id, "vaga": c.vaga.titulo, "tipo": a.tipo,
+            "vaga_id": c.vaga_id, "vaga": c.vaga.titulo, "tipo": a.tipo, "origem": c.origem or "triagem",
             "compatibilidade": a.compatibilidade, "recomendado": a.recomendado, "avaliacao_humana": a.avaliacao_humana,
             "resumo": r.get("resumo_profissional", ""), "experiencias": r.get("experiencias_relevantes", []),
             "competencias": r.get("competencias", []), "atendidos": r.get("requisitos_atendidos", []),
             "a_verificar": r.get("a_verificar", []), "incompatibilidades": r.get("incompatibilidades", []),
-            "justificativa": r.get("justificativa", ""), "analisado_em": iso(a.criado_em), "modelo": a.modelo}
+            "justificativa": r.get("justificativa", ""),
+            "colaboracoes": [{k: x.get(k) for k in ("colega", "especialidade", "pergunta", "resposta", "evidencias", "parecer")}
+                             for x in r.get("colaboracoes", [])],
+            "analisado_em": iso(a.criado_em), "modelo": a.modelo}
 
 
 def _decisao_atual(db, cand_id):
@@ -571,36 +1111,99 @@ def detalhe_agente(db, ag: Agente) -> dict:
         "recebidos": sum(v["recebidos"] for v in vj),
         "analisados": db.scalar(principais.where(Analise.tipo == "principal")) or 0,
         "segundas_opinioes": db.scalar(principais.where(Analise.tipo == "segunda_opiniao")) or 0,
+        "ajudas_dadas": db.scalar(select(func.count()).select_from(Tarefa).where(
+            Tarefa.agente_id == ag.id, Tarefa.tipo == "CONSULTA", Tarefa.status == "concluida")) or 0,
         "pendentes": carga(db, ag),
         "recomendados": db.scalar(principais.where(Analise.recomendado.is_(True))) or 0,
         "vagas_em_andamento": sum(1 for v in vj if v["status"] == "aberta"),
     }
     base["vagas_detalhe"] = vj
-    base["historico"] = [eventos.serializar(e) for e in db.scalars(
-        select(Evento).where(Evento.agente_id == ag.id).order_by(Evento.id.desc()).limit(8)).all()]
+    base["historico"] = _eventos_recentes(db, 8, ag.id)
     base["pendencias_abertas"] = [{"id": p.id, "tipo": p.tipo, "descricao": p.descricao} for p in db.scalars(
         select(Pendencia).where(Pendencia.agente_id == ag.id, Pendencia.status == "aberta")).all()]
+    base["perfil_completo"] = {k: perfil(ag).get(k) for k in ("emoji", "resumo", "tom", "bordoes", "apresentacao")}
     return base
+
+
+def contratacoes_recentes(db, limite=10) -> list[dict]:
+    return [{"id": c.id, "acao": c.acao, "motivo": c.motivo, "descricao": c.descricao, "por": c.por,
+             "agente_id": c.agente_id, "em": iso(c.criado_em)}
+            for c in db.scalars(select(Contratacao).order_by(Contratacao.id.desc()).limit(limite)).all()]
 
 
 def contexto_chat(db, ag: Agente) -> dict:
     d = detalhe_agente(db, ag)
     cands = candidatos_do_agente(db, ag.id)[:40]
-    return {
+    ctx = {
         "agente": {k: d[k] for k in ("nome", "funcao", "especialidade", "estado", "atividade")},
+        "personalidade": publico(perfil(ag)),
         "estatisticas": d["estatisticas"],
         "vagas": [{k: v[k] for k in ("titulo", "status", "recebidos", "analisados", "pendentes", "requisitos", "situacao")}
                   for v in d["vagas_detalhe"]],
         "candidatos": [{k: c[k] for k in ("nome", "vaga", "compatibilidade", "recomendado", "avaliacao_humana",
-                                          "a_verificar", "justificativa", "decisao")} | {
+                                          "a_verificar", "justificativa", "decisao", "colaboracoes", "origem")} | {
             "evidencias": [f'{x.get("requisito")}: “{x.get("evidencia")}”' for x in c["atendidos"]][:5]} for c in cands],
         "pendencias": d["pendencias_abertas"],
         "atividade_recente": [f'{e["ts"]} {e["mensagem"]}' for e in d["historico"]],
+        "colegas": [{"nome": a.nome, "funcao": a.funcao,
+                     "especialidade": a.especialidade.nome if a.especialidade else
+                     ("coordenação" if a.funcao == "supervisor" else "recepção e triagem")}
+                    for a in db.scalars(select(Agente).where(Agente.ativo.is_(True), Agente.id != ag.id)).all()],
         "fila_recepcao": db.scalar(select(func.count()).select_from(Tarefa).where(
             Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0,
         "curriculos_registrados": db.scalar(select(func.count()).select_from(Curriculo)) or 0,
         "quadro": quadro(db),
     }
+    if ag.funcao == "supervisor":
+        ctx["equipe"] = [{k: x[k] for k in ("nome", "funcao", "especialidade", "estado", "atividade", "carga")}
+                         for x in (agente_json(db, a) for a in db.scalars(
+                             select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all())]
+        ctx["contratacoes"] = contratacoes_recentes(db, 6)
+        ctx["limite_fila"] = config.LIMITE_FILA_POR_AGENTE
+    return ctx
+
+
+def contexto_equipe(db, por_agente: bool = False) -> dict:
+    """Contexto do canal da equipe: quem é quem, como está cada um, vagas e destaques."""
+    ags = db.scalars(select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all()
+    equipe = []
+    for a in ags:
+        j = agente_json(db, a)
+        equipe.append({"id": a.id, "nome": a.nome, "funcao": a.funcao, "especialidade": j["especialidade"],
+                       "estado": j["estado"], "atividade": j["atividade"], "carga": j["carga"],
+                       "vagas": [v.titulo for v in _vagas_abertas_de(db, a)],
+                       "personalidade": {k: perfil(a).get(k) for k in ("resumo", "tom", "bordoes")}})
+    candidatos = []
+    for a in (x for x in ags if x.funcao == "analista"):
+        for c in candidatos_do_agente(db, a.id)[:8]:
+            candidatos.append({"nome": primeiro_nome(c["nome"]), "vaga": c["vaga"], "compatibilidade": c["compatibilidade"],
+                               "recomendado": c["recomendado"], "avaliacao_humana": c["avaliacao_humana"],
+                               "decisao": c["decisao"], "analista": a.nome,
+                               "consultou": [x["colega"] for x in c["colaboracoes"]]})
+    ctx = {"quadro": quadro(db), "equipe": equipe,
+           "vagas": [{"titulo": v["titulo"], "status": v["status"], "responsaveis": [r["nome"] for r in v["responsaveis"]],
+                      "recebidos": v["recebidos"], "analisados": v["analisados"], "pendentes": v["pendentes"]}
+                     for v in (vaga_json(db, v) for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all())],
+           "candidatos": candidatos[:40],
+           "conversas_recentes": [e["mensagem"] for e in conversas_equipe(db, 10)["eventos"] if e["tipo"] == "conversa"],
+           "contratacoes": contratacoes_recentes(db, 5),
+           "fila_recepcao": db.scalar(select(func.count()).select_from(Tarefa).where(
+               Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0}
+    if por_agente:
+        ctx["agentes_ctx"] = {a.id: contexto_chat(db, a) for a in ags}
+    return ctx
+
+
+TIPOS_CANAL = ("conversa", "contratacao", "agente_dispensado", "indicacao", "encaminhamento_automatico", "fila_redistribuida")
+
+
+def conversas_equipe(db, limite=60) -> dict:
+    evs = db.scalars(select(Evento).where(Evento.tipo.in_(TIPOS_CANAL)).order_by(Evento.id.desc()).limit(limite)).all()
+    ids = {e.agente_id for e in evs} | {(e.dados or {}).get("destino_id") for e in evs}
+    ags = db.scalars(select(Agente).where(Agente.id.in_([i for i in ids if i]))).all() if ids else []
+    return {"eventos": [eventos.serializar(e) for e in reversed(evs)],
+            "agentes": {a.id: {"nome": a.nome, "aparencia": a.aparencia, "funcao": a.funcao, "ativo": a.ativo,
+                               "emoji": perfil(a).get("emoji", "")} for a in ags}}
 
 
 def detalhe_candidatura(db, c: Candidatura) -> dict:
@@ -609,6 +1212,7 @@ def detalhe_candidatura(db, c: Candidatura) -> dict:
     nomes = {a.id: a.nome for a in db.scalars(select(Agente)).all()}
     return {
         "candidatura_id": c.id, "status": c.status, "decisao": _decisao_atual(db, c.id),
+        "origem": c.origem or "triagem", "indicado_por": nomes.get(c.indicado_por_id),
         "candidato": {"nome": cand.nome if cand else "Candidato", "cidade": cand.cidade if cand else None,
                       "email": cand.email if cand else None, "telefone": cand.telefone if cand else None,
                       "dado_sensivel": bool(cand and cand.dado_sensivel)},
@@ -624,9 +1228,14 @@ def detalhe_candidatura(db, c: Candidatura) -> dict:
 
 # =========================================================================== vagas e pendências
 def criar_vaga(db, dados: dict) -> Vaga:
+    setores = dados.get("setores") or []
+    if not setores:  # o Atlas sugere as pastas a partir do título e da descrição
+        setores = ia.sugerir_setores(dados["titulo"], dados.get("descricao", "")).get("setores", [])
+        if not setores:
+            raise ErroNegocio("Não consegui deduzir as pastas da triagem para esta vaga; escolha ao menos uma.")
     v = Vaga(titulo=dados["titulo"].strip(), area=dados.get("area", ""), local=dados.get("local", ""),
              descricao=dados.get("descricao", ""), requisitos=[r for r in dados.get("requisitos", []) if r.strip()],
-             setores=dados.get("setores", []))
+             setores=setores)
     db.add(v)
     db.flush()
     eventos.registrar(db, "vaga_criada", f"Nova vaga aberta: “{v.titulo}”", atlas(db).id, vaga_id=v.id)
@@ -639,7 +1248,7 @@ def _reaproveitar_banco(db, v: Vaga):
     limite = agora() - timedelta(days=config.RETENCAO_DIAS)
     curs = db.scalars(select(Curriculo).where(Curriculo.status == "triado", Curriculo.setor.in_(v.setores or ["-"]),
                                               Curriculo.recebido_em >= limite)).all()
-    n = sum(_encaminhar(db, c, v) for c in curs)
+    n = sum(_encaminhar(db, c, v, origem="banco") for c in curs)
     if n:
         eventos.registrar(db, "banco_talentos", f"Atlas encontrou {n} currículo(s) do banco de talentos para “{v.titulo}”",
                           atlas(db).id, vaga_id=v.id)
@@ -655,9 +1264,8 @@ def mudar_status_vaga(db, v: Vaga, status: str):
             t.status = "cancelada"
     elif anterior != "aberta":
         ag = garantir_responsavel(db, v)
-        for c in db.scalars(select(Candidatura).where(Candidatura.vaga_id == v.id, Candidatura.status.in_(("na_fila", "em_analise")))).all():
-            if ag and not db.scalar(select(Tarefa).where(Tarefa.candidatura_id == c.id, Tarefa.status.in_(("pendente", "executando")))):
-                db.add(Tarefa(tipo="ANALISE", candidatura_id=c.id, agente_id=ag.id))
+        if ag:
+            _enfileirar_espera(db, v, ag)
     eventos.registrar(db, "vaga_status", f"A vaga “{v.titulo}” agora está {status}", atlas(db).id, vaga_id=v.id, status=status)
 
 
@@ -668,17 +1276,12 @@ def resolver_pendencia(db, p: Pendencia, acao: str, usuario_id: int, setor: str 
         esp = db.get(Especialidade, p.especialidade_id) if p.especialidade_id else None
         if not esp:
             raise ErroNegocio("Pendência sem especialidade associada.")
-        ativar_agente(db, esp, por="O recrutador")  # resolve a pendência internamente
-        p.resolvido_por_id = usuario_id
+        motivo = {"PROPOSTA_CONTRATACAO": "sobrecarga" if "fila" in p.descricao else "consulta"}.get(p.tipo, "sem_especialista")
+        contratar(db, esp, motivo, por="O recrutador")  # resolve as pendências da especialidade
+        p.status, p.resolvido_em, p.resolvido_por_id = "resolvida", agora(), usuario_id
         return
     if acao == "reprocessar":
-        t = db.scalar(select(Tarefa).where(or_(Tarefa.curriculo_id == p.curriculo_id if p.curriculo_id else False,
-                                               Tarefa.candidatura_id == p.candidatura_id if p.candidatura_id else False),
-                                           Tarefa.status == "erro").order_by(Tarefa.id.desc()))
-        if p.curriculo_id and not t:
-            db.add(Tarefa(tipo="TRIAGEM", curriculo_id=p.curriculo_id, agente_id=recepcao(db).id))
-        elif t:
-            t.status, t.tentativas, t.erro = "pendente", 0, None
+        _reprocessar(db, p)
     elif acao == "definir_setor":
         cur = db.get(Curriculo, p.curriculo_id)
         if setor not in triagem.CATEGORIAS_DISPONIVEIS or setor == "OUTROS":
@@ -704,12 +1307,15 @@ def exportar_titular(db, cand: Candidato) -> dict:
         "curriculos": [{"id": c.id, "arquivo": c.arquivo_nome, "recebido_em": iso(c.recebido_em), "origem": c.origem,
                         "pasta": c.setor, "texto": c.texto, "triagem": c.triagem_json} for c in curs],
         "candidaturas": [detalhe_candidatura(db, c) for c in cs],
+        "conversas_dos_agentes": [{"em": iso(e.ts), "tipo": e.tipo, "texto": e.mensagem} for e in db.scalars(
+            select(Evento).where(Evento.candidato_id == cand.id, Evento.tipo.in_(FALAS)).order_by(Evento.id)).all()],
     }
 
 
 def anonimizar_titular(db, cand: Candidato, motivo: str):
     nome_antigo = cand.nome
-    for c in db.scalars(select(Curriculo).where(Curriculo.candidato_id == cand.id)).all():
+    curs = db.scalars(select(Curriculo).where(Curriculo.candidato_id == cand.id)).all()
+    for c in curs:
         apagar_arquivo(c.caminho)
         c.caminho, c.texto, c.triagem_json, c.resumo_triagem = None, None, None, None
         c.arquivo_nome, c.status, c.sha256 = "removido", "anonimizado", f"anon-{c.id}"
@@ -718,8 +1324,13 @@ def anonimizar_titular(db, cand: Candidato, motivo: str):
         a.resultado = {}
     for d in db.scalars(select(Decisao).where(Decisao.candidatura_id.in_(ids))).all():
         d.observacao = ""
-    for t in db.scalars(select(Tarefa).where(Tarefa.candidatura_id.in_(ids), Tarefa.status == "pendente")).all():
-        t.status = "cancelada"
+    for t in db.scalars(select(Tarefa).where(or_(Tarefa.candidatura_id.in_(ids),
+                                                 Tarefa.curriculo_id.in_([c.id for c in curs] or [-1])))).all():
+        t.dados = None  # análises preliminares e respostas de colegas
+        if t.status == "pendente":
+            t.status = "cancelada"
+    # pensamentos e conversas sobre o titular são apagados; os demais eventos têm o nome substituído
+    db.execute(delete(Evento).where(Evento.candidato_id == cand.id, Evento.tipo.in_(FALAS)))
     if nome_antigo and len(nome_antigo) >= 3:
         for chave in {nome_antigo, primeiro_nome(nome_antigo)}:
             for e in db.scalars(select(Evento).where(Evento.mensagem.contains(chave))).all():
@@ -751,7 +1362,7 @@ def semear_basico(db):
     if not db.scalar(select(Agente).where(Agente.funcao == "supervisor")):
         esp = {e.codigo: e for e in db.scalars(select(Especialidade)).all()}
         db.add_all([
-            Agente(nome="Atlas", funcao="supervisor", personalidade="Coordenador calmo e objetivo; distribui o trabalho pela especialidade e pela carga de cada agente.",
+            Agente(nome="Atlas", funcao="supervisor", personalidade="Coordenador calmo e objetivo; distribui o trabalho pela especialidade e pela carga de cada agente, e contrata reforço quando precisa.",
                    aparencia=aparencia_para("Atlas", pele="#D9A27A", cabelo="#1E1A16", estilo="curto", camisa="#FFCD00", oculos=True, barba=True)),
             Agente(nome="Bia", funcao="recepcao", personalidade="Recepcionista organizada; registra cada currículo e faz a triagem inicial.",
                    aparencia=aparencia_para("Bia", pele="#B97D55", cabelo="#1E1A16", estilo="black", camisa="#8E6BBF", oculos=False, barba=False)),
@@ -762,5 +1373,9 @@ def semear_basico(db):
                    personalidade="Analista prático, conhece bem a rotina de produção e logística.",
                    aparencia=aparencia_para("Flávio", pele="#EEC49C", cabelo="#3B2618", estilo="topete", camisa="#3CAA6E", oculos=False, barba=True)),
         ])
+        db.flush()
+    for ag in db.scalars(select(Agente)).all():  # bancos antigos: cada agente ganha sua personalidade
+        if not ag.perfil:
+            ag.perfil = perfil_para(ag.nome, ag.especialidade.nome if ag.especialidade else None)
     if config.ADMIN_SENHA and not db.scalar(select(Usuario).where(Usuario.email == config.ADMIN_EMAIL.lower())):
         db.add(Usuario(nome=config.ADMIN_NOME, email=config.ADMIN_EMAIL.lower(), senha_hash=gerar_hash(config.ADMIN_SENHA), papel="admin"))

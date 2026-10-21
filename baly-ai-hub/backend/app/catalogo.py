@@ -23,7 +23,7 @@ ESPECIALIDADES = [
      "setores": ["PRODUÇÃO", "ALMOXARIFADO", "LOGÍSTICA", "EMPILHADEIRA", "MOTORISTA", "HIGIENIZAÇÃO",
                  "MECANICA INDUSTRIAL", "VIGIA", "LIDER DE PRODUÇÃO", "AREA INDUSTRIAL",
                  "COORDENADOR DE EXPEDIÇÃO", "PCP", "QUALIDADE"],
-     "nomes": ["Flávio", "Diego", "Rafael"]},
+     "nomes": ["Flávio", "Rafael", "Joana"]},
     {"codigo": "administrativo", "nome": "Vagas administrativas e de escritório",
      "descricao": "Rotinas administrativas, financeiro, compras, contabilidade e RH.",
      "setores": ["ADMINISTRATIVO", "FINANCEIRO", "COMPRAS", "CONTABILIDADE", "RECURSOS HUMANOS"],
@@ -55,6 +55,9 @@ ESPECIALIDADES = [
      "descricao": "Vagas PCD e Jovem Aprendiz, com cuidado reforçado no tratamento de dados.",
      "setores": ["PCD", "JOVEM APRENDIZ"], "nomes": ["Bruno", "Aline"]},
 ]
+
+# Nomes de reserva quando os sugeridos da especialidade já estão em uso
+NOMES_EXTRAS = ["Nina", "Otávio", "Yara", "Igor", "Lívia", "Caetano", "Tainá", "Heitor", "Elis", "Davi", "Rosa", "Ícaro"]
 
 PELES = ["#F6D1B1", "#EEC49C", "#D9A27A", "#B97D55", "#8D5A3B", "#6B4128"]
 CABELOS = ["#1E1A16", "#3B2618", "#6E3C1E", "#A0612E", "#C9A15B", "#8A8A8A", "#D9D9D9"]

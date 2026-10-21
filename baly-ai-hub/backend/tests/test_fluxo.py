@@ -1,50 +1,13 @@
-"""Teste ponta a ponta no modo demonstração (sem IA externa).
+"""Teste ponta a ponta no modo demonstração (sem IA externa), com contratação manual.
 
 Rode com:  cd backend && python -m pytest -q
 """
-import os
-import sys
-import tempfile
-import time
 from pathlib import Path
 
-PASTA = tempfile.mkdtemp(prefix="baly-teste-")
-os.environ.update({
-    "PASTA_DADOS": PASTA, "IA_MODO": "demo", "DEMO_DURACAO_ANALISE": "0", "SEED_DEMO": "false",
-    "ADMIN_EMAIL": "admin@teste.local", "ADMIN_SENHA": "senha-admin-123", "TRIAGEM_API_KEY": "chave-teste",
-    "SEGREDO_JWT": "segredo-de-teste-com-tamanho-suficiente", "SEGUNDOS_CONCLUIDO": "1",
-})
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from fastapi.testclient import TestClient
 
-import pytest  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app.main import app  # noqa: E402
-
-DEMO = Path(__file__).resolve().parent.parent / "demo"
-H = {"X-Baly": "1"}
-
-
-def esperar_fila(c, limite=30):
-    fim = time.time() + limite
-    while time.time() < fim:
-        q = c.get("/api/escritorio").json()["quadro"]
-        if q["tarefas_pendentes"] == 0:
-            return q
-        time.sleep(0.2)
-    raise AssertionError("a fila não esvaziou")
-
-
-def enviar(c, nome, chave="chave-teste"):
-    with open(DEMO / nome, "rb") as f:
-        return c.post("/triagem", files={"file": (nome, f, "text/plain")}, headers={"X-API-Key": chave} if chave else {})
-
-
-@pytest.fixture(scope="module")
-def cli():
-    with TestClient(app) as c:
-        assert c.post("/auth/login", json={"email": "admin@teste.local", "senha": "senha-admin-123"}).status_code == 200
-        yield c
+from app.main import app
+from conftest import H, PASTA, enviar, esperar_fila
 
 
 def test_permissoes_e_csrf(cli):
@@ -110,9 +73,11 @@ def test_fluxo_completo(cli):
     novo = next(a for a in esc["agentes"] if a["especialidade_codigo"] == "comercial")
     assert novo["vagas"]
     assert len(cli.get(f'/api/agentes/{novo["id"]}/candidatos').json()) == 2
-    # o promotor gerou um pedido de segunda opinião registrado pelo Atlas
+    # o currículo do promotor fez o analista pedir ajuda a promotores; como não há ninguém, o Atlas anotou a necessidade
     evs = [e["mensagem"] for e in cli.get(f'/api/agentes/{ag["Atlas"]["id"]}').json()["historico"]]
-    assert any("não há agente ativo de Promotores" in m for m in evs)
+    assert any("precisou de alguém de Promotores" in m for m in evs)
+    renan = next(c for c in cli.get(f'/api/agentes/{novo["id"]}/candidatos').json() if c["nome"] == "Renan Alves")
+    assert any("promotores" in x for x in renan["a_verificar"])
 
     # chat responde a partir dos registros
     resp = cli.post(f'/api/agentes/{ag["Sofia"]["id"]}/chat', headers=H, json={"mensagem": "Quantos currículos faltam?"}).json()
