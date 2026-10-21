@@ -1,0 +1,144 @@
+"""Autenticação, papéis, criptografia de arquivos e auditoria."""
+import base64
+import hashlib
+import hmac
+import logging
+import os
+import secrets
+import time
+from collections import defaultdict, deque
+from datetime import timedelta
+
+import jwt
+from cryptography.fernet import Fernet
+from fastapi import Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+
+from . import config
+from .db import obter_db
+from .models import Usuario, Auditoria, Configuracao, agora
+
+log = logging.getLogger("baly.seguranca")
+COOKIE = "baly_sessao"
+PAPEIS = {"recrutador": 1, "supervisor": 2, "admin": 3}
+
+
+# --------------------------------------------------------------------------- senhas (scrypt, stdlib)
+def gerar_hash(senha: str) -> str:
+    sal = os.urandom(16)
+    h = hashlib.scrypt(senha.encode(), salt=sal, n=2 ** 14, r=8, p=1, dklen=32)
+    return "scrypt$" + base64.b64encode(sal).decode() + "$" + base64.b64encode(h).decode()
+
+
+def conferir_senha(senha: str, armazenado: str) -> bool:
+    try:
+        _, sal, h = armazenado.split("$")
+        calc = hashlib.scrypt(senha.encode(), salt=base64.b64decode(sal), n=2 ** 14, r=8, p=1, dklen=32)
+        return hmac.compare_digest(calc, base64.b64decode(h))
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- sessão (JWT em cookie httpOnly)
+def criar_token(u: Usuario) -> str:
+    exp = agora() + timedelta(hours=config.SESSAO_HORAS)
+    return jwt.encode({"sub": str(u.id), "papel": u.papel, "exp": exp}, config.SEGREDO_JWT, algorithm="HS256")
+
+
+_tentativas: dict[str, deque] = defaultdict(deque)
+
+
+def limitar_login(ip: str):
+    """No máximo 8 tentativas por IP a cada 5 minutos."""
+    agora_s = time.time()
+    fila = _tentativas[ip]
+    while fila and agora_s - fila[0] > 300:
+        fila.popleft()
+    if len(fila) >= 8:
+        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos.")
+    fila.append(agora_s)
+
+
+def usuario_atual(request: Request, db: Session = Depends(obter_db)) -> Usuario:
+    token = request.cookies.get(COOKIE)
+    if not token:
+        raise HTTPException(401, "Sessão expirada. Entre novamente.")
+    try:
+        dados = jwt.decode(token, config.SEGREDO_JWT, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Sessão inválida. Entre novamente.")
+    u = db.get(Usuario, int(dados["sub"]))
+    if not u or not u.ativo:
+        raise HTTPException(401, "Usuário inativo.")
+    # Proteção CSRF: toda escrita precisa do cabeçalho enviado pelo front (além do SameSite=Strict)
+    if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("X-Baly") != "1":
+        raise HTTPException(403, "Requisição sem cabeçalho de origem.")
+    return u
+
+
+def exigir(papel_minimo: str):
+    def dep(u: Usuario = Depends(usuario_atual)) -> Usuario:
+        if PAPEIS.get(u.papel, 0) < PAPEIS[papel_minimo]:
+            raise HTTPException(403, "Seu perfil não tem permissão para esta ação.")
+        return u
+    return dep
+
+
+def conferir_chave_triagem(request: Request):
+    if not config.TRIAGEM_API_KEY:
+        return  # aviso emitido no início do servidor
+    enviada = request.headers.get("X-API-Key", "")
+    if not hmac.compare_digest(enviada, config.TRIAGEM_API_KEY):
+        raise HTTPException(401, "Chave da API de triagem inválida.")
+
+
+# --------------------------------------------------------------------------- auditoria
+def auditar(db: Session, usuario: Usuario | None, acao: str, recurso: str, recurso_id=None,
+            request: Request | None = None, **detalhes):
+    db.add(Auditoria(usuario_id=usuario.id if usuario else None, acao=acao, recurso=recurso,
+                     recurso_id=recurso_id, ip=(request.client.host if request and request.client else None),
+                     detalhes=detalhes))
+
+
+# --------------------------------------------------------------------------- arquivos cifrados
+_fernet: Fernet | None = None
+
+
+def _chave(db: Session | None = None) -> Fernet:
+    global _fernet
+    if _fernet:
+        return _fernet
+    chave = config.CHAVE_ARQUIVOS
+    if not chave:
+        arq = config.PASTA_DADOS / ".chave_arquivos"
+        if arq.exists():
+            chave = arq.read_text().strip()
+        else:
+            chave = Fernet.generate_key().decode()
+            arq.write_text(chave)
+            os.chmod(arq, 0o600)
+            log.warning("CHAVE_ARQUIVOS não definida: chave gerada em %s. Guarde-a com segurança — "
+                        "sem ela os currículos não podem ser lidos.", arq)
+    _fernet = Fernet(chave.encode() if isinstance(chave, str) else chave)
+    return _fernet
+
+
+def salvar_arquivo(sha: str, conteudo: bytes) -> str:
+    caminho = config.PASTA_ARQUIVOS / f"{sha}.bin"
+    if not caminho.exists():
+        caminho.write_bytes(_chave().encrypt(conteudo))
+    return str(caminho)
+
+
+def ler_arquivo(caminho: str) -> bytes:
+    with open(caminho, "rb") as f:
+        return _chave().decrypt(f.read())
+
+
+def apagar_arquivo(caminho: str | None):
+    if caminho and os.path.exists(caminho):
+        # sobrescreve antes de remover (melhor esforço em discos comuns)
+        tam = os.path.getsize(caminho)
+        with open(caminho, "r+b") as f:
+            f.write(secrets.token_bytes(tam))
+        os.remove(caminho)

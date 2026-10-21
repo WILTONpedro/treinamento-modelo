@@ -1,0 +1,7 @@
+# segredos e dados locais — nunca versionar
+backend/.env
+backend/data/
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/

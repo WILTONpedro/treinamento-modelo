@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Baly AI Hub · Escritório de Recrutamento</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<header id="topo">
+  <div class="logo"><b>B</b><div><h1>Baly AI Hub</h1><span>Escritório de Recrutamento</span></div></div>
+  <div id="legenda"></div>
+  <div id="usuario"></div>
+</header>
+<main id="principal">
+  <section id="esq">
+    <div id="palco"><canvas id="cn"></canvas></div>
+    <div id="ferramentas"></div>
+    <div id="atividade"></div>
+    <div id="cvw"></div>
+  </section>
+  <aside id="painel"><div id="pi"></div></aside>
+</main>
+<div id="dica"></div>
+<div id="modal"></div>
+<div id="login" class="oculto">
+  <form class="caixa" id="flogin" autocomplete="on">
+    <div class="logo"><b>B</b><div><h1>Baly AI Hub</h1><span>Escritório de Recrutamento</span></div></div>
+    <label class="campo">E-mail<input id="lemail" type="email" required autocomplete="username"></label>
+    <label class="campo">Senha<input id="lsenha" type="password" required autocomplete="current-password"></label>
+    <div class="erro" id="lerro"></div>
+    <button class="btn escuro" style="width:100%;padding:10px">Entrar</button>
+    <p class="aviso">Acesso restrito à equipe de RH. Os acessos a currículos ficam registrados (LGPD).</p>
+  </form>
+</div>
+<script src="cena.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
