@@ -25,14 +25,21 @@ Não substitui parecer jurídico.
 
 **Minimização**
 - Listas de candidatos não mostram e-mail nem telefone; o contato aparece só no currículo aberto.
-- O chat com os agentes não é armazenado no servidor.
+- O chat com os agentes (individual e o canal da equipe) não é armazenado no servidor.
+- Pensamentos e conversas entre agentes citam o candidato só por primeiro nome e inicial ("Ana M."), ficam
+  `RETENCAO_CONVERSAS_HORAS` (padrão 72 h) e são apagados antes disso se o titular for anonimizado.
 - Logs técnicos não registram nomes de candidatos.
 - A IA é instruída a não considerar características protegidas (idade, gênero, cor/raça, religião, estado
   civil, gravidez, orientação sexual, deficiência, aparência, origem) — LGPD art. 6º, IX e Lei 9.029/95.
+  A mesma regra vale para os pensamentos, as consultas entre colegas e o canal da equipe.
 
 **Decisão humana (art. 20)**
 - Agentes só recomendam. Toda recomendação traz evidências (trechos literais do currículo), requisitos a
   verificar e justificativa. A decisão (entrevista, banco de talentos, não seguir) é registrada pelo recrutador.
+- Quando um analista consulta um colega, a pergunta, a resposta e os trechos usados ficam na análise
+  ("Conversa com colega"), para o recrutador saber como a recomendação foi formada. Uma indicação para outra
+  vaga gera só uma nova análise — nunca uma decisão.
+- "Contratar" e "dispensar" se referem aos agentes de IA (capacidade de processamento), não a candidatos.
 
 **Segurança (art. 46)**
 - Arquivos de currículo cifrados em disco (Fernet: AES-128 + HMAC); exclusão sobrescreve o arquivo.
@@ -50,13 +57,16 @@ Não substitui parecer jurídico.
   Os números agregados continuam válidos. Defina o prazo na política de privacidade.
 
 **Direitos do titular (art. 18)** — menu *Privacidade (LGPD)*, perfil admin:
-- *Exportar*: todos os dados do titular em JSON (acesso e portabilidade).
+- *Exportar*: todos os dados do titular em JSON (acesso e portabilidade), incluindo o que os agentes
+  falaram sobre ele enquanto essas falas existirem.
 - *Eliminar*: anonimização irreversível. Cada pedido fica registrado em `solicitacoes_titular`.
 - Correção: os dados vêm do currículo enviado; um novo envio do titular atualiza o cadastro.
 
 ## Transferência internacional (arts. 33 a 36)
 
 Com `IA_MODO=gemini`, currículos são enviados ao Google, o que em geral configura transferência internacional.
+Consultas entre colegas e revisões são novas chamadas com o mesmo currículo, para a mesma finalidade; o
+encaminhamento automático de currículos sem pasta e o canal da equipe também enviam dados ao Google.
 
 - Desde 23/08/2025, quem usa cláusulas contratuais para isso precisa adotar as cláusulas-padrão da ANPD
   (Resolução CD/ANPD nº 19/2024). Verifique com o jurídico se o contrato/DPA do Google atende ao requisito

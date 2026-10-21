@@ -34,11 +34,13 @@ input,select,textarea{font:inherit;color:inherit}
 #zoom{position:absolute;right:14px;top:12px;display:flex;flex-direction:column;gap:6px;z-index:3}
 #zoom button{width:34px;height:34px;border:0;border-radius:10px;background:#fff;box-shadow:var(--sh);font-size:18px;font-weight:700}
 #zoom button:hover{background:var(--y)}
+#zoom button:last-child{font-size:15px;opacity:.55}#zoom button.on{opacity:1;box-shadow:inset 0 0 0 2px var(--y),var(--sh)}
 #atividade{flex:none;background:#fff;border-top:1px solid var(--b);padding:8px 18px 10px;max-height:132px;overflow:hidden;transition:max-height .2s}
 #atividade.fechado{max-height:36px}
 #atividade header{display:flex;align-items:center;gap:8px;font-weight:800;font-size:12px;letter-spacing:.3px;color:var(--m);cursor:pointer;height:20px}
 #atividade p{margin:3px 0;display:flex;gap:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #atividade p b{color:#9A9A94;font-weight:700;flex:none;width:40px}
+#atividade p span{overflow:hidden;text-overflow:ellipsis}#atividade p i{font-style:normal;font-weight:700}
 #atividade p.novo{animation:pisca 1.2s}
 @keyframes pisca{0%{background:#FFF4C2}100%{background:transparent}}
 
@@ -51,7 +53,7 @@ input,select,textarea{font:inherit;color:inherit}
 #painel.aberto{width:420px}
 #pi{width:420px;height:100%;display:flex;flex-direction:column}
 .ph{background:var(--k);color:#fff;padding:16px 18px;display:flex;gap:14px;align-items:center;position:relative;flex:none;min-height:100px}
-.ph h2{font-size:22px;letter-spacing:.3px}.ph small{color:var(--y);font-weight:700;display:block}.ph em{font-style:normal;font-size:12px;color:#D8D6CF;display:block;margin:2px 0 6px}
+.ph h2{font-size:22px;letter-spacing:.3px}.ph h2 .emoji{font-size:18px;vertical-align:2px}.ph small{color:var(--y);font-weight:700;display:block}.ph em{font-style:normal;font-size:12px;color:#D8D6CF;display:block;margin:2px 0 6px}
 .ph canvas{flex:none;border-radius:50%;background:var(--y)}
 .ph .chip{white-space:normal;line-height:1.35;padding:3px 9px}
 .x{position:absolute;right:12px;top:8px;background:none;border:0;color:#fff;font-size:24px;line-height:1}
@@ -85,6 +87,22 @@ ul.lista{margin:4px 0 0 16px}ul.lista li{margin:2px 0}
 .pend{background:#FDECEA}.pend.amarelo{background:#FFF6D6}
 select.sel{border:1px solid #CFCFC9;border-radius:8px;padding:5px 8px;background:#fff}
 
+/* personalidade, colaboração e canal da equipe */
+.cartao.perfil{background:#FFFBEA;border:1px solid #F3E2A0}
+.colab{margin-top:4px;padding:5px 8px;background:#F3F0FF;border-radius:8px;color:#463F63}
+.cartao.colabc{background:#F6F3FF;border:1px solid #DDD5F5;box-shadow:none}
+.rostos{display:flex;gap:4px;flex-wrap:wrap;margin-top:2px}.rostos canvas{border-radius:50%;box-shadow:0 0 0 2px var(--k)}
+.sugs{flex:none;padding:8px 12px 0;background:#fff;border-top:1px solid var(--b);max-height:76px;overflow:auto}
+.eq{display:flex;gap:8px;margin:10px 0;align-items:flex-start}
+.eq canvas.av{flex:none;border-radius:50%;margin-top:2px}
+.eq .corpo{min-width:0;max-width:86%}
+.eq .quem{font-size:12px;margin-bottom:2px}
+.eq .bal{background:#fff;border-radius:4px 14px 14px 14px;padding:7px 11px;white-space:pre-wrap;box-shadow:0 1px 2px rgba(33,30,22,.06)}
+.eq.digitando .bal{color:var(--m);font-style:italic;background:#F6F3FF}
+.eq.eu{justify-content:flex-end}.eq.eu .bal{background:var(--y);border-radius:14px 4px 14px 14px;max-width:86%}
+.eq.sis{justify-content:center;font-size:11.5px;color:var(--m);text-align:center;background:#EFEFEA;border-radius:10px;padding:5px 10px}
+.eq.sis span{color:#9A9A94;margin-left:4px}
+
 /* currículo */
 #cvw{position:absolute;inset:0;background:rgba(33,30,22,.45);z-index:10;padding:18px;display:none}
 .cw{background:var(--l);border-radius:14px;height:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--sh)}
@@ -114,6 +132,9 @@ mark{background:#FFE878;padding:1px 3px;border-radius:3px}
 #login .logo{margin-bottom:18px}
 .aviso{font-size:11px;color:var(--m);margin-top:12px}
 
+@media (max-width:600px){
+  #topo{gap:8px;padding:0 10px}.logo span,#usuario>span:not(.selo){display:none}.logo h1{font-size:17px;white-space:nowrap}
+}
 @media (max-width:900px){
   #legenda{display:none}
   #painel.aberto{position:absolute;inset:0;width:100%;z-index:12}

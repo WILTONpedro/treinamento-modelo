@@ -144,6 +144,7 @@
   liga('h2', 'vD', 'vIn', 'v1', 'v2'); liga('v2', 'quadro0'); liga('v2', 'quadro1'); liga('v2', 'quadro2');
   // supervisor
   no('sD', 17.5, 8.15); no('sIn', 17.5, 7.0); no('atlas', 17.8, 4.15); liga('h3', 'sD', 'sIn', 'atlas');
+  no('sV', 18.9, 5.3); liga('sIn', 'sV'); // onde quem chega (ou vem pedir ajuda) conversa com o Atlas
   // alimentação
   no('fD', 25.5, 8.15); no('fIn', 25.5, 7.0); no('f1', 22.2, 6.6); no('f2', 25.8, 5.7); no('f3', 29.3, 6.4); no('f4', 29.3, 4.4);
   no('geladeira', 22.2, 1.95); no('comer0', 24.0, 5.55); no('comer1', 27.6, 5.55); no('comer2', 22.85, 4.4); no('comer3', 28.75, 4.4); no('comer4', 25.15, 4.4);
@@ -183,7 +184,7 @@
   ];
   const INFO_LOCAL = Object.fromEntries(LOCAIS_DESCANSO.map(([n, txt, f, s]) => [n, { txt, f, sentado: !!s }]));
   ESTACOES.forEach((_, i) => (INFO_LOCAL['mesa' + i] = { f: 'n', sentado: true }));
-  INFO_LOCAL.recepcao = { f: 'e', sentado: true }; INFO_LOCAL.atlas = { f: 'n', sentado: true };
+  INFO_LOCAL.recepcao = { f: 'e', sentado: true }; INFO_LOCAL.atlas = { f: 'n', sentado: true }; INFO_LOCAL.sV = { f: 'w' };
   for (let i = 0; i < 3; i++) { INFO_LOCAL['balcao' + i] = { f: 'w' }; INFO_LOCAL['quadro' + i] = { f: 'n' }; }
 
   function rota(de, para) {

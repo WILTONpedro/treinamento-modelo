@@ -91,8 +91,9 @@ def pensar(agente_id: int, texto: str, **dados):
 
 def _dizer(db, ag: Agente, texto: str, para: Agente | None = None, **dados):
     """Fala de um agente (para um colega ou para o time) — vira balão no escritório e mensagem no canal da equipe."""
-    if ag and texto:
-        eventos.registrar(db, "conversa", texto[:500], ag.id, destino_id=para.id if para else None, **dados)
+    if ag and texto:  # os nomes ficam no evento: o feed continua legível depois de uma dispensa
+        eventos.registrar(db, "conversa", texto[:500], ag.id, destino_id=para.id if para else None,
+                          de=ag.nome, para=para.nome if para else None, **dados)
 
 
 def _abrir_pendencia(db, tipo, descricao, agente=None, **refs) -> Pendencia | None:
@@ -312,12 +313,8 @@ def executar_distribuicao(tarefa_id: int):
                                   sup.id, vaga_id=vaga.id, curriculo_id=cur.id, candidato_id=cur.candidato_id)
                 _encaminhar(db, cur, vaga, origem="atlas")
             else:
-                desc = f"o currículo de {nome} (#{cur.id}) não se encaixou em nenhuma pasta; defina a área"
-                if sugestao and sugestao.get("vaga_id"):
-                    v = db.get(Vaga, sugestao["vaga_id"])
-                    if v:
-                        desc += f" (palpite do Atlas, com pouca confiança: “{v.titulo}”)"
-                _abrir_pendencia(db, "TRIAGEM_MANUAL", desc, sup, curriculo_id=cur.id)
+                _abrir_pendencia(db, "TRIAGEM_MANUAL", f"o currículo de {nome} (#{cur.id}) não se encaixou em nenhuma "
+                                 "pasta nem em uma vaga aberta; defina a área", sup, curriculo_id=cur.id)
         else:
             vagas = [v for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all() if cur.setor in (v.setores or [])]
             novas = sum(_encaminhar(db, cur, v) for v in vagas)

@@ -299,7 +299,7 @@ def _analisar_demo(agente, vaga, texto, especialidades, setor, colegas, evitar, 
             achado = _tem_termos(txt, termos_da_area(col.get("setores")))
             if achado:
                 pedir, esp_ajuda = True, col["especialidade_codigo"]
-                pergunta = (f"vi bastante coisa de {col['especialidade'].lower()} no currículo de {rotulo}. "
+                pergunta = (f"o currículo de {rotulo} tem bastante coisa de {col['especialidade'].lower()}. "
                             "Combina com alguma vaga sua?")
                 break
 
@@ -371,7 +371,9 @@ def _resumo_preliminar(p: dict) -> dict:
 def _consultar_demo(colega, vaga, texto, preliminar, rotulo):
     linhas = _linhas(texto)
     termos = termos_da_area(colega.get("setores"))
-    achadas = [l for l in linhas if _tem_termos(_sem_acento(l), termos)][:3]
+    # prefere linhas de experiência (com período) ao cabeçalho do currículo
+    achadas = sorted((l for l in linhas[1:] if _tem_termos(_sem_acento(l), termos)),
+                     key=lambda l: (not re.search(r"(19|20)\d{2}", l), "·" in l))[:3]
     # algum requisito que o colega não comprovou aparece nas linhas da minha área?
     reforco = None
     pendentes = [x.split(":")[0].strip() for x in preliminar.get("a_verificar", [])]
