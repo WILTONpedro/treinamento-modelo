@@ -296,3 +296,15 @@ def test_chave_invalida_e_modelo_indisponivel_tem_mensagens_claras():
     assert "GEMINI_API_KEY" in uso_ia.classificar(chave)
     assert "GEMINI_MODELO" in uso_ia.classificar(modelo)
     assert uso_ia.classificar(errors.ServerError(503, {"error": {"code": 503, "message": "overloaded"}})) is None
+    # plano gratuito: o limite por minuto cita "billing" na mensagem, mas só pede para esperar um pouco
+    por_minuto = errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message":
+                                    "You exceeded your current quota, please check your plan and billing details. "
+                                    "Quota exceeded for metric: generate_content_free_tier_requests, limit: 15. "
+                                    "Please retry in 4s."}})
+    assert uso_ia.classificar(por_minuto) is None
+    por_dia = errors.ClientError(429, {"error": {"code": 429, "message": "Quota exceeded: requests per day"}})
+    assert "cota diária" in uso_ia.classificar(por_dia)
+    sem_credito = errors.ClientError(402, {"error": {"code": 402, "message": "Your prepayment credits are depleted."}})
+    assert "sem créditos" in uso_ia.classificar(sem_credito)
+    recusada = errors.ClientError(403, {"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "denied"}})
+    assert "recusada" in uso_ia.classificar(recusada)

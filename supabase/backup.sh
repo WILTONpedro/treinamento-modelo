@@ -18,6 +18,7 @@ if [ -z "${DATABASE_URL:-}" ]; then  # sem a variável, usa a do sistema (.env d
 fi
 : "${DATABASE_URL:?defina DATABASE_URL (a mesma do sistema) ou rode a partir do projeto com o .env preenchido}"
 URL="${DATABASE_URL/postgresql+psycopg:/postgresql:}"
+URL="${URL/.pooler.supabase.com:6543\//.pooler.supabase.com:5432/}"  # o pg_dump precisa do pooler em modo sessão
 PASTA="${1:-backups}"
 GUARDAR_DIAS="${GUARDAR_DIAS:-30}"
 IMAGEM="${PG_IMAGEM:-postgres:17-alpine}"
@@ -28,12 +29,27 @@ NOME="hub-$(date +%Y-%m-%d_%H%M).dump"
 umask 077
 
 versao=$(pg_dump --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
-if [ "${versao:-0}" -ge 17 ] && [ -z "${PG_IMAGEM:-}" ]; then
-  pg_dump "$URL" --schema=hub --format=custom --no-owner --file="$PASTA/$NOME"
-else
-  docker run --rm --network host -e PGURL="$URL" -v "$(cd "$PASTA" && pwd)":/saida "$IMAGEM" \
-    sh -c "pg_dump \"\$PGURL\" --schema=hub --format=custom --no-owner --file=/saida/$NOME"
+copiar() {  # $1 = url do banco
+  if [ "${versao:-0}" -ge 17 ] && [ -z "${PG_IMAGEM:-}" ]; then
+    pg_dump "$1" --schema=hub --format=custom --no-owner --file="$PASTA/$NOME"
+  else
+    docker run --rm --network host -e PGURL="$1" -v "$(cd "$PASTA" && pwd)":/saida "$IMAGEM" \
+      sh -c "pg_dump \"\$PGURL\" --schema=hub --format=custom --no-owner --file=/saida/$NOME"
+  fi
+}
+if ! copiar "$URL" 2>"$PASTA/.erro"; then
+  # o pooler do Supabase fica em aws-0-… ou aws-1-…, conforme o projeto: se este não conhece o projeto, tenta o outro
+  if grep -qi "tenant or user not found" "$PASTA/.erro" && [[ "$URL" =~ @aws-([01])- ]]; then
+    n="${BASH_REMATCH[1]}"
+    URL="${URL/@aws-$n-/@aws-$((1 - n))-}"
+    copiar "$URL"
+  else
+    cat "$PASTA/.erro" >&2
+    rm -f "$PASTA/.erro"
+    exit 1
+  fi
 fi
+rm -f "$PASTA/.erro"
 chmod 600 "$PASTA/$NOME"
 
 # confere se a cópia abre e tem as tabelas principais antes de considerar o backup feito

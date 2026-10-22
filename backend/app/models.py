@@ -319,3 +319,12 @@ class Configuracao(Base):
     __tablename__ = "configuracoes"
     chave: Mapped[str] = mapped_column(String(60), primary_key=True)
     valor: Mapped[str] = mapped_column(Text)
+
+
+class Comando(Base):
+    """Vários computadores no mesmo banco: quem comanda a equipe de agentes agora. Vale até `ate`; quem comanda
+    renova a cada poucos segundos e, se parar (programa fechado, sem rede), outro computador assume."""
+    __tablename__ = "comando"
+    nome: Mapped[str] = mapped_column(String(40), primary_key=True)
+    dono: Mapped[str] = mapped_column(String(200))
+    ate: Mapped[datetime] = mapped_column(DateTime)

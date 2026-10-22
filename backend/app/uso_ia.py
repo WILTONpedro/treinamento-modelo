@@ -130,16 +130,18 @@ def classificar(erro) -> str | None:
     """Mensagem para o recrutador quando o erro do provedor exige ação humana (e não só uma nova tentativa)."""
     codigo = getattr(erro, "code", None)
     texto = str(erro).lower()
-    if codigo == 402 or "prepayment" in texto or "credits are depleted" in texto or "billing" in texto:
+    if codigo == 429:  # limite de uso; a mensagem cita "billing" e "plan", mas não é falta de crédito
+        if "per day" in texto or "perday" in texto or "daily" in texto:
+            return "a cota diária do Gemini acabou: o trabalho recomeça quando a cota renovar"
+        return None  # limite por minuto (comum no plano gratuito): tentar de novo em instantes resolve
+    if codigo == 402 or "prepayment" in texto or "credits are depleted" in texto:
         return ("a conta do Gemini está sem créditos: recarregue em https://ai.studio/projects "
                 "(o trabalho recomeça sozinho depois)")
-    if codigo in (401, 403) or "api key not valid" in texto or "api_key_invalid" in texto or "permission" in texto:
+    if codigo in (401, 403) or "api key not valid" in texto or "api_key_invalid" in texto:
         return "a chave do Gemini foi recusada (inválida ou sem permissão): confira GEMINI_API_KEY"
     if codigo == 404 or "no longer available" in texto or "is not found" in texto:
         return (f"o modelo de IA configurado não está disponível para esta conta: ajuste GEMINI_MODELO "
                 f"(hoje: {config.GEMINI_MODELO_AGENTES})")
-    if codigo == 429 and ("per day" in texto or "perday" in texto or "daily" in texto):
-        return "a cota diária do Gemini acabou: o trabalho recomeça quando a cota renovar"
     return None
 
 
@@ -152,7 +154,7 @@ def falha_provedor(erro) -> bool:
         _estado["falhas"] += 1
         minutos = min(60, 5 * 2 ** (_estado["falhas"] - 1))
         _estado.update(ate=time.monotonic() + minutos * 60, motivo=motivo, teve_sucesso=False)
-    log.warning("IA pausada por %d min: %s", minutos, motivo)
+    log.warning("IA pausada por %d min: %s (resposta do Google: %s)", minutos, motivo, " ".join(str(erro).split())[:300])
     return True
 
 

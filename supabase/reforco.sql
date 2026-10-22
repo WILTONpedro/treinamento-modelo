@@ -105,6 +105,9 @@ ALTER TABLE "hub"."arquivos_curriculo" ENABLE ROW LEVEL SECURITY;
 -- RLS em candidatos
 ALTER TABLE "hub"."candidatos" ENABLE ROW LEVEL SECURITY;
 
+-- RLS em comando
+ALTER TABLE "hub"."comando" ENABLE ROW LEVEL SECURITY;
+
 -- RLS em configuracoes
 ALTER TABLE "hub"."configuracoes" ENABLE ROW LEVEL SECURITY;
 

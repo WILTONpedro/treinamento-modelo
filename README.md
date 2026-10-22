@@ -41,7 +41,7 @@ backend/
   app/arquivos.py     arquivos dos currículos, cifrados, no disco ou no próprio banco
   app/preparar.py     gera o .env de produção com segredos fortes (--local: computadores do RH)
   app/local.py        abre o escritório no computador do recrutador (o atalho chama isto)
-  app/lideranca.py    vários computadores no mesmo banco: só um comanda a equipe por vez
+  app/lideranca.py    vários computadores no mesmo banco: só um comanda a equipe por vez (vez com prazo)
   app/models.py       modelo de dados (com as regras de validação de cada tabela)
   app/banco_pg.py     PostgreSQL/Supabase: proteção contra exclusão, busca nos currículos, visões
   app/seguranca.py    login, papéis, senhas, auditoria, chave dos arquivos
@@ -167,7 +167,12 @@ mesmo banco no Supabase. Não há site na internet nem tela de login: o atalho a
   (ex.: `maria.souza@rh-02.local`). A auditoria registra quem fez cada coisa, e o administrador pode desativar um
   computador em *⚙ Administração → Usuários*. O nome exibido pode ser trocado com `RECRUTADOR_NOME` no `.env` dele.
 - **Um escritório só:** todos veem a mesma equipe e os mesmos currículos ao vivo. Só uma cópia por vez roda a equipe
-  de agentes (a fila de IA, o Atlas, o e-mail e a retenção); se aquele computador desligar, outro assume em segundos.
+  de agentes (a fila de IA, o Atlas, o e-mail e a retenção); se o programa dele fechar, outro assume na hora, e se o
+  computador desligar ou perder a rede, em até meio minuto. Nada fica pela metade: o que estava em andamento volta
+  para a fila.
+- **Muitos computadores no plano gratuito do Supabase:** o programa usa sozinho o pooler em modo transação (porta
+  6543), que atende centenas de conexões (o modo sessão, porta 5432, aceita só 15), e descobre sozinho se o endereço
+  do pooler do projeto é `aws-0-…` ou `aws-1-…`.
   O programa liga junto com o Windows e continua trabalhando com a janela fechada.
 - **Currículos por e-mail sem nada aberto na internet:** o programa busca os currículos numa caixa de e-mail (IMAP).
 

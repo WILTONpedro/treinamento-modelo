@@ -7,11 +7,12 @@ import asyncio
 import json
 import logging
 import threading
+from collections import OrderedDict
 
-from sqlalchemy import event as sa_event, select, text
+from sqlalchemy import event as sa_event, select
 from sqlalchemy.orm import Session
 
-from .db import Sessao, engine
+from .db import Sessao
 from .models import Evento, iso
 
 log = logging.getLogger("hub.eventos")
@@ -42,73 +43,58 @@ def registrar(db: Session, tipo: str, mensagem: str, agente_id: int | None = Non
 
 
 def transmitir_pendentes(db: Session):
-    pend = db.info.pop("eventos_pendentes", [])
-    if not pend:
-        return
-    if _escuta["ok"]:  # avisa todos os computadores (inclusive este) pelo banco; cada um repassa às suas telas
-        try:
-            with engine.begin() as con:
-                con.execute(text("SELECT pg_notify(:c, :ids)"), {"c": CANAL, "ids": ",".join(str(p["id"]) for p in pend)})
-            return
-        except Exception as e:  # sem o aviso, ao menos as telas deste computador recebem
-            log.warning("Aviso de eventos pelo banco falhou: %s", str(e).splitlines()[0][:160])
-    for payload in pend:
-        _transmitir(payload)
+    for payload in db.info.pop("eventos_pendentes", []):
+        if _primeira_vez(payload["id"]):
+            _transmitir(payload)
 
 
 # --------------------------------------------------------------------------- vários computadores (PostgreSQL)
-CANAL = "hub_eventos"
-_escuta = {"ok": False}  # sem a escuta no ar, cada computador mostra ao menos os próprios eventos
+# Cada computador acompanha a tabela de eventos e leva às suas telas o que os outros gravaram. Por consulta
+# (e não LISTEN/NOTIFY): funciona no pooler do Supabase em modo transação, que atende muitos computadores.
+# Transações paralelas podem gravar eventos fora da ordem dos números; a janela revê os últimos números, então
+# nada se perde nem aparece duas vezes.
+JANELA = 200
+_vistos: OrderedDict[int, None] = OrderedDict()
+_trava_vistos = threading.Lock()
 
 
-def iniciar_escuta() -> threading.Event:
-    """Liga a escuta numa thread própria; devolve o sinal que a desliga ao encerrar o programa."""
+def _primeira_vez(evento_id: int) -> bool:
+    with _trava_vistos:
+        if evento_id in _vistos:
+            return False
+        _vistos[evento_id] = None
+        if len(_vistos) > 20 * JANELA:
+            _vistos.popitem(last=False)
+        return True
+
+
+def acompanhar_banco(intervalo: float = 1.0) -> threading.Event:
+    """Liga o acompanhamento numa thread própria; devolve o sinal que o desliga ao encerrar o programa."""
     parar = threading.Event()
-    threading.Thread(target=escutar_banco, args=(parar,), name="escuta-eventos", daemon=True).start()
+    threading.Thread(target=_acompanhar, args=(parar, intervalo), name="eventos-do-banco", daemon=True).start()
     return parar
 
 
-def escutar_banco(_parar: threading.Event):
-    """Recebe os avisos de eventos de todos os computadores ligados ao mesmo banco e repassa às telas deste
-    (com uma conexão só para isso; reconecta sozinha se a rede cair)."""
-    while not _parar.is_set():
-        bruta = None
+def _acompanhar(parar: threading.Event, intervalo: float):
+    ultimo = None  # maior número já visto; começa no presente (o histórico não é reenviado)
+    while not parar.wait(intervalo):
         try:
-            bruta = engine.raw_connection()
-            con = bruta.driver_connection
-            bruta.detach()  # conexão exclusiva da escuta, fora do pool
-            con.autocommit = True
-            con.execute(f"LISTEN {CANAL}")
-            _escuta["ok"] = True
-            while not _parar.is_set():
-                ids = []
-                for aviso in con.notifies(timeout=15):
-                    ids += [int(i) for i in aviso.payload.split(",") if i.isdigit()]
-                    if len(ids) > 200:
-                        break
-                if ids:
-                    _repassar(ids)
-                else:
-                    con.execute("SELECT 1")  # mantém a conexão viva e percebe se ela caiu
+            with Sessao() as s:
+                if ultimo is None:
+                    recentes = s.scalars(select(Evento.id).order_by(Evento.id.desc()).limit(JANELA)).all()
+                    for i in recentes:
+                        _primeira_vez(i)
+                    ultimo = max(recentes, default=0)
+                    continue
+                ids = s.scalars(select(Evento.id).where(Evento.id > ultimo - JANELA).order_by(Evento.id)).all()
+                novos = [i for i in ids if _primeira_vez(i)]
+                ultimo = max([ultimo, *ids])
+                if novos and _ouvintes:
+                    for ev in s.scalars(select(Evento).where(Evento.id.in_(novos)).order_by(Evento.id)):
+                        _transmitir(serializar(ev))
         except Exception as e:
-            _escuta["ok"] = False
-            if not _parar.is_set():
-                log.warning("Escuta de eventos interrompida (%s); tentando de novo", str(e).splitlines()[0][:120])
-                _parar.wait(5)
-        finally:
-            if bruta is not None:
-                try:
-                    bruta.close()
-                except Exception:
-                    pass
-
-
-def _repassar(ids: list[int]):
-    if not _ouvintes:
-        return
-    with Sessao() as s:
-        for ev in s.scalars(select(Evento).where(Evento.id.in_(ids)).order_by(Evento.id)):
-            _transmitir(serializar(ev))
+            log.warning("Não consegui buscar os eventos dos outros computadores: %s", str(e).splitlines()[0][:160])
+            parar.wait(5)
 
 
 def descartar_pendentes(db: Session):

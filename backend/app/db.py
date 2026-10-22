@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import contextmanager
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
@@ -20,6 +21,41 @@ engine = create_engine(
     pool_pre_ping=True,
     **({} if _sqlite else {"pool_size": 5, "max_overflow": 5, "pool_recycle": 300}),
 )
+
+# O pooler do Supabase fica em aws-0-<região> ou aws-1-<região>, conforme o projeto, e o painel é o único lugar
+# que diz qual. Se o endereço configurado não conhecer o projeto ("Tenant or user not found"), tenta o outro e
+# passa a usá-lo: a configuração funciona de primeira nos dois casos.
+_POOLER = re.compile(r"^aws-(\d+)-([a-z0-9-]+\.pooler\.supabase\.com)$")
+_pooler_certo: dict[str, str] = {}
+
+
+def _outro_pooler(host: str) -> str | None:
+    m = _POOLER.match(host or "")
+    return f"aws-{1 if m.group(1) == '0' else 0}-{m.group(2)}" if m else None
+
+
+@event.listens_for(engine, "do_connect")
+def _conectar_no_pooler_certo(dialect, conn_rec, cargs, cparams):
+    host = cparams.get("host") or ""
+    if not _outro_pooler(host):
+        return None  # conexão normal
+    tentativas = [_pooler_certo.get(host, host)]
+    tentativas.append(_outro_pooler(tentativas[0]))
+    erro = None
+    for h in tentativas:
+        try:
+            con = dialect.loaded_dbapi.connect(*cargs, **{**cparams, "host": h})
+        except Exception as e:
+            if "tenant or user not found" not in str(e).lower():
+                raise
+            erro = e
+            continue
+        if h != host and _pooler_certo.get(host) != h:
+            log.warning("O pooler deste projeto é %s (não %s): ajuste a DATABASE_URL quando puder", h, host)
+        _pooler_certo[host] = h
+        return con
+    raise erro
+
 
 if config.DB_SCHEMA and not _sqlite:
     @event.listens_for(engine, "connect")
@@ -57,7 +93,9 @@ def migrar(eng=None):
             novas = [c for c in tabela.columns if c.name not in existentes]
             for col in novas:
                 tipo = col.type.compile(dialect=eng.dialect)
-                con.execute(text(f"ALTER TABLE {tabela.name} ADD COLUMN {col.name} {tipo}"))
+                # IF NOT EXISTS: dois computadores atualizados ao mesmo tempo não brigam pela mesma coluna
+                se_faltar = "IF NOT EXISTS " if eng.dialect.name == "postgresql" else ""
+                con.execute(text(f"ALTER TABLE {tabela.name} ADD COLUMN {se_faltar}{col.name} {tipo}"))
                 log.info("Migração: coluna %s.%s criada", tabela.name, col.name)
     for tabela in Base.metadata.sorted_tables:  # índices novos também chegam a bancos antigos
         for indice in tabela.indexes:

@@ -20,7 +20,7 @@ from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
                      SolicitacaoTitular, Usuario, Vaga, agora, iso)
 from .arquivos import ler_arquivo
-from .lideranca import Lideranca, exclusivo
+from .lideranca import Lideranca, esperar_vez
 from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferir_senha, criar_token, exigir, gerar_hash,
                         limitar_login, pedido_local, senha_temporaria, usuario_atual, validar_senha)
 
@@ -65,10 +65,9 @@ async def supervisao():
         await asyncio.sleep(max(0.2, config.SUPERVISAO_SEGUNDOS))
 
 
-async def comandar():
+async def comandar(vez: Lideranca):
     """A equipe de agentes (fila, supervisão do Atlas, e-mail e retenção) roda só na cópia que tem o comando
     do escritório; com vários computadores no mesmo banco, as outras assumem se ela sair (veja lideranca.py)."""
-    vez = Lideranca(engine)
     equipe: list[asyncio.Task] = []
     avisado = False
     try:
@@ -80,6 +79,7 @@ async def comandar():
                 await asyncio.to_thread(S.recuperar_fila)  # o que a cópia anterior deixou pela metade volta à fila
                 equipe = [asyncio.create_task(trabalhador()), asyncio.create_task(rotinas()),
                           asyncio.create_task(supervisao())]
+                avisado = False
             elif not lider:
                 for t in equipe:
                     t.cancel()
@@ -91,7 +91,6 @@ async def comandar():
     finally:
         for t in equipe:
             t.cancel()
-        vez.soltar()
 
 
 def _lotes_demo() -> list[list[Path]]:
@@ -167,29 +166,33 @@ def verificar_producao():
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
     verificar_producao()
-    with exclusivo(engine, "inicio"):  # vários computadores abrindo juntos: um prepara o banco, os outros esperam
-        Base.metadata.create_all(engine)
-        migrar()
-        with sessao() as db:
-            S.semear_basico(db)
-            if not db.scalar(select(func.count()).select_from(Usuario)) and not config.SEED_DEMO and not config.LOCAL:
-                log.warning("Nenhum usuário cadastrado: defina ADMIN_EMAIL e ADMIN_SENHA para criar o primeiro administrador.")
-            if config.SEED_DEMO:
-                if not config.ADMIN_SENHA and not db.scalar(select(Usuario)):
-                    db.add(Usuario(nome="Recrutador Demo", email="admin@demo.local", senha_hash=gerar_hash("demo1234"), papel="admin"))
-                    log.warning("SEED_DEMO: usuário de demonstração admin@demo.local / demo1234 — NÃO use em produção")
-                _semear_demo(db)
+    with engine.begin() as con:  # vários computadores abrindo juntos: um prepara o banco, os outros esperam a vez
+        esperar_vez(con, "tabelas")
+        Base.metadata.create_all(con)
+    migrar()
+    with sessao() as db:
+        esperar_vez(db, "equipe-inicial")  # a equipe inicial nasce uma vez só
+        S.semear_basico(db)
+        if not db.scalar(select(func.count()).select_from(Usuario)) and not config.SEED_DEMO and not config.LOCAL:
+            log.warning("Nenhum usuário cadastrado: defina ADMIN_EMAIL e ADMIN_SENHA para criar o primeiro administrador.")
+        if config.SEED_DEMO:
+            if not config.ADMIN_SENHA and not db.scalar(select(Usuario)):
+                db.add(Usuario(nome="Recrutador Demo", email="admin@demo.local", senha_hash=gerar_hash("demo1234"), papel="admin"))
+                log.warning("SEED_DEMO: usuário de demonstração admin@demo.local / demo1234 — NÃO use em produção")
+            _semear_demo(db)
     eventos.configurar_loop(asyncio.get_running_loop())
     if not config.TRIAGEM_API_KEY and not config.LOCAL:
         log.warning("TRIAGEM_API_KEY não definida: POST /triagem aceita chamadas sem chave. Defina em produção.")
     log.info("IA em modo %s%s", config.IA_MODO, " · acesso local (só este computador, sem login)" if config.LOCAL else "")
-    comando = asyncio.create_task(comandar())
-    # PostgreSQL: os eventos de todos os computadores ligados ao banco chegam a este escritório
-    escuta = eventos.iniciar_escuta() if engine.dialect.name == "postgresql" else None
+    vez = Lideranca(engine)
+    comando = asyncio.create_task(comandar(vez))
+    # PostgreSQL: os eventos gravados por qualquer computador ligado ao banco chegam a este escritório
+    acompanhamento = eventos.acompanhar_banco() if engine.dialect.name == "postgresql" else None
     yield
     comando.cancel()
-    if escuta:
-        escuta.set()
+    if acompanhamento:
+        acompanhamento.set()
+    await asyncio.to_thread(vez.soltar)  # fechando: outro computador assume a equipe na hora
 
 
 app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=ciclo_de_vida, docs_url="/api/docs", redoc_url=None)

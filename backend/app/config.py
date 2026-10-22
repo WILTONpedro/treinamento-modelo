@@ -124,6 +124,14 @@ ACESSO_INVALIDO = ACESSO not in ("rede", "local")
 PORTA_LOCAL = _int("PORTA_LOCAL", 8765)
 RECRUTADOR_NOME = os.environ.get("RECRUTADOR_NOME", "").strip()  # vazio: o nome de usuário do Windows
 PAPEL_LOCAL = os.environ.get("PAPEL_LOCAL", "admin").strip().lower()
+# Vários computadores no Supabase: o pooler em modo transação (porta 6543) atende centenas de conexões; o modo
+# sessão (5432) aceita só o "Pool Size" do projeto (15 no plano gratuito), pouco para vários recrutadores.
+def _modo_transacao(url: str) -> str:
+    return url.replace(".pooler.supabase.com:5432/", ".pooler.supabase.com:6543/")
+
+
+if LOCAL:
+    DATABASE_URL = _modo_transacao(DATABASE_URL)
 
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@hub.local")
 ADMIN_SENHA = os.environ.get("ADMIN_SENHA", "")
