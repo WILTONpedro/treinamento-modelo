@@ -94,6 +94,25 @@ def test_preparar_com_supabase(tmp_path):
     assert config._url_banco("postgres://u:p@h:5432/db?x=1") == "postgresql+psycopg://u:p@h:5432/db?x=1"
 
 
+def test_preparar_para_os_computadores_do_rh(tmp_path, monkeypatch):
+    destino, url = tmp_path / "escritorio.env", "postgresql://hub_app.ref:senha@aws-0-sa-east-1.pooler.supabase.com:5432/postgres"
+    assert preparar.main(["--local", "--supabase", url, "--gemini-key", "k", "--arquivo", str(destino)]) == 0
+    env = dict(l.split("=", 1) for l in destino.read_text().splitlines() if l and not l.startswith("#") and "=" in l)
+    assert env["ACESSO"] == "local" and env["ARMAZENAMENTO"] == "banco" and env["DATABASE_URL"] == url
+    assert "ADMIN_SENHA" not in env and "TRIAGEM_API_KEY" not in env and "COOKIE_SECURE" not in env  # sem login
+    Fernet(env["CHAVE_ARQUIVOS"].encode())
+    assert preparar.main(["--local", "--docker", "--arquivo", str(tmp_path / "x")]) == 1
+    # a checagem de produção aceita o modo local sem HTTPS, mas exige os arquivos no banco compartilhado
+    for k, v in {"LOCAL": True, "COOKIE_SECURE": False, "TRIAGEM_API_KEY": "", "IA_MODO": "gemini",
+                 "GEMINI_API_KEY": "k", "CHAVE_ARQUIVOS": env["CHAVE_ARQUIVOS"], "SEED_DEMO": False,
+                 "DATABASE_URL": config._url_banco(url), "ARMAZENAMENTO": "banco"}.items():
+        monkeypatch.setattr(config, k, v)
+    monkeypatch.setenv("SEGREDO_JWT", env["SEGREDO_JWT"])
+    assert config.problemas_producao() == []
+    monkeypatch.setattr(config, "ARMAZENAMENTO", "disco")
+    assert any("ARMAZENAMENTO" in p for p in config.problemas_producao())
+
+
 def test_arquivos_cifrados_no_banco(cli, monkeypatch):
     from app import arquivos
     from app.models import ArquivoCurriculo, Curriculo

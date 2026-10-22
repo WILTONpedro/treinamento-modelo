@@ -50,11 +50,32 @@ def montar(a: argparse.Namespace) -> tuple[str, dict]:
         "# --- Segurança",
         f"SEGREDO_JWT={segredos['SEGREDO_JWT']}",
         f"CHAVE_ARQUIVOS={segredos['CHAVE_ARQUIVOS']}",
-        f"TRIAGEM_API_KEY={segredos['TRIAGEM_API_KEY']}",
-        "COOKIE_SECURE=true",
-        f"ADMIN_EMAIL={a.admin_email}",
-        f"ADMIN_SENHA={segredos['ADMIN_SENHA']}",
-        "ADMIN_NOME=Administrador RH",
+    ]
+    if a.local:
+        linhas += [
+            "# Cada computador roda a própria cópia, aberta só para ele e sem login (o recrutador é o usuário",
+            "# do Windows). Use ESTE MESMO arquivo em todos os computadores: a CHAVE_ARQUIVOS precisa ser igual.",
+            "ACESSO=local",
+            "PAPEL_LOCAL=admin",
+            "",
+            "# --- Currículos chegando por e-mail (o programa busca na caixa; nada fica aberto na internet)",
+            "IMAP_ATIVO=false",
+            "IMAP_HOST=",
+            "IMAP_USUARIO=",
+            "IMAP_SENHA=",
+            "IMAP_PASTA=INBOX",
+        ]
+        segredos.pop("TRIAGEM_API_KEY")
+        segredos.pop("ADMIN_SENHA")
+    else:
+        linhas += [
+            f"TRIAGEM_API_KEY={segredos['TRIAGEM_API_KEY']}",
+            "COOKIE_SECURE=true",
+            f"ADMIN_EMAIL={a.admin_email}",
+            f"ADMIN_SENHA={segredos['ADMIN_SENHA']}",
+            "ADMIN_NOME=Administrador RH",
+        ]
+    linhas += [
         "",
         "# --- LGPD",
         "RETENCAO_DIAS=180",
@@ -80,6 +101,8 @@ def montar(a: argparse.Namespace) -> tuple[str, dict]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Gera o .env de produção com segredos fortes.")
     ap.add_argument("--docker", action="store_true", help="escreve ../.env para o docker-compose (PostgreSQL + HTTPS)")
+    ap.add_argument("--local", action="store_true",
+                    help="computadores Windows do RH, sem login: escreve ../escritorio.env para o instalador")
     ap.add_argument("--dominio", default="localhost", help="domínio público, ex.: rh.suaempresa.com.br (só com --docker)")
     ap.add_argument("--empresa", default="", help="nome da empresa (aparece nos prompts e na LGPD)")
     ap.add_argument("--nome", default="", help="nome do sistema exibido na tela (vazio: nenhum)")
@@ -90,7 +113,11 @@ def main(argv=None) -> int:
     ap.add_argument("--forcar", action="store_true", help="sobrescreve um arquivo existente")
     a = ap.parse_args(argv)
 
-    destino = Path(a.arquivo) if a.arquivo else (BACKEND.parent / ".env" if a.docker else BACKEND / ".env")
+    if a.local and a.docker:
+        print("Use --local (computadores do RH) ou --docker (servidor), não os dois.", file=sys.stderr)
+        return 1
+    destino = Path(a.arquivo) if a.arquivo else (BACKEND.parent / "escritorio.env" if a.local
+                                                 else BACKEND.parent / ".env" if a.docker else BACKEND / ".env")
     if destino.exists() and not a.forcar:
         print(f"{destino} já existe; nada foi alterado (use --forcar para gerar outro).", file=sys.stderr)
         return 1
@@ -98,8 +125,14 @@ def main(argv=None) -> int:
     destino.write_text(conteudo, encoding="utf-8")
     os.chmod(destino, 0o600)
     print(f"Configuração gravada em {destino} (permissão 600).")
-    print(f"  Administrador: {a.admin_email}  senha inicial: {segredos['ADMIN_SENHA']}  (troca obrigatória no 1º acesso)")
-    print(f"  Chave da API de triagem (cabeçalho X-API-Key do fluxo de e-mail): {segredos['TRIAGEM_API_KEY']}")
+    if a.local:
+        print("  Copie este arquivo, junto com a pasta do projeto, para cada computador do RH e rode windows\\instalar.bat.")
+        print("  Guarde uma cópia num cofre de senhas: sem a CHAVE_ARQUIVOS os currículos não podem ser lidos.")
+        if not a.supabase:
+            print("  Sem --supabase o banco fica só neste computador (SQLite): para vários computadores, use o Supabase.")
+    else:
+        print(f"  Administrador: {a.admin_email}  senha inicial: {segredos['ADMIN_SENHA']}  (troca obrigatória no 1º acesso)")
+        print(f"  Chave da API de triagem (cabeçalho X-API-Key do fluxo de e-mail): {segredos['TRIAGEM_API_KEY']}")
     if not a.gemini_key:
         print("  Falta GEMINI_API_KEY: preencha no arquivo antes de subir.")
     return 0

@@ -113,11 +113,13 @@
     $('#usuario').innerHTML = `<span class="selo pausa oculto" id="selo-pausa" title="">IA pausada</span>
       <span class="selo ${demo ? 'demo' : 'ia'}" title="${demo ? 'Análises por regras locais, sem enviar dados a serviços externos' : 'Análises feitas pelo Gemini'}">${demo ? 'Modo demonstração' : 'IA: Gemini'}</span>
       <button class="icone" id="sino" title="Atividade recente" aria-label="Atividade recente">${ICONE.sino}<span class="cont oculto" id="sino-cont"></span></button>
-      <span class="quem">${esc(EU.nome)}<small>${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>
+      <span class="quem">${esc(EU.nome)}<small>${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>` + (MARCA.local ? '' : `
       <button class="icone" id="trocar-senha" title="Trocar senha" aria-label="Trocar senha">${ICONE.chave}</button>
-      <button class="icone" id="sair" title="Sair" aria-label="Sair">${ICONE.sair}</button>`;
-    $('#sair').onclick = async () => { await api('POST', '/auth/sair'); location.reload(); };
-    $('#trocar-senha').onclick = () => modalSenha(false);
+      <button class="icone" id="sair" title="Sair" aria-label="Sair">${ICONE.sair}</button>`);
+    if (!MARCA.local) {  // no computador do recrutador (ACESSO=local) não há login, senha nem saída
+      $('#sair').onclick = async () => { await api('POST', '/auth/sair'); location.reload(); };
+      $('#trocar-senha').onclick = () => modalSenha(false);
+    }
     $('#sino').onclick = e => { e.stopPropagation(); alternarAtividade(); };
     atualizarSelos();
   }

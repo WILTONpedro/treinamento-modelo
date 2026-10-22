@@ -76,7 +76,68 @@ def limitar_login(ip: str):
     fila.append(agora_s)
 
 
+# --------------------------------------------------------------------------- acesso local (ACESSO=local)
+ENDERECOS_LOCAIS = {"127.0.0.1", "::1"}
+NOMES_LOCAIS = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def pedido_local(request: Request) -> bool:
+    """Veio deste mesmo computador e foi endereçado a ele (o Host confere: um site aberto no navegador não
+    consegue se passar pelo escritório apontando um domínio próprio para 127.0.0.1)."""
+    cliente = request.client.host if request.client else ""
+    host = (request.headers.get("host") or "").strip().lower()
+    host = host.split("]")[0] + "]" if host.startswith("[") else host.rsplit(":", 1)[0]  # sem a porta
+    return cliente in ENDERECOS_LOCAIS and host in NOMES_LOCAIS
+
+
+def identidade_local() -> tuple[str, str]:
+    """(login, computador) de quem abriu o programa: o servidor roda com o usuário do Windows."""
+    import getpass
+    import socket
+    try:
+        login = getpass.getuser()
+    except Exception:
+        login = "recrutador"
+    computador = os.environ.get("COMPUTERNAME") or socket.gethostname() or "computador"
+    return login.strip().lower() or "recrutador", computador.strip().lower()
+
+
+_id_local: int | None = None
+
+
+def usuario_local(db: Session) -> Usuario:
+    """O cadastro do recrutador deste computador, criado no primeiro uso (as ações ficam na auditoria com o
+    nome dele). Não tem senha: só é usado por quem está sentado neste computador."""
+    global _id_local
+    u = db.get(Usuario, _id_local) if _id_local else None
+    if not u:
+        login, computador = identidade_local()
+        email = f"{login}@{computador}.local"
+        u = db.query(Usuario).filter(Usuario.email == email).first()
+        if not u:
+            u = Usuario(nome=config.RECRUTADOR_NOME or login.replace(".", " ").title(), email=email,
+                        senha_hash="!", papel=config.PAPEL_LOCAL)  # "!" nunca confere: não há login por senha
+            db.add(u)
+            db.flush()
+            log.info("Recrutador deste computador cadastrado: %s (%s)", u.nome, email)
+        _id_local = u.id
+    if config.RECRUTADOR_NOME and u.nome != config.RECRUTADOR_NOME:
+        u.nome = config.RECRUTADOR_NOME
+    if u.papel != config.PAPEL_LOCAL:
+        u.papel = config.PAPEL_LOCAL
+    return u
+
+
 def usuario_atual(request: Request, db: Session = Depends(obter_db)) -> Usuario:
+    if config.LOCAL:
+        if not pedido_local(request):
+            raise HTTPException(403, "Este escritório só abre no próprio computador.")
+        u = usuario_local(db)
+        if not u.ativo:
+            raise HTTPException(403, "O acesso deste computador foi desativado pelo administrador.")
+        if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("X-Hub") != "1":
+            raise HTTPException(403, "Requisição sem cabeçalho de origem.")
+        return u
     token = request.cookies.get(COOKIE)
     if not token:
         raise HTTPException(401, "Sessão expirada. Entre novamente.")

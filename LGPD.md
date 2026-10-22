@@ -52,6 +52,12 @@ Não substitui parecer jurídico.
   mudar o papel ou desativar alguém encerra as sessões abertas dessa pessoa.
 - Com `AMBIENTE=producao` o sistema não sobe sem HTTPS, segredos fortes e chave de criptografia dos arquivos.
 - Papéis (recrutador, supervisor, admin); endpoint de triagem protegido por chave.
+- Nos computadores do RH (`ACESSO=local`): sem login, mas o programa só responde ao próprio computador (nem a
+  rede da empresa acessa) e cada recrutador é identificado pela conta do Windows, que aparece na auditoria. O
+  controle de acesso passa a ser a conta do Windows: exija senha e bloqueio de tela, e não compartilhe contas.
+  O arquivo de configuração (com a chave dos currículos e a senha do banco) fica legível só para a conta
+  que instalou o programa. Um computador perdido ou de alguém que saiu é desativado em
+  *⚙ Administração → Usuários*; se a chave ou a senha do banco puderem ter vazado, troque-as.
 - Cabeçalhos de segurança (CSP, nosniff, frame-options).
 
 **Registro das operações (art. 37)**

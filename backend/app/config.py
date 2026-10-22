@@ -114,6 +114,17 @@ ORIGENS_CORS = [o.strip() for o in os.environ.get("ORIGENS_CORS", "").split(",")
 # Chave de criptografia dos arquivos de currículo (Fernet, base64 urlsafe 32 bytes)
 CHAVE_ARQUIVOS = os.environ.get("CHAVE_ARQUIVOS", "")
 
+# --- Acesso -------------------------------------------------------------------
+# rede  = servidor com login (navegador de qualquer lugar, por HTTPS)
+# local = cada computador roda a própria cópia, aberta só para ele mesmo e sem login: quem usa é o usuário
+#         do Windows. Vários computadores compartilham o mesmo banco (Supabase) e o mesmo escritório.
+ACESSO = os.environ.get("ACESSO", "rede").strip().lower()
+LOCAL = ACESSO == "local"
+ACESSO_INVALIDO = ACESSO not in ("rede", "local")
+PORTA_LOCAL = _int("PORTA_LOCAL", 8765)
+RECRUTADOR_NOME = os.environ.get("RECRUTADOR_NOME", "").strip()  # vazio: o nome de usuário do Windows
+PAPEL_LOCAL = os.environ.get("PAPEL_LOCAL", "admin").strip().lower()
+
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@hub.local")
 ADMIN_SENHA = os.environ.get("ADMIN_SENHA", "")
 ADMIN_NOME = os.environ.get("ADMIN_NOME", "Administrador")
@@ -169,10 +180,18 @@ def problemas_producao() -> list[str]:
         p.append("SEGREDO_JWT ausente ou curto (gere com python -m app.preparar)")
     if not CHAVE_ARQUIVOS:
         p.append("CHAVE_ARQUIVOS ausente (sem ela os currículos cifrados ficam presos a este servidor)")
-    if not TRIAGEM_API_KEY:
-        p.append("TRIAGEM_API_KEY ausente (POST /triagem ficaria aberto)")
-    if not COOKIE_SECURE:
-        p.append("COOKIE_SECURE precisa ser true (acesso só por HTTPS)")
+    if ACESSO_INVALIDO:
+        p.append("ACESSO precisa ser rede ou local")
+    if LOCAL:  # aberto só para o próprio computador: sem HTTPS nem chave de triagem; o que importa é o banco
+        if PAPEL_LOCAL not in ("recrutador", "supervisor", "admin"):
+            p.append("PAPEL_LOCAL precisa ser recrutador, supervisor ou admin")
+        if not DATABASE_URL.startswith("sqlite") and ARMAZENAMENTO != "banco":
+            p.append("com vários computadores no mesmo banco, ARMAZENAMENTO precisa ser banco (os arquivos ficam lá)")
+    else:
+        if not TRIAGEM_API_KEY:
+            p.append("TRIAGEM_API_KEY ausente (POST /triagem ficaria aberto)")
+        if not COOKIE_SECURE:
+            p.append("COOKIE_SECURE precisa ser true (acesso só por HTTPS)")
     if SEED_DEMO:
         p.append("SEED_DEMO precisa ser false (cria usuário e dados de demonstração)")
     if ARMAZENAMENTO not in ("disco", "banco"):

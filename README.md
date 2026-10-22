@@ -39,7 +39,9 @@ backend/
                       (Gemini ou modo demonstração)
   app/uso_ia.py       tokens e custo de cada chamada, limite diário e pausa automática da IA
   app/arquivos.py     arquivos dos currículos, cifrados, no disco ou no próprio banco
-  app/preparar.py     gera o .env de produção com segredos fortes
+  app/preparar.py     gera o .env de produção com segredos fortes (--local: computadores do RH)
+  app/local.py        abre o escritório no computador do recrutador (o atalho chama isto)
+  app/lideranca.py    vários computadores no mesmo banco: só um comanda a equipe por vez
   app/models.py       modelo de dados (com as regras de validação de cada tabela)
   app/banco_pg.py     PostgreSQL/Supabase: proteção contra exclusão, busca nos currículos, visões
   app/seguranca.py    login, papéis, senhas, auditoria, chave dos arquivos
@@ -48,6 +50,7 @@ backend/
   tests/              testes ponta a ponta
 frontend/             escritório (HTML + JS puro, sem dependências): cena.js desenha a pixel art
 supabase/             preparo do projeto no Supabase (configurar.sql), reforço do banco (reforco.sql) e backup.sh
+windows/              instalador para os computadores do RH (instalar.bat)
 Dockerfile, docker-compose.yml, Caddyfile   produção: app + HTTPS automático (+ PostgreSQL local opcional)
 LGPD.md               como o sistema atende a LGPD e o que validar com o jurídico
 ```
@@ -153,10 +156,50 @@ Para restaurar num projeto preparado com `configurar.sql`:
 `pg_restore --no-owner --role=hub_app -d "<url>" backups/hub-<data>.dump` (o único erro esperado é no
 `CREATE SCHEMA hub`, que já existe). A cópia tem dados pessoais: guarde-a com o mesmo cuidado que o banco.
 
-## Colocar em produção
+## Nos computadores do RH (Windows, sem login)
 
-O caminho recomendado é um servidor (VPS) com Docker: a aplicação e o Caddy (HTTPS automático com Let's
-Encrypt) sobem juntos, com o banco no Supabase.
+O jeito mais simples e reservado de usar: **cada recrutador tem o programa no próprio Windows**, todos ligados ao
+mesmo banco no Supabase. Não há site na internet nem tela de login: o atalho abre o escritório direto.
+
+- **Só o próprio computador abre:** o programa recusa qualquer acesso que não venha da própria máquina, inclusive de
+  outros computadores da rede da empresa. A proteção é a conta do Windows de cada recrutador (use senha nela).
+- **Cada recrutador é o usuário do Windows:** no primeiro uso, o cadastro é criado sozinho
+  (ex.: `maria.souza@rh-02.local`). A auditoria registra quem fez cada coisa, e o administrador pode desativar um
+  computador em *⚙ Administração → Usuários*. O nome exibido pode ser trocado com `RECRUTADOR_NOME` no `.env` dele.
+- **Um escritório só:** todos veem a mesma equipe e os mesmos currículos ao vivo. Só uma cópia por vez roda a equipe
+  de agentes (a fila de IA, o Atlas, o e-mail e a retenção); se aquele computador desligar, outro assume em segundos.
+  O programa liga junto com o Windows e continua trabalhando com a janela fechada.
+- **Currículos por e-mail sem nada aberto na internet:** o programa busca os currículos numa caixa de e-mail (IMAP).
+
+**1. Uma vez, por quem cuida do sistema** (em qualquer computador com Python):
+
+```bash
+cd backend
+pip install -r requirements.txt
+python -m app.preparar --local --empresa "Sua Empresa" --gemini-key SUA_CHAVE \
+    --supabase "postgresql://hub_app.<ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres"
+```
+
+Isso gera o arquivo `escritorio.env` na pasta do projeto. Para os currículos chegarem por e-mail, preencha nele
+`IMAP_ATIVO=true`, `IMAP_HOST`, `IMAP_USUARIO` e `IMAP_SENHA` (no Gmail ou no Microsoft 365, uma *senha de app*).
+**Guarde uma cópia num cofre de senhas:** a `CHAVE_ARQUIVOS` dele abre os currículos, e todos os computadores
+precisam do mesmo arquivo.
+
+**2. Em cada computador do RH:** copie a pasta do projeto com o `escritorio.env` dentro e dê dois cliques em
+`windows\instalar.bat`. O instalador:
+- instala o Python, se faltar;
+- prepara o programa;
+- confere a conexão com o banco;
+- cria o atalho **Escritório de Recrutamento** na área de trabalho e abre o escritório.
+
+Para atualizar, troque a pasta pela versão nova e rode o instalador de novo; nada se perde.
+
+**Use o plano pago do Gemini** com candidatos reais (no gratuito o Google pode usar o conteúdo enviado).
+
+## Colocar em produção (servidor com login)
+
+Para acessar de qualquer lugar pelo navegador, com login: um servidor (VPS) com Docker. A aplicação e o Caddy
+(HTTPS automático com Let's Encrypt) sobem juntos, com o banco no Supabase.
 
 **1. Domínio.** Crie um registro DNS `A` (ex.: `rh.suaempresa.com.br`) apontando para o IP do servidor e
 libere as portas 80 e 443.
@@ -359,6 +402,8 @@ Todas as variáveis estão comentadas em `backend/.env.example`. As principais:
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `AMBIENTE` | `desenvolvimento` | `producao` recusa subir com configuração insegura |
+| `ACESSO` | `rede` | `rede`: servidor com login; `local`: cada computador do RH, só para ele e sem login |
+| `RECRUTADOR_NOME`, `PAPEL_LOCAL`, `PORTA_LOCAL` | usuário do Windows, `admin`, `8765` | com `ACESSO=local`: nome exibido, perfil e porta do programa |
 | `DATABASE_URL` | SQLite em `PASTA_DADOS` | banco; com Supabase, a URL do pooler em modo sessão |
 | `DB_SCHEMA` | vazio | schema do PostgreSQL (`hub` no Supabase) |
 | `ARMAZENAMENTO` | `disco` | onde ficam os arquivos dos currículos, cifrados: `disco` ou `banco` (Supabase) |

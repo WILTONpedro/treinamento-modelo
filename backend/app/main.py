@@ -20,8 +20,9 @@ from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
                      SolicitacaoTitular, Usuario, Vaga, agora, iso)
 from .arquivos import ler_arquivo
+from .lideranca import Lideranca, exclusivo
 from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferir_senha, criar_token, exigir, gerar_hash,
-                        limitar_login, senha_temporaria, usuario_atual, validar_senha)
+                        limitar_login, pedido_local, senha_temporaria, usuario_atual, validar_senha)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hub")
@@ -62,6 +63,35 @@ async def supervisao():
         except Exception:
             log.exception("Falha na supervisão")
         await asyncio.sleep(max(0.2, config.SUPERVISAO_SEGUNDOS))
+
+
+async def comandar():
+    """A equipe de agentes (fila, supervisão do Atlas, e-mail e retenção) roda só na cópia que tem o comando
+    do escritório; com vários computadores no mesmo banco, as outras assumem se ela sair (veja lideranca.py)."""
+    vez = Lideranca(engine)
+    equipe: list[asyncio.Task] = []
+    avisado = False
+    try:
+        while True:
+            lider = await asyncio.to_thread(vez.tentar)
+            if lider and not equipe:
+                if vez.pg:
+                    log.info("Esta cópia passou a comandar a equipe de agentes")
+                await asyncio.to_thread(S.recuperar_fila)  # o que a cópia anterior deixou pela metade volta à fila
+                equipe = [asyncio.create_task(trabalhador()), asyncio.create_task(rotinas()),
+                          asyncio.create_task(supervisao())]
+            elif not lider:
+                for t in equipe:
+                    t.cancel()
+                equipe = []
+                if not avisado:
+                    log.info("Outro computador comanda a equipe de agentes; este mostra o escritório e assume se ele sair")
+                    avisado = True
+            await asyncio.sleep(5)
+    finally:
+        for t in equipe:
+            t.cancel()
+        vez.soltar()
 
 
 def _lotes_demo() -> list[list[Path]]:
@@ -137,32 +167,44 @@ def verificar_producao():
 @asynccontextmanager
 async def ciclo_de_vida(app: FastAPI):
     verificar_producao()
-    Base.metadata.create_all(engine)
-    migrar()
+    with exclusivo(engine, "inicio"):  # vários computadores abrindo juntos: um prepara o banco, os outros esperam
+        Base.metadata.create_all(engine)
+        migrar()
+        with sessao() as db:
+            S.semear_basico(db)
+            if not db.scalar(select(func.count()).select_from(Usuario)) and not config.SEED_DEMO and not config.LOCAL:
+                log.warning("Nenhum usuário cadastrado: defina ADMIN_EMAIL e ADMIN_SENHA para criar o primeiro administrador.")
+            if config.SEED_DEMO:
+                if not config.ADMIN_SENHA and not db.scalar(select(Usuario)):
+                    db.add(Usuario(nome="Recrutador Demo", email="admin@demo.local", senha_hash=gerar_hash("demo1234"), papel="admin"))
+                    log.warning("SEED_DEMO: usuário de demonstração admin@demo.local / demo1234 — NÃO use em produção")
+                _semear_demo(db)
     eventos.configurar_loop(asyncio.get_running_loop())
-    with sessao() as db:
-        S.semear_basico(db)
-        if not db.scalar(select(func.count()).select_from(Usuario)) and not config.SEED_DEMO:
-            log.warning("Nenhum usuário cadastrado: defina ADMIN_EMAIL e ADMIN_SENHA para criar o primeiro administrador.")
-        if config.SEED_DEMO:
-            if not config.ADMIN_SENHA and not db.scalar(select(Usuario)):
-                db.add(Usuario(nome="Recrutador Demo", email="admin@demo.local", senha_hash=gerar_hash("demo1234"), papel="admin"))
-                log.warning("SEED_DEMO: usuário de demonstração admin@demo.local / demo1234 — NÃO use em produção")
-            _semear_demo(db)
-    S.recuperar_fila()
-    if not config.TRIAGEM_API_KEY:
+    if not config.TRIAGEM_API_KEY and not config.LOCAL:
         log.warning("TRIAGEM_API_KEY não definida: POST /triagem aceita chamadas sem chave. Defina em produção.")
-    log.info("IA em modo %s", config.IA_MODO)
-    tarefas = [asyncio.create_task(trabalhador()), asyncio.create_task(rotinas()), asyncio.create_task(supervisao())]
+    log.info("IA em modo %s%s", config.IA_MODO, " · acesso local (só este computador, sem login)" if config.LOCAL else "")
+    comando = asyncio.create_task(comandar())
+    # PostgreSQL: os eventos de todos os computadores ligados ao banco chegam a este escritório
+    escuta = eventos.iniciar_escuta() if engine.dialect.name == "postgresql" else None
     yield
-    for t in tarefas:
-        t.cancel()
+    comando.cancel()
+    if escuta:
+        escuta.set()
 
 
 app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=ciclo_de_vida, docs_url="/api/docs", redoc_url=None)
 if config.ORIGENS_CORS:
     app.add_middleware(CORSMiddleware, allow_origins=config.ORIGENS_CORS, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
+
+
+if config.LOCAL:
+    @app.middleware("http")
+    async def so_este_computador(request: Request, call_next):
+        """ACESSO=local: nada responde a outro computador, nem a página, nem a entrada de currículos."""
+        if not pedido_local(request):
+            return JSONResponse({"detail": "Este escritório só abre no próprio computador."}, status_code=403)
+        return await call_next(request)
 
 
 @app.middleware("http")
@@ -202,6 +244,8 @@ def _gravar_sessao(response: Response, u: Usuario):
 
 @app.post("/auth/login")
 def login(dados: Login, request: Request, response: Response, db: Session = Depends(obter_db)):
+    if config.LOCAL:
+        raise HTTPException(400, "Neste computador o escritório abre sem login.")
     limitar_login(request.client.host if request.client else "?")
     u = db.scalar(select(Usuario).where(Usuario.email == dados.email.strip().lower()))
     if not u or not u.ativo or not conferir_senha(dados.senha, u.senha_hash):
@@ -220,6 +264,8 @@ class TrocaSenha(BaseModel):
 @app.post("/auth/senha")
 def trocar_senha(d: TrocaSenha, request: Request, response: Response, u: Usuario = Depends(usuario_atual),
                  db: Session = Depends(obter_db)):
+    if config.LOCAL:
+        raise HTTPException(400, "Neste computador o escritório abre sem senha.")
     limitar_login(request.client.host if request.client else "?")
     if not conferir_senha(d.senha_atual, u.senha_hash):
         raise HTTPException(400, "Senha atual incorreta.")
@@ -255,7 +301,8 @@ def saude(db: Session = Depends(obter_db)):
 @app.get("/api/marca")
 def marca():
     """Identidade configurável (APP_NOME etc.) — pública, para a tela de login."""
-    return {"nome": config.APP_NOME, "subtitulo": config.APP_SUBTITULO, "empresa": config.EMPRESA_NOME}
+    return {"nome": config.APP_NOME, "subtitulo": config.APP_SUBTITULO, "empresa": config.EMPRESA_NOME,
+            "local": config.LOCAL}
 
 
 # =========================================================================== entrada de currículos
