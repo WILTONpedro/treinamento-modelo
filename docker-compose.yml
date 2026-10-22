@@ -1,0 +1,50 @@
+# Produção num servidor com Docker: API + PostgreSQL + HTTPS automático (Caddy).
+#   1) cd backend && python -m app.preparar --docker --dominio rh.suaempresa.com.br --gemini-key ...
+#   2) aponte o DNS do domínio para este servidor e libere as portas 80 e 443
+#   3) docker compose up -d --build
+services:
+  app:
+    build: .
+    env_file: .env
+    volumes:
+      - dados:/dados               # currículos cifrados
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_DB: hub
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?rode python -m app.preparar --docker}
+    volumes:
+      - banco:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub -d hub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      DOMINIO: ${DOMINIO:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_dados:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  dados:
+  banco:
+  caddy_dados:
+  caddy_config:

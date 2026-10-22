@@ -1,0 +1,12 @@
+# HTTPS automático (Let's Encrypt) para o domínio em DOMINIO.
+{$DOMINIO} {
+	encode gzip
+	reverse_proxy app:8000 {
+		# eventos em tempo real (SSE) e chat em streaming: sem buffer
+		flush_interval -1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+}
