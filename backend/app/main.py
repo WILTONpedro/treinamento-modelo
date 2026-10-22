@@ -267,13 +267,8 @@ async def triagem_compativel(file: UploadFile = File(...)):
     """
     conteudo = await file.read()
 
-    def _registrar():
-        with sessao() as db:
-            cur, novo = S.registrar_curriculo(db, conteudo, file.filename or "arquivo", file.content_type, "email")
-            return cur.id
-
     try:
-        cid = await asyncio.to_thread(_registrar)
+        cid, _, _ = await asyncio.to_thread(S.registrar_com_seguranca, conteudo, file.filename or "arquivo", file.content_type, "email")
     except S.ErroNegocio as e:
         return {"status": "erro", "mensagem": str(e)}
     for _ in range(240):  # aguarda a triagem (até ~2 min), como a API original respondia
@@ -301,13 +296,12 @@ async def enviar_curriculos(request: Request, arquivos: list[UploadFile] = File(
     for f in arquivos:
         conteudo = await f.read()
 
-        def _reg(c=conteudo, f=f):
-            with sessao() as db:
-                cur, novo = S.registrar_curriculo(db, c, f.filename or "arquivo", f.content_type, "upload")
-                auditar(db, u, "enviar_curriculo", "curriculo", cur.id, request)
-                return {"arquivo": f.filename, "curriculo_id": cur.id, "novo": novo}
+        def _auditar(db, cur, novo):
+            auditar(db, u, "enviar_curriculo", "curriculo", cur.id, request)
         try:
-            saida.append(await asyncio.to_thread(_reg))
+            cid, novo, _ = await asyncio.to_thread(S.registrar_com_seguranca, conteudo, f.filename or "arquivo",
+                                                   f.content_type, "upload", _auditar)
+            saida.append({"arquivo": f.filename, "curriculo_id": cid, "novo": novo})
         except S.ErroNegocio as e:
             saida.append({"arquivo": f.filename, "erro": str(e)})
     return saida

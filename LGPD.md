@@ -58,6 +58,7 @@ Não substitui parecer jurídico.
 - Tabela `auditoria`: login, troca e redefinição de senha, criação e alteração de usuários, abertura de
   currículo, download de arquivo, listagem de candidatos, decisões, criação de vagas, contratação de agentes,
   teste da IA, exportação e eliminação de titulares — com usuário, data e IP.
+- No PostgreSQL/Supabase o próprio banco impede alterar ou apagar registros da auditoria, inclusive pelo painel.
 
 **Retenção**
 - Candidatos sem atividade há `RETENCAO_DIAS` (padrão 180) são anonimizados automaticamente: nome e contato
@@ -90,9 +91,16 @@ cada chamada (tabela `uso_ia`), nunca o conteúdo enviado.
 
 O Supabase atua como operador de armazenamento. Pontos a validar: contrato/DPA do Supabase, região
 (São Paulo, sa-east-1, já configurada), quem tem acesso ao painel do projeto (ative 2FA nas contas) e a
-política de backups (no plano gratuito não há backup diário automático: faça cópias com `pg_dump` ou use o
+política de backups (no plano gratuito não há backup diário automático: agende `supabase/backup.sh` ou use o
 plano Pro). Os arquivos dos currículos chegam ao banco já cifrados; o texto extraído e os dados de contato
-ficam legíveis para quem tiver acesso ao painel do projeto.
+ficam legíveis para quem tiver acesso ao painel do projeto — e nas cópias de segurança, que precisam do mesmo
+cuidado (acesso restrito; as cópias com mais de 30 dias são apagadas pelo próprio script).
+
+Integridade (art. 46): o banco recusa a exclusão de candidatos, currículos, análises, decisões e pedidos de
+titulares, por engano ou por acesso indevido; a eliminação pedida pelo titular ou pela retenção é feita por
+anonimização, que o sistema registra. Uma cópia de segurança guarda o banco como estava no dia: ao restaurar
+uma cópia antiga, os pedidos de eliminação atendidos depois dela precisam ser refeitos — mantenha o registro
+desses pedidos também fora do sistema (por exemplo, no canal do encarregado).
 
 ## Antes de entrar em produção
 
@@ -101,7 +109,8 @@ ficam legíveis para quem tiver acesso ao painel do projeto.
       citando uso de IA, finalidade, prazo de guarda, compartilhamento com o Google e canal do encarregado (art. 9º).
 - [ ] Relatório de Impacto (RIPD, art. 38) — recomendado por envolver IA na seleção e dados sensíveis.
 - [ ] Contrato/DPA com o Google revisado; plano pago ativo.
-- [ ] Contrato/DPA com o Supabase revisado; acesso ao painel restrito e com 2FA; backups definidos.
+- [ ] Contrato/DPA com o Supabase revisado; acesso ao painel restrito e com 2FA; backups definidos
+      (`supabase/backup.sh` agendado e um teste de restauração feito).
 - [ ] Prazo de retenção definido (`RETENCAO_DIAS`).
 - [ ] Regra de idade da pasta Jovem Aprendiz confirmada.
 - [ ] Revisão periódica de vieses: amostrar recomendações por vaga e comparar com as decisões humanas.

@@ -63,6 +63,12 @@ def cli():
     from app import seguranca
     from app.db import Base, engine
     from app.main import app
+    if engine.dialect.name == "postgresql":  # as visões do banco_pg dependem das tabelas
+        from sqlalchemy import text
+        from app.banco_pg import VISOES
+        with engine.begin() as con:
+            for v in VISOES:
+                con.execute(text(f"DROP VIEW IF EXISTS {v}"))
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     seguranca._tentativas.clear()

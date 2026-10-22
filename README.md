@@ -40,13 +40,14 @@ backend/
   app/uso_ia.py       tokens e custo de cada chamada, limite diário e pausa automática da IA
   app/arquivos.py     arquivos dos currículos, cifrados, no disco ou no próprio banco
   app/preparar.py     gera o .env de produção com segredos fortes
-  app/models.py       modelo de dados
+  app/models.py       modelo de dados (com as regras de validação de cada tabela)
+  app/banco_pg.py     PostgreSQL/Supabase: proteção contra exclusão, busca nos currículos, visões
   app/seguranca.py    login, papéis, senhas, auditoria, chave dos arquivos
   app/email_imap.py   leitura de caixa de e-mail (opcional, desligada)
   demo/               currículos fictícios para demonstração
   tests/              testes ponta a ponta
 frontend/             escritório (HTML + JS puro, sem dependências): cena.js desenha a pixel art
-supabase/             script que prepara um projeto do Supabase (papel e schema próprios)
+supabase/             preparo do projeto no Supabase (configurar.sql), reforço do banco (reforco.sql) e backup.sh
 Dockerfile, docker-compose.yml, Caddyfile   produção: app + HTTPS automático (+ PostgreSQL local opcional)
 LGPD.md               como o sistema atende a LGPD e o que validar com o jurídico
 ```
@@ -95,8 +96,25 @@ Como o banco fica protegido:
   API, nenhum outro papel lê linha alguma;
 - a conexão é cifrada (`sslmode=require` é acrescentado sozinho para hosts do Supabase).
 
+Como o banco aguenta a chegada dos currículos:
+
+- **nada se perde por engano:** candidatos, currículos, candidaturas, análises, decisões, vagas, usuários e
+  pedidos de titulares não podem ser apagados (nem com `DELETE`, nem com `TRUNCATE`), nem pelo painel; a LGPD é
+  atendida por anonimização. A tabela `auditoria` só aceita inclusões. Para uma manutenção planejada que
+  precise mesmo apagar algo: `SET hub.permitir_exclusao = on;` na mesma sessão;
+- **dados sempre coerentes:** 24 regras de validação (status, origens, tipos, valores não negativos, arquivo de
+  até 50 MB) e um e-mail por candidato ativo; o mesmo titular mandando outro currículo cai no mesmo cadastro;
+- **chegadas simultâneas:** o mesmo arquivo chegando duas vezes ao mesmo tempo (o fluxo de e-mail repetindo o
+  envio, por exemplo) vira um registro só; duas instâncias do sistema nunca pegam a mesma tarefa da fila;
+- **nada trava o banco:** o papel `hub_app` tem limites de 60 s por consulta, 15 s de espera por bloqueio e
+  10 min para transação parada;
+- **regras novas chegam sozinhas:** a cada inicialização o sistema confere o que falta (regras, proteções, índices,
+  RLS) e aplica só isso; se um dado antigo violar uma regra nova, ela já vale para o que chegar e o aviso aparece
+  no log até o dado ser corrigido.
+
 **Projeto novo do zero:** rode `supabase/configurar.sql` no SQL Editor do Supabase (troque a senha indicada).
-Na primeira inicialização o sistema cria as tabelas, os índices e o RLS sozinho.
+Na primeira inicialização o sistema cria as tabelas, os índices, as regras, as proteções e o RLS sozinho.
+`supabase/reforco.sql` traz o mesmo reforço em SQL, para aplicar ou conferir pelo SQL Editor (pode ser repetido).
 
 **URL de conexão** (`DATABASE_URL`): no painel, *Connect → Session pooler* (porta 5432, funciona em IPv4).
 Troque o usuário `postgres.<ref>` por `hub_app.<ref>` e use a senha do papel `hub_app`:
@@ -105,10 +123,35 @@ Troque o usuário `postgres.<ref>` por `hub_app.<ref>` e use a senha do papel `h
 postgresql://hub_app.<ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
 ```
 
-No plano gratuito o banco tem 500 MB (cerca de 2 a 3 mil currículos com arquivo; a retenção da LGPD apaga os
-antigos) e o projeto pausa após 7 dias sem uso; para produção contínua, o plano Pro remove a pausa e inclui
-backups diários. Para guardar uma cópia por conta própria:
-`pg_dump "postgresql://hub_app.<ref>:<senha>@...:5432/postgres" -n hub | gzip > backup-$(date +%F).sql.gz`.
+**Consultas prontas** (painel do Supabase → *SQL Editor*; ou *Table Editor*, schema `hub`):
+
+```sql
+select * from hub.v_saude;                                   -- tamanho do banco, currículos, fila, erros
+select * from hub.v_curriculos order by recebido_em desc;    -- currículos com candidato, vagas e decisão
+select * from hub.v_vagas;                                   -- por vaga: recebidos, analisados, recomendados
+select * from hub.v_fila;                                    -- tarefas pendentes, em andamento e com erro
+select * from hub.v_uso_ia_diario order by dia desc;         -- chamadas, tokens e custo da IA por dia
+select * from hub.buscar_curriculos('empilhadeira "NR-11"'); -- busca em português no texto dos currículos
+```
+
+No plano gratuito o banco tem 500 MB (cerca de 2 a 3 mil currículos com arquivo; a retenção da LGPD anonimiza
+os antigos e libera os arquivos) e o projeto pausa após 7 dias sem uso; para produção contínua, o plano Pro
+remove a pausa e inclui backups diários.
+
+**Cópia de segurança por conta própria** (recomendada mesmo no plano Pro): `supabase/backup.sh` gera um arquivo
+`backups/hub-<data>.dump` com dados, regras, proteções e arquivos cifrados, confere se a cópia está completa e
+apaga as com mais de 30 dias (`GUARDAR_DIAS`). Lê a `DATABASE_URL` do `.env` do sistema e usa o `pg_dump` 17
+local ou, sem ele, o Docker:
+
+```bash
+supabase/backup.sh                       # cópia agora, em ./backups
+# todo dia às 3h (crontab -e no servidor):
+# 0 3 * * * /caminho/do/projeto/supabase/backup.sh /caminho/backups
+```
+
+Para restaurar num projeto preparado com `configurar.sql`:
+`pg_restore --no-owner --role=hub_app -d "<url>" backups/hub-<data>.dump` (o único erro esperado é no
+`CREATE SCHEMA hub`, que já existe). A cópia tem dados pessoais: guarde-a com o mesmo cuidado que o banco.
 
 ## Colocar em produção
 

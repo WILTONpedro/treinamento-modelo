@@ -1,7 +1,7 @@
 """Modelo de dados. Datas em UTC (naive) — o front converte para o fuso local."""
 from datetime import datetime, timezone
 from sqlalchemy import (String, Integer, Boolean, DateTime, Text, JSON, ForeignKey, LargeBinary,
-                        UniqueConstraint, Index, Float)
+                        UniqueConstraint, Index, Float, CheckConstraint, text)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -15,9 +15,20 @@ def iso(dt):
     return dt.isoformat(timespec="seconds") + "Z" if dt else None
 
 
+def valores(tabela: str, coluna: str, *permitidos: str, nulo: bool = False) -> CheckConstraint:
+    """Regra no banco: a coluna só aceita estes valores (o banco recusa um estado digitado errado)."""
+    lista = ", ".join(f"'{v}'" for v in permitidos)
+    return CheckConstraint(f"{coluna} IN ({lista})" + (f" OR {coluna} IS NULL" if nulo else ""), name=f"ck_{tabela}_{coluna}")
+
+
+def minimo(tabela: str, *colunas: str) -> tuple[CheckConstraint, ...]:
+    return tuple(CheckConstraint(f"{c} >= 0", name=f"ck_{tabela}_{c}") for c in colunas)
+
+
 # --------------------------------------------------------------------------- pessoas
 class Usuario(Base):
     __tablename__ = "usuarios"
+    __table_args__ = (valores("usuarios", "papel", "recrutador", "supervisor", "admin"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     nome: Mapped[str] = mapped_column(String(120))
     email: Mapped[str] = mapped_column(String(200), unique=True)
@@ -44,6 +55,7 @@ class Especialidade(Base):
 
 class Agente(Base):
     __tablename__ = "agentes"
+    __table_args__ = (valores("agentes", "funcao", "supervisor", "recepcao", "analista"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     nome: Mapped[str] = mapped_column(String(60))
     funcao: Mapped[str] = mapped_column(String(20))  # supervisor|recepcao|analista
@@ -67,6 +79,7 @@ class Agente(Base):
 # --------------------------------------------------------------------------- vagas
 class Vaga(Base):
     __tablename__ = "vagas"
+    __table_args__ = (valores("vagas", "status", "aberta", "suspensa", "encerrada", "cancelada"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     titulo: Mapped[str] = mapped_column(String(160))
     area: Mapped[str] = mapped_column(String(120), default="")
@@ -89,6 +102,10 @@ class VagaAgente(Base):
 # --------------------------------------------------------------------------- candidatos e currículos
 class Candidato(Base):
     __tablename__ = "candidatos"
+    # um e-mail = um candidato ativo (o mesmo titular mandando outro currículo cai no mesmo cadastro)
+    __table_args__ = (Index("uq_candidatos_email_ativo", "email", unique=True,
+                            postgresql_where=text("email IS NOT NULL AND anonimizado_em IS NULL"),
+                            sqlite_where=text("email IS NOT NULL AND anonimizado_em IS NULL")),)
     id: Mapped[int] = mapped_column(primary_key=True)
     nome: Mapped[str] = mapped_column(String(200), default="Candidato")
     email: Mapped[str | None] = mapped_column(String(200), index=True)
@@ -102,6 +119,9 @@ class Candidato(Base):
 
 class Curriculo(Base):
     __tablename__ = "curriculos"
+    __table_args__ = (valores("curriculos", "status", "recebido", "triado", "invalido", "erro", "anonimizado"),
+                      valores("curriculos", "origem", "email", "upload", "imap", "demo"),
+                      *minimo("curriculos", "tamanho"))
     id: Mapped[int] = mapped_column(primary_key=True)
     sha256: Mapped[str] = mapped_column(String(64), unique=True)  # evita reprocessar o mesmo arquivo
     candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"), index=True)
@@ -125,6 +145,7 @@ class Curriculo(Base):
 class ArquivoCurriculo(Base):
     """Arquivo original do currículo, cifrado (Fernet), quando ARMAZENAMENTO=banco (ver arquivos.py)."""
     __tablename__ = "arquivos_curriculo"
+    __table_args__ = (CheckConstraint("length(conteudo) <= 52428800", name="ck_arquivos_curriculo_tamanho"),)  # 50 MB
     sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
     conteudo: Mapped[bytes] = mapped_column(LargeBinary)
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
@@ -133,7 +154,9 @@ class ArquivoCurriculo(Base):
 class Candidatura(Base):
     """Um currículo considerado em uma vaga. Única por (currículo, vaga)."""
     __tablename__ = "candidaturas"
-    __table_args__ = (UniqueConstraint("curriculo_id", "vaga_id", name="uq_curriculo_vaga"),)
+    __table_args__ = (UniqueConstraint("curriculo_id", "vaga_id", name="uq_curriculo_vaga"),
+                      valores("candidaturas", "status", "na_fila", "em_analise", "analisada", "erro"),
+                      valores("candidaturas", "origem", "triagem", "banco", "atlas", "indicacao", nulo=True))
     id: Mapped[int] = mapped_column(primary_key=True)
     curriculo_id: Mapped[int] = mapped_column(ForeignKey("curriculos.id"))
     vaga_id: Mapped[int] = mapped_column(ForeignKey("vagas.id"), index=True)
@@ -151,7 +174,10 @@ class Candidatura(Base):
 
 class Analise(Base):
     __tablename__ = "analises"
-    __table_args__ = (UniqueConstraint("candidatura_id", "agente_id", name="uq_analise_agente"),)
+    __table_args__ = (UniqueConstraint("candidatura_id", "agente_id", name="uq_analise_agente"),
+                      valores("analises", "tipo", "principal", "segunda_opiniao"),
+                      valores("analises", "compatibilidade", "ALTA", "MEDIA", "BAIXA"),
+                      *minimo("analises", "duracao_ms"))
     id: Mapped[int] = mapped_column(primary_key=True)
     candidatura_id: Mapped[int] = mapped_column(ForeignKey("candidaturas.id"))
     agente_id: Mapped[int] = mapped_column(ForeignKey("agentes.id"), index=True)
@@ -170,6 +196,7 @@ class Analise(Base):
 class Decisao(Base):
     """Decisão humana — a única que conta para o processo seletivo."""
     __tablename__ = "decisoes"
+    __table_args__ = (valores("decisoes", "decisao", "entrevista", "banco_talentos", "descartado"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     candidatura_id: Mapped[int] = mapped_column(ForeignKey("candidaturas.id"), index=True)
     decisao: Mapped[str] = mapped_column(String(20))  # entrevista|banco_talentos|descartado
@@ -181,7 +208,10 @@ class Decisao(Base):
 # --------------------------------------------------------------------------- fila, pendências e registros
 class Tarefa(Base):
     __tablename__ = "tarefas"
-    __table_args__ = (Index("ix_tarefa_fila", "status", "tipo", "agente_id"),)
+    __table_args__ = (Index("ix_tarefa_fila", "status", "tipo", "agente_id"),
+                      valores("tarefas", "tipo", "TRIAGEM", "DISTRIBUICAO", "ANALISE", "CONSULTA", "REVISAO"),
+                      valores("tarefas", "status", "pendente", "executando", "concluida", "erro", "cancelada"),
+                      *minimo("tarefas", "tentativas"))
     id: Mapped[int] = mapped_column(primary_key=True)
     tipo: Mapped[str] = mapped_column(String(20))  # TRIAGEM|DISTRIBUICAO|ANALISE|CONSULTA|REVISAO
     curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"), index=True)
@@ -199,6 +229,7 @@ class Tarefa(Base):
 
 class Pendencia(Base):
     __tablename__ = "pendencias"
+    __table_args__ = (valores("pendencias", "status", "aberta", "resolvida"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     # ARQUIVO_ILEGIVEL|SEM_ESPECIALISTA|TRIAGEM_MANUAL|ERRO_IA|PROPOSTA_CONTRATACAO|ESTACOES_LOTADAS
     tipo: Mapped[str] = mapped_column(String(40))
@@ -232,6 +263,7 @@ class Evento(Base):
 class Contratacao(Base):
     """Histórico de contratações (ativações) e dispensas feitas pelo Atlas ou pelo recrutador."""
     __tablename__ = "contratacoes"
+    __table_args__ = (valores("contratacoes", "acao", "contratacao", "retorno", "dispensa", "sem_estacao"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"), index=True)
     agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"), index=True)
@@ -258,6 +290,7 @@ class Auditoria(Base):
 class SolicitacaoTitular(Base):
     """Pedidos de titulares (art. 18 LGPD): acesso, correção, eliminação."""
     __tablename__ = "solicitacoes_titular"
+    __table_args__ = (valores("solicitacoes_titular", "tipo", "acesso", "correcao", "eliminacao"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     candidato_id: Mapped[int] = mapped_column(ForeignKey("candidatos.id"), index=True)
     tipo: Mapped[str] = mapped_column(String(20))
@@ -270,6 +303,7 @@ class SolicitacaoTitular(Base):
 class UsoIA(Base):
     """Tokens e custo estimado de cada chamada à IA (sem conteúdo de currículo)."""
     __tablename__ = "uso_ia"
+    __table_args__ = minimo("uso_ia", "entrada", "saida", "pensamento", "cache", "custo_usd")
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=agora, index=True)
     finalidade: Mapped[str] = mapped_column(String(30))  # triagem|analise|consulta|revisao|chat|equipe|...

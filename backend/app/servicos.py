@@ -15,6 +15,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 
 from sqlalchemy import delete, func, select, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import config, eventos, ia, triagem, uso_ia
@@ -156,6 +157,21 @@ def registrar_curriculo(db: Session, conteudo: bytes, nome_arquivo: str, mime: s
     return cur, True
 
 
+def registrar_com_seguranca(conteudo: bytes, nome_arquivo: str, mime: str | None, origem: str, depois=None):
+    """registrar_curriculo numa transação própria. Se o mesmo arquivo chegou ao mesmo tempo por outro caminho
+    (o banco recusa o segundo pela unicidade do sha256), tenta de novo e devolve o registro que já existe."""
+    for tentativa in range(2):
+        try:
+            with sessao() as db:
+                cur, novo = registrar_curriculo(db, conteudo, nome_arquivo, mime, origem)
+                extra = depois(db, cur, novo) if depois else None
+                return cur.id, novo, extra
+        except IntegrityError:
+            if tentativa:
+                raise
+            log.info("O mesmo currículo chegou duas vezes ao mesmo tempo: usando o registro existente")
+
+
 def executar_triagem(tarefa_id: int):
     with sessao() as db:
         t = db.get(Tarefa, tarefa_id)
@@ -210,8 +226,12 @@ def _vincular_candidato(db, r) -> Candidato:
     email = (r.get("email") or "").strip().lower() or None
     cand = db.scalar(select(Candidato).where(Candidato.email == email, Candidato.anonimizado_em.is_(None))) if email else None
     if not cand:
-        cand = Candidato()
-        db.add(cand)
+        cand = Candidato(email=email)
+        try:
+            with db.begin_nested():
+                db.add(cand)
+        except IntegrityError:  # outra triagem em paralelo acabou de registrar o mesmo e-mail
+            cand = db.scalar(select(Candidato).where(Candidato.email == email, Candidato.anonimizado_em.is_(None)))
     nome = (r.get("nome") or "").strip()
     cand.nome = nome if len(nome) >= 3 else (cand.nome or "Candidato")
     cand.email = email or cand.email
@@ -767,7 +787,9 @@ def reservar_tarefas(ocupadas: set[str]) -> list[tuple[str, int, str]]:
     saida = []
     pausa = uso_ia.bloqueio()
     with sessao() as db:
-        pend = db.scalars(select(Tarefa).where(Tarefa.status == "pendente").order_by(Tarefa.id)).all()
+        # FOR UPDATE SKIP LOCKED: mesmo com duas instâncias no ar, a mesma tarefa nunca é pega duas vezes
+        pend = db.scalars(select(Tarefa).where(Tarefa.status == "pendente").order_by(Tarefa.id)
+                          .with_for_update(skip_locked=True)).all()
         for t in pend:
             raia = {"TRIAGEM": "recepcao", "DISTRIBUICAO": "atlas"}.get(t.tipo, f"ag{t.agente_id}")
             if raia in ocupadas or any(r == raia for r, _, _ in saida):
