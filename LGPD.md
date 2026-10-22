@@ -1,4 +1,4 @@
-# LGPD no AI Hub
+# LGPD no Escritório de Recrutamento
 
 Este documento descreve como o sistema trata dados pessoais de candidatos e o que ainda precisa ser
 decidido ou validado pela empresa (jurídico e encarregado/DPO) antes do uso com candidatos reais.
@@ -7,7 +7,8 @@ Não substitui parecer jurídico.
 ## Papéis
 
 - **Controladora:** a empresa que usa o sistema para recrutar (decide finalidade e meios; configure `EMPRESA_NOME`).
-- **Operador:** Google, quando `IA_MODO=gemini` (processa currículos para triagem e análise).
+- **Operadores:** Google, quando `IA_MODO=gemini` (processa currículos para triagem e análise), e Supabase,
+  quando o banco fica lá (armazena os dados e os arquivos dos currículos).
 - **Encarregado (art. 41):** definir e divulgar o contato no aviso de privacidade.
 
 ## Finalidade e bases legais (a validar)
@@ -42,7 +43,10 @@ Não substitui parecer jurídico.
 - "Contratar" e "dispensar" se referem aos agentes de IA (capacidade de processamento), não a candidatos.
 
 **Segurança (art. 46)**
-- Arquivos de currículo cifrados em disco (Fernet: AES-128 + HMAC); exclusão sobrescreve o arquivo.
+- Arquivos de currículo cifrados antes de serem guardados (Fernet: AES-128 + HMAC), no disco ou no banco;
+  a chave (`CHAVE_ARQUIVOS`) fica só no servidor da aplicação — nem o provedor do banco consegue abrir os arquivos.
+- Banco no Supabase: região São Paulo (os dados ficam no Brasil), conexão cifrada, schema próprio fora da API
+  pública, papel de acesso exclusivo do sistema (sem o superusuário) e RLS ligado em todas as tabelas.
 - Senhas com scrypt; sessão em cookie `httpOnly` + `SameSite=Strict` + `Secure` (HTTPS); cabeçalho anti-CSRF;
   limite de tentativas de login; senha temporária trocada obrigatoriamente no primeiro acesso; trocar a senha,
   mudar o papel ou desativar alguém encerra as sessões abertas dessa pessoa.
@@ -82,6 +86,14 @@ cada chamada (tabela `uso_ia`), nunca o conteúdo enviado.
   sob o adendo de processamento de dados.
 - Alternativa sem transferência: `IA_MODO=demo` (heurístico, só para testes) ou um modelo hospedado no Brasil.
 
+## Banco de dados (Supabase)
+
+O Supabase atua como operador de armazenamento. Pontos a validar: contrato/DPA do Supabase, região
+(São Paulo, sa-east-1, já configurada), quem tem acesso ao painel do projeto (ative 2FA nas contas) e a
+política de backups (no plano gratuito não há backup diário automático: faça cópias com `pg_dump` ou use o
+plano Pro). Os arquivos dos currículos chegam ao banco já cifrados; o texto extraído e os dados de contato
+ficam legíveis para quem tiver acesso ao painel do projeto.
+
 ## Antes de entrar em produção
 
 - [ ] Bases legais validadas pelo jurídico/encarregado (tabela acima).
@@ -89,6 +101,7 @@ cada chamada (tabela `uso_ia`), nunca o conteúdo enviado.
       citando uso de IA, finalidade, prazo de guarda, compartilhamento com o Google e canal do encarregado (art. 9º).
 - [ ] Relatório de Impacto (RIPD, art. 38) — recomendado por envolver IA na seleção e dados sensíveis.
 - [ ] Contrato/DPA com o Google revisado; plano pago ativo.
+- [ ] Contrato/DPA com o Supabase revisado; acesso ao painel restrito e com 2FA; backups definidos.
 - [ ] Prazo de retenção definido (`RETENCAO_DIAS`).
 - [ ] Regra de idade da pasta Jovem Aprendiz confirmada.
 - [ ] Revisão periódica de vieses: amostrar recomendações por vaga e comparar com as decisões humanas.

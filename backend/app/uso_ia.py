@@ -7,14 +7,14 @@ ajuste GEMINI_PRECO_ENTRADA / GEMINI_PRECO_SAIDA.
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 
 from . import config
 from .db import sessao
-from .models import UsoIA, agora
+from .models import UsoIA
 
 log = logging.getLogger("hub.uso_ia")
 

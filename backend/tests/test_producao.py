@@ -79,8 +79,40 @@ def test_preparar_gera_env_com_segredos_fortes(tmp_path):
     Fernet(env["CHAVE_ARQUIVOS"].encode())  # chave válida
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://hub:") and env["POSTGRES_PASSWORD"] in env["DATABASE_URL"]
     assert env["DOMINIO"] == "rh.exemplo.com.br" and env["EMPRESA_NOME"] == "Exemplo SA"
+    assert env["COMPOSE_PROFILES"] == "banco-local"  # PostgreSQL próprio sobe junto
     assert stat.S_IMODE(os.stat(destino).st_mode) == 0o600
     assert preparar.main(["--arquivo", str(destino)]) == 1  # não sobrescreve
+
+
+def test_preparar_com_supabase(tmp_path):
+    destino, url = tmp_path / ".env", "postgresql://hub_app.ref:senha@aws-0-sa-east-1.pooler.supabase.com:5432/postgres"
+    assert preparar.main(["--docker", "--supabase", url, "--gemini-key", "k", "--arquivo", str(destino)]) == 0
+    env = dict(l.split("=", 1) for l in destino.read_text().splitlines() if l and not l.startswith("#") and "=" in l)
+    assert env["DATABASE_URL"] == url and env["DB_SCHEMA"] == "hub" and env["ARMAZENAMENTO"] == "banco"
+    assert "COMPOSE_PROFILES" not in env and "POSTGRES_PASSWORD" not in env  # sem banco local
+    assert config._url_banco(url) == url.replace("postgresql://", "postgresql+psycopg://") + "?sslmode=require"
+    assert config._url_banco("postgres://u:p@h:5432/db?x=1") == "postgresql+psycopg://u:p@h:5432/db?x=1"
+
+
+def test_arquivos_cifrados_no_banco(cli, monkeypatch):
+    from app import arquivos
+    from app.models import ArquivoCurriculo, Curriculo
+    monkeypatch.setattr(config, "ARMAZENAMENTO", "banco")
+    original = "Currículo de Teste Banco\nexperiência: auxiliar administrativo, Excel avançado".encode()
+    r = enviar(cli, "teste_banco.txt", conteudo=original.decode())
+    cid = r.json()["curriculo_id"]
+    with sessao() as db:
+        cur = db.get(Curriculo, cid)
+        assert cur.caminho == "banco:" + cur.sha256
+        guardado = db.get(ArquivoCurriculo, cur.sha256).conteudo
+        assert original not in guardado and len(guardado) < len(original) * 2 + 120  # cifrado e sem base64
+    assert cli.get(f"/api/curriculos/{cid}/arquivo").content == original
+    with sessao() as db:  # eliminar o titular apaga o arquivo do banco
+        cur = db.get(Curriculo, cid)
+        sha = cur.sha256
+        arquivos.apagar_arquivo(cur.caminho, db)
+    with sessao() as db:
+        assert db.get(ArquivoCurriculo, sha) is None
 
 
 def test_marca_configuravel(cli, monkeypatch):

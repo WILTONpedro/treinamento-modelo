@@ -1,702 +1,929 @@
-/* AI Hub — cena isométrica do escritório.
-   Desenha a planta, os móveis e as pessoas (corpo inteiro, com volume); calcula rotas pelos corredores
-   e redesenha por cima o que fica na frente de cada pessoa (balcões, mesas, encostos, paredes).
+/* Cena do escritório em pixel art isométrica (projeção 2:1).
+   Tudo é rasterizado num quadro de baixa resolução, com bordas nítidas (sem suavização), e ampliado em
+   pixels inteiros quando possível; etiquetas e balões ficam nítidos por cima (app.js).
+   Móveis e pessoas são desenhados em ordem de profundidade a cada quadro, então quem passa atrás de uma
+   mesa, de um sofá ou do vidro da sala do gerente aparece por trás dele.
    Não inventa estados: só anima o que o app (dados da API) informa. */
 'use strict';
 (function () {
-  const C = Math.cos(Math.PI / 6), S = 0.5;
-  const LARG = 36, PROF = 24; // planta: 36 × 24 (1 unidade ≈ 1 m)
-  let T = 30, OX = 0, OY = 0, DPR = 1, W = 0, H = 0;
-  const P = (x, y, z = 0) => [OX + (x - y) * C * T, OY + (x + y) * S * T - z * T];
+  // ------------------------------------------------------------------ planta e projeção (1 unidade = 1 m)
+  const LARG = 24, PROF = 16, K = 16, KZ = 20, ALT_PAREDE = 2.6, M = 6;
+  const AW = (LARG + PROF) * K + 2 * M;
+  const AH = (LARG + PROF) * K / 2 + Math.round(ALT_PAREDE * KZ) + 10 + 2 * M;
+  const OX = M + PROF * K, OY = M + Math.round(ALT_PAREDE * KZ);
+  const Pa = (x, y, z = 0) => [OX + (x - y) * K, OY + (x + y) * K / 2 - z * KZ];
+
+  const ESTADOS = {
+    trabalhando: ['#3FB56B', 'Trabalhando'], aguardando: ['#4C8FD6', 'Aguardando'], descansando: ['#A07BE0', 'Descansando'],
+    deslocamento: ['#F29A38', 'Em deslocamento'], pendencia: ['#E5534B', 'Com pendência'], disponivel: ['#2CC0B0', 'Disponível'],
+    concluido: ['#8A93A6', 'Concluído'], conversando: ['#F2C14E', 'Conversando'],
+  };
+  const CONTORNO = '#1B1420';
 
   // ------------------------------------------------------------------ cores
-  const COR = {
-    base: '#E9EAEE', piso: '#F4F4F6', corredor: '#F8F8F9', parede: '#FFFFFF', paredeE: '#E6E7EC', paredeD: '#D6D8DF',
-    recepcao: '#F5F3F0', vagas: '#EEF1F6', supervisor: '#F3F1EE', alimentacao: '#EEF4EF', analise: '#F1F2F6', descanso: '#E1E8FB',
-    mesa: '#FBFBFC', cadeira: '#A9AFBA', estofado: '#CBD4DE', planta: '#7DB38B', vaso: '#F2F2F2', rotulo: '#A3A7B0',
-  };
-  const ACENTO = '#5B5BD6';
-  const ESTADOS = {
-    trabalhando: ['#2E9E5B', 'Trabalhando'], aguardando: ['#3B82C4', 'Aguardando'], descansando: ['#8E6BBF', 'Descansando'],
-    deslocamento: ['#F08A24', 'Em deslocamento'], pendencia: ['#D64545', 'Com pendência'], disponivel: ['#1FB5A8', 'Disponível'],
-    concluido: ['#7A8290', 'Concluído'], conversando: ['#E0A800', 'Conversando'],
-  };
-
-  function sombra(cor, f) {
-    let r, g, b;
-    if (cor[0] === '#') { const n = parseInt(cor.slice(1), 16); r = (n >> 16) & 255; g = (n >> 8) & 255; b = n & 255; }
-    else[r, g, b] = cor.match(/\d+/g).map(Number);
-    const h = v => Math.max(0, Math.min(255, Math.round(v * f))).toString(16).padStart(2, '0');
+  const RGB = {};
+  function rgb(hex) { return RGB[hex] || (RGB[hex] = [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]); }
+  const empac = (r, g, b, a = 255) => ((a << 24) | (b << 16) | (g << 8) | r) >>> 0;
+  const PK = {};
+  const pk = hex => PK[hex] ?? (PK[hex] = empac(...rgb(hex)));
+  function tom(hex, f) {
+    const [r, g, b] = rgb(hex), h = v => Math.max(0, Math.min(255, Math.round(v * f))).toString(16).padStart(2, '0');
     return '#' + h(r) + h(g) + h(b);
   }
+  function escolha(chave, lista) { let h = 7; for (const ch of String(chave)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return lista[h % lista.length]; }
+  const ruido = (i, j) => { const s = Math.sin(i * 127.1 + j * 311.7) * 43758.5453; return s - Math.floor(s); };
 
-  // ------------------------------------------------------------------ primitivas
-  function poli(c, pts, cor, linha) {
-    c.beginPath(); c.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
-    c.closePath(); c.fillStyle = cor; c.fill();
-    if (linha) { c.strokeStyle = linha; c.lineWidth = 1; c.stroke(); }
+  // ------------------------------------------------------------------ rasterizador (pixels inteiros, sem suavização)
+  let A = null; // alvo: { buf: Uint32Array, w, h, ox, oy, sujo }
+  function alvo(buf, w, h, ox = 0, oy = 0) { A = { buf, w, h, ox, oy, sujo: [1e9, 1e9, -1e9, -1e9] }; }
+  function misturar(i, cor, a) {
+    const d = A.buf[i], da = (d >>> 24) / 255, [r, g, b] = rgb(cor), oa = a + da * (1 - a);
+    if (oa <= 0) return;
+    const k = da * (1 - a);
+    A.buf[i] = empac(Math.round((r * a + (d & 255) * k) / oa), Math.round((g * a + ((d >>> 8) & 255) * k) / oa),
+      Math.round((b * a + ((d >>> 16) & 255) * k) / oa), Math.round(oa * 255));
   }
-  function sombraChao(c, x0, y0, x1, y1, a = 0.07) {
-    for (const [d, al] of [[0.18, a * 0.6], [0.09, a]]) {
-      poli(c, [P(x0 + d, y0 + d), P(x1 + d, y0 + d), P(x1 + d, y1 + d), P(x0 + d, y1 + d)], `rgba(30,35,50,${al})`);
+  function ponto(x, y, cor, alfa) {
+    x -= A.ox; y -= A.oy;
+    if (x < 0 || y < 0 || x >= A.w || y >= A.h) return;
+    const i = y * A.w + x;
+    if (alfa === undefined || alfa >= 1) A.buf[i] = pk(cor); else misturar(i, cor, alfa);
+    const s = A.sujo; if (x < s[0]) s[0] = x; if (y < s[1]) s[1] = y; if (x > s[2]) s[2] = x; if (y > s[3]) s[3] = y;
+  }
+  function escurecer(x, y, f) { // sombra: multiplica o que já está desenhado
+    x -= A.ox; y -= A.oy;
+    if (x < 0 || y < 0 || x >= A.w || y >= A.h) return;
+    const i = y * A.w + x, d = A.buf[i];
+    if (!(d >>> 24)) return;
+    A.buf[i] = empac(Math.round((d & 255) * f), Math.round(((d >>> 8) & 255) * f), Math.round(((d >>> 16) & 255) * f), d >>> 24);
+  }
+  function varrer(pts, cada) { // preenche o polígono pelos centros dos pixels (bordas nítidas)
+    const n = pts.length; if (n < 3) return;
+    const xs = [], ys = [];
+    let y0 = 1e9, y1 = -1e9;
+    for (const [x, y] of pts) { const yy = Math.round(y); xs.push(Math.round(x)); ys.push(yy); if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; }
+    const cortes = [];
+    for (let y = y0; y < y1; y++) {
+      const yc = y + 0.5; cortes.length = 0;
+      for (let i = 0, j = n - 1; i < n; j = i++) if ((ys[i] <= yc) !== (ys[j] <= yc)) cortes.push(xs[i] + (yc - ys[i]) * (xs[j] - xs[i]) / (ys[j] - ys[i]));
+      cortes.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < cortes.length; k += 2) for (let x = Math.ceil(cortes[k] - 0.5); x <= Math.floor(cortes[k + 1] - 0.5); x++) cada(x, y);
     }
   }
-  function caixa(c, x0, y0, x1, y1, z0, z1, cor, o = {}) {
-    if (o.sombra && z0 === 0 && !REDESENHO) sombraChao(c, x0, y0, x1, y1);
-    poli(c, [P(x0, y1, z0), P(x1, y1, z0), P(x1, y1, z1), P(x0, y1, z1)], o.esq || sombra(cor, 0.93));
-    poli(c, [P(x1, y0, z0), P(x1, y1, z0), P(x1, y1, z1), P(x1, y0, z1)], o.dir || sombra(cor, 0.84));
-    poli(c, [P(x0, y0, z1), P(x1, y0, z1), P(x1, y1, z1), P(x0, y1, z1)], o.topo || cor, o.linha);
+  const poli = (pts, cor, alfa) => varrer(pts, (x, y) => ponto(x, y, cor, alfa));
+  const sombrear = (pts, f) => varrer(pts, (x, y) => escurecer(x, y, f));
+  function linha(x0, y0, x1, y1, cor, alfa) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    let e = dx + dy;
+    for (let n = 0; n < 4000; n++) {
+      ponto(x0, y0, cor, alfa);
+      if (x0 === x1 && y0 === y1) break;
+      const e2 = 2 * e;
+      if (e2 >= dy) { e += dy; x0 += sx; }
+      if (e2 <= dx) { e += dx; y0 += sy; }
+    }
   }
-  function cilindro(c, x, y, r, z0, z1, cor) {
-    const [cx, ct] = P(x, y, z1), cb = P(x, y, z0)[1], rx = r * Math.SQRT2 * C * T, ry = r * Math.SQRT2 * S * T;
-    if (!REDESENHO) { c.fillStyle = 'rgba(30,35,50,.08)'; c.beginPath(); c.ellipse(P(x + 0.12, y + 0.12)[0], P(x + 0.12, y + 0.12)[1], rx, ry, 0, 0, 7); c.fill(); }
-    c.fillStyle = sombra(cor, 0.86); c.beginPath(); c.moveTo(cx - rx, ct); c.lineTo(cx - rx, cb);
-    c.ellipse(cx, cb, rx, ry, 0, Math.PI, 0, true); c.lineTo(cx + rx, ct); c.closePath(); c.fill();
-    c.fillStyle = cor; c.beginPath(); c.ellipse(cx, ct, rx, ry, 0, 0, 7); c.fill();
+  function disco(cx, cy, rx, ry, cor, alfa) {
+    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)
+      for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++) {
+        const u = (x + 0.5 - cx) / rx, v = (y + 0.5 - cy) / ry;
+        if (u * u + v * v <= 1) ponto(x, y, cor, alfa);
+      }
   }
-  function bola(c, x, y, z, r, cor) {
-    const [sx, sy] = P(x, y, z), g = c.createRadialGradient(sx - r * T * 0.35, sy - r * T * 0.4, r * T * 0.1, sx, sy, r * T);
-    g.addColorStop(0, sombra(cor, 1.25)); g.addColorStop(1, sombra(cor, 0.82));
-    c.fillStyle = g; c.beginPath(); c.arc(sx, sy, r * T, 0, 7); c.fill();
-  }
-  function planta(c, x, y, esc = 1) {
-    cilindro(c, x, y, 0.22 * esc, 0, 0.36 * esc, COR.vaso);
-    for (const [dx, dy, dz, r] of [[-0.12, 0.05, 0.62, 0.2], [0.12, -0.05, 0.66, 0.2], [0, 0.1, 0.78, 0.2], [0.02, -0.08, 0.86, 0.17]])
-      bola(c, x + dx * esc, y + dy * esc, dz * esc, r * esc, COR.planta);
-  }
-  // encosto da cadeira conforme o lado para onde a pessoa sentada olha
-  const ENCOSTO = (x, y, face, a = 0.26, t = 0.07) => ({
-    n: [x - a, y + a - t, x + a, y + a], s: [x - a, y - a, x + a, y - a + t], e: [x - a, y - a, x - a + t, y + a], w: [x + a - t, y - a, x + a, y + a],
-  }[face]);
-  function cadeira(c, x, y, face, cor = COR.cadeira) {
-    cilindro(c, x, y, 0.08, 0, 0.36, '#8D939E');
-    caixa(c, x - 0.26, y - 0.26, x + 0.26, y + 0.26, 0.36, 0.46, cor);
-    const e = ENCOSTO(x, y, face);
-    caixa(c, e[0], e[1], e[2], e[3], 0.46, 0.95, sombra(cor, 0.94));
-  }
-  function textoChao(c, txt, x, y, tam = 0.38, cor = COR.rotulo, eixo = 'x') {
-    const [sx, sy] = P(x, y), k = T / 100;
-    c.save();
-    if (eixo === 'x') c.setTransform(DPR * C * k, DPR * S * k, -DPR * C * k, DPR * S * k, DPR * sx, DPR * sy);
-    else c.setTransform(-DPR * C * k, DPR * S * k, -DPR * C * k, -DPR * S * k, DPR * sx, DPR * sy);
-    c.font = `700 ${tam * 100}px system-ui,-apple-system,"Segoe UI",sans-serif`; c.fillStyle = cor;
-    c.textBaseline = 'middle'; c.fillText(txt, 0, 0); c.restore();
-  }
-  function textoParede(c, txt, x, y, z, tam, cor) {
-    const [sx, sy] = P(x, y, z), k = T / 100;
-    c.save(); c.setTransform(DPR * C * k, DPR * S * k, 0, DPR * k, DPR * sx, DPR * sy);
-    c.font = `800 ${tam * 100}px system-ui,-apple-system,"Segoe UI",sans-serif`; c.fillStyle = cor;
-    c.textBaseline = 'top'; c.fillText(txt, 0, 0); c.restore();
-  }
-  function janela(c, eixo, a, b, face) {
-    const q = eixo === 'x'
-      ? [P(a + 0.08, face + 0.001, 0.55), P(b - 0.08, face + 0.001, 0.55), P(b - 0.08, face + 0.001, 1.4), P(a + 0.08, face + 0.001, 1.4)]
-      : [P(face + 0.001, a + 0.08, 0.55), P(face + 0.001, b - 0.08, 0.55), P(face + 0.001, b - 0.08, 1.4), P(face + 0.001, a + 0.08, 1.4)];
-    const g = c.createLinearGradient(q[0][0], q[3][1], q[1][0], q[0][1]);
-    g.addColorStop(0, '#D7EAF8'); g.addColorStop(1, '#BFDDF2');
-    poli(c, q, g, '#E6EEF5');
-  }
+  const ret = (x, y, w, h, cor, alfa) => { for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) ponto(x + i, y + j, cor, alfa); };
 
-  // ------------------------------------------------------------------ planta baixa
-  const SALAS = [
-    { id: 'recepcao', nome: 'RECEPÇÃO', r: [0.3, 0.3, 8.0, 8.5], rot: [1.7, 8.05] },
-    { id: 'vagas', nome: 'VAGAS EM ABERTO', r: [8.3, 0.3, 15.6, 8.5], rot: [8.8, 8.05] },
-    { id: 'supervisor', nome: 'SUPERVISOR', r: [15.9, 0.3, 23.0, 8.5], rot: [16.4, 8.05] },
-    { id: 'alimentacao', nome: 'ALIMENTAÇÃO', r: [23.3, 0.3, 35.85, 8.5], rot: [23.8, 8.05] },
-    { id: 'corredor', nome: '', r: [0.3, 8.8, 35.85, 11.0] },
-    { id: 'analise', nome: 'ANÁLISE DE CURRÍCULOS', r: [0.3, 11.3, 21.0, 23.85], rot: [0.9, 23.45] },
-    { id: 'descanso', nome: 'DESCANSO', r: [21.3, 11.3, 35.85, 23.85], rot: [21.8, 23.45] },
-  ];
-  const PAREDES = []; // [x0,y0,x1,y1,altura]
-  function parede(x0, y0, x1, y1, h, vaos = []) {
-    const horiz = x1 - x0 > y1 - y0, a = horiz ? x0 : y0, b = horiz ? x1 : y1;
-    const cortes = [[a, b]];
-    for (const [v0, v1] of vaos) {
-      for (let i = cortes.length - 1; i >= 0; i--) {
-        const [c0, c1] = cortes[i];
-        if (v1 <= c0 || v0 >= c1) continue;
-        cortes.splice(i, 1, ...[[c0, v0], [v1, c1]].filter(([p, q]) => q - p > 0.01));
+  // ------------------------------------------------------------------ primitivas isométricas
+  // caixa: topo claro, lado esquerdo médio, lado direito escuro (luz vinda das janelas da esquerda) e contorno
+  function caixa(x0, y0, x1, y1, z0, z1, cor, o = {}) {
+    const a = Pa(x0, y0, z1), b = Pa(x1, y0, z1), c = Pa(x1, y1, z1), d = Pa(x0, y1, z1);
+    const e = Pa(x1, y0, z0), f = Pa(x1, y1, z0), g = Pa(x0, y1, z0);
+    const topo = o.topo || cor;
+    if (z1 > z0) { poli([d, c, f, g], o.esq || tom(cor, 0.84), o.alfa); poli([c, b, e, f], o.dir || tom(cor, 0.68), o.alfa); }
+    poli([a, b, c, d], topo, o.alfa);
+    if (o.brilho !== false && z1 > z0 && !o.alfa) { linha(d[0], d[1], c[0], c[1], tom(topo, 1.12)); linha(c[0], c[1], b[0], b[1], tom(topo, 1.06)); }
+    if (o.contorno !== false) {
+      const k = o.contorno || tom(cor, 0.4), lados = z1 > z0 ? [[a, b], [b, e], [e, f], [f, g], [g, d], [d, a]] : [[a, b], [b, c], [c, d], [d, a]];
+      for (const [p, q] of lados) linha(p[0], p[1], q[0], q[1], k, o.alfa ? Math.min(1, o.alfa * 2.5) : undefined);
+    }
+  }
+  // retângulo pintado numa face vertical: eixo 'x' = parede/face no plano y = c; eixo 'y' = plano x = c
+  function painel(eixo, c, a0, a1, z0, z1, cor, alfa) {
+    const q = eixo === 'x' ? [Pa(a0, c, z1), Pa(a1, c, z1), Pa(a1, c, z0), Pa(a0, c, z0)] : [Pa(c, a0, z1), Pa(c, a1, z1), Pa(c, a1, z0), Pa(c, a0, z0)];
+    poli(q, cor, alfa);
+  }
+  function piso(x0, y0, x1, y1, cor, alfa, z = 0) { poli([Pa(x0, y0, z), Pa(x1, y0, z), Pa(x1, y1, z), Pa(x0, y1, z)], cor, alfa); }
+  function cilindro(x, y, r, z0, z1, cor, o = {}) {
+    const N = 24, topo = [], baseC = [];
+    for (let i = 0; i < N; i++) { const t = i / N * Math.PI * 2; topo.push(Pa(x + Math.cos(t) * r, y + Math.sin(t) * r, z1)); baseC.push(Pa(x + Math.cos(t) * r, y + Math.sin(t) * r, z0)); }
+    if (z1 > z0) { // lateral visível: de -45° a 135° (metade voltada para quem olha), clara à esquerda e escura à direita
+      const arco = (a, b) => { const r1 = []; for (let i = 0; i <= N; i++) { const t = a + (b - a) * i / N; r1.push(t); } return r1; };
+      const pt = (t, z) => Pa(x + Math.cos(t) * r, y + Math.sin(t) * r, z);
+      const lado = (a, b, cor2) => { const ts = arco(a, b); poli([...ts.map(t => pt(t, z1)), ...ts.reverse().map(t => pt(t, z0))], cor2); };
+      lado(Math.PI / 4, Math.PI * 3 / 4, o.esq || tom(cor, 0.86)); lado(-Math.PI / 4, Math.PI / 4, o.dir || tom(cor, 0.7));
+    }
+    poli(topo, o.topo || cor);
+    if (o.contorno !== false) {
+      const k = o.contorno || tom(cor, 0.42);
+      for (let i = 0; i < N; i++) { const p = topo[i], q = topo[(i + 1) % N]; linha(p[0], p[1], q[0], q[1], k); }
+      if (z1 > z0) {
+        const l = Pa(x + Math.cos(Math.PI * 3 / 4) * r, y + Math.sin(Math.PI * 3 / 4) * r, 0), rr = Pa(x + Math.cos(-Math.PI / 4) * r, y + Math.sin(-Math.PI / 4) * r, 0);
+        linha(l[0], l[1] - z1 * KZ, l[0], l[1] - z0 * KZ, k); linha(rr[0], rr[1] - z1 * KZ, rr[0], rr[1] - z0 * KZ, k);
+        for (let i = 0; i < N; i++) { const t = i / N * Math.PI * 2; if (Math.cos(t) + Math.sin(t) <= -0.05) continue; const p = baseC[i], q = baseC[(i + 1) % N]; linha(p[0], p[1], q[0], q[1], k); }
       }
     }
-    for (const [p, q] of cortes) {
-      for (let s = p; s < q - 0.001; s += 1) {
-        const e = Math.min(q, s + 1);
-        PAREDES.push(horiz ? [s, y0, e, y1, h] : [x0, s, x1, e, h]);
-      }
+  }
+  function brilhoChao(x, y, r, cor, alfa) { // poça de luz em anéis (luminárias)
+    for (const [f, a] of [[1, alfa * 0.5], [0.7, alfa * 0.75], [0.42, alfa]]) {
+      const [cx, cy] = Pa(x, y, 0); disco(cx, cy, r * f * K * 1.41, r * f * K * 0.71, cor, a);
     }
   }
-  parede(0, 0, LARG, 0.3, 1.6);
-  parede(0, 0.3, 0.3, PROF, 1.6, [[5.2, 7.4]]);
-  parede(0.3, 8.5, LARG, 8.8, 1.0, [[3.8, 5.8], [11.5, 13.5], [18.4, 20.4], [27.5, 29.5]]);
-  parede(0.3, 11.0, LARG, 11.3, 1.0, [[3.8, 5.8], [11.5, 13.5], [27.5, 29.5]]);
-  parede(8.0, 0.3, 8.3, 8.5, 1.0); parede(15.6, 0.3, 15.9, 8.5, 1.0); parede(23.0, 0.3, 23.3, 8.5, 1.0);
-  parede(21.0, 11.3, 21.3, PROF, 1.0);
-  const JANELAS_X = [[1.2, 3.4], [16.8, 19.0], [24.4, 26.2], [32.0, 35.2]], JANELAS_Y = [[1.4, 4.4], [12.6, 15.2], [18.4, 21.6]];
 
-  // estações de trabalho na sala de análise: 3 fileiras × 4
-  const ESTACOES = [];
-  for (const fy of [13.0, 16.7, 20.4]) for (const x of [3.2, 6.6, 11.4, 14.8]) ESTACOES.push({ x, mesaY: fy, y: fy + 1.55 });
-  const BLOCOS = [[1.6, 8.2], [9.8, 16.4]];
+  // ------------------------------------------------------------------ paleta do ambiente
+  const COR = {
+    piso1: '#D8B285', piso2: '#CDA679', madeira: '#B47C4C', tabua: '#9C673B', cozinha1: '#E6DBC6', cozinha2: '#D8CBB0',
+    lajeE: '#5C3D29', lajeD: '#45301F', paredeE: '#2C3253', paredeD: '#363D66', paredeTopo: '#4B5384', rodape: '#4A3121', moldura: '#525B8E',
+    movel: '#A46A3B', movelEsc: '#6E4225', crt: '#E3D7BA', cadeira: '#3A3F57', vidro: '#B7E0F5', metal: '#2B2F3D',
+    folha1: '#3F9147', folha2: '#5DBA5F', folha3: '#2C6A33', vaso: '#B95A2E',
+  };
+  const LIVROS = ['#C0504D', '#4F81BD', '#9BBB59', '#F2C14E', '#8064A2', '#E07B39', '#2E8B88', '#D9D2C0'];
 
-  // ------------------------------------------------------------------ grafo de circulação
-  const NOS = {}, ARESTAS = [];
-  const no = (n, x, y) => (NOS[n] = [x, y]);
-  const liga = (...ns) => { for (let i = 1; i < ns.length; i++) ARESTAS.push([ns[i - 1], ns[i]]); };
-  // corredor
-  [['h1', 4.8], ['h2', 12.5], ['h3', 19.4], ['h4', 28.5], ['h5', 34.6]].forEach(([n, x]) => no(n, x, 9.9));
-  liga('h1', 'h2', 'h3', 'h4', 'h5');
-  // recepção
-  no('rD', 4.8, 8.65); no('rIn', 4.8, 7.4); no('ent0', 0.8, 6.3); no('entrada', -1.4, 6.3); no('rIn2', 0.8, 2.9);
-  no('recepcao', 2.0, 2.9); no('balcao0', 4.3, 3.0); no('balcao1', 4.3, 2.2); no('balcao2', 4.3, 3.8);
-  liga('h1', 'rD', 'rIn', 'balcao0'); liga('rIn', 'balcao1'); liga('rIn', 'balcao2');
-  liga('rIn', 'ent0', 'entrada'); liga('ent0', 'rIn2', 'recepcao');
-  // vagas
-  no('vD', 12.5, 8.65); no('vIn', 12.5, 7.4); no('v1', 15.0, 6.9); no('v2', 15.0, 2.3);
-  no('quadro0', 12.0, 1.6); no('quadro1', 10.6, 1.6); no('quadro2', 13.4, 1.6);
-  liga('h2', 'vD', 'vIn', 'v1', 'v2'); liga('v2', 'quadro0'); liga('v2', 'quadro1'); liga('v2', 'quadro2');
-  // supervisor (o Atlas senta de frente para a sala; quem o visita fica do outro lado da mesa)
-  no('sD', 19.4, 8.65); no('sIn', 19.4, 7.4); no('sV', 19.3, 5.15); no('s1', 22.3, 6.4); no('s2', 22.3, 2.2); no('atlas', 19.3, 2.6);
-  liga('h3', 'sD', 'sIn', 'sV'); liga('sIn', 's1', 's2', 'atlas');
-  // alimentação
-  no('fD', 28.5, 8.65); no('fIn', 28.5, 7.6);
-  [['f1', 24.6], ['w0', 26.3], ['f2', 28.05], ['w1', 29.8], ['f3', 31.55], ['w2', 33.3], ['f4', 35.2]].forEach(([n, x]) => no(n, x, 6.9));
-  liga('h4', 'fD', 'fIn', 'f2'); liga('f1', 'w0', 'f2', 'w1', 'f3', 'w2', 'f4');
-  no('comer0', 26.3, 5.85); no('comer1', 29.8, 5.85); no('comer2', 33.3, 5.85);
-  liga('w0', 'comer0'); liga('w1', 'comer1'); liga('w2', 'comer2');
-  no('f1b', 24.6, 4.7); no('f1c', 24.6, 2.6); no('geladeira', 24.2, 1.95); no('comer3', 25.15, 4.7);
-  liga('f1', 'f1b', 'comer3'); liga('f1b', 'f1c', 'geladeira');
-  no('f2b', 28.05, 4.7); no('comer4', 28.65, 4.7); liga('f2', 'f2b', 'comer4');
-  no('f4b', 35.2, 4.7); no('comer5', 34.45, 4.7); liga('f4', 'f4b', 'comer5');
-  // análise
-  no('aD1', 4.8, 11.15); no('aIn1', 4.8, 12.15); no('aD2', 12.5, 11.15); no('aIn2', 12.5, 12.15);
-  no('am', 9.0, 12.15); no('al', 18.6, 12.15);
-  liga('h1', 'aD1', 'aIn1', 'am', 'aIn2', 'aD2', 'h2'); liga('aIn2', 'al');
-  const LINHAS = [['A', 15.75], ['B', 19.45], ['C', 23.2]];
-  for (const [l, y] of LINHAS) { no('m' + l, 9.0, y); no('l' + l, 18.6, y); }
-  liga('am', 'mA', 'mB', 'mC'); liga('al', 'lA', 'lB', 'lC');
-  ESTACOES.forEach((e, i) => { no('c' + i, e.x, LINHAS[Math.floor(i / 4)][1]); no('mesa' + i, e.x, e.y); liga('c' + i, 'mesa' + i); });
-  for (let r = 0; r < 3; r++) { const b = r * 4, l = LINHAS[r][0]; liga('c' + b, 'c' + (b + 1), 'm' + l, 'c' + (b + 2), 'c' + (b + 3), 'l' + l); }
-  // descanso
-  no('dD', 28.5, 11.15); no('dIn', 28.5, 12.0); no('d1', 22.3, 12.0); no('dL', 22.0, 14.8);
-  no('ping0', 21.95, 16.4); no('ping1', 26.85, 16.4);
-  no('d2', 27.7, 13.4); no('d3', 27.4, 16.4); no('d4', 27.4, 19.0); no('d5', 31.5, 19.0); no('d6', 34.3, 19.0); no('d7', 24.4, 21.8);
-  for (let i = 0; i < 3; i++) { no('sf' + i, 29.3 + i, 13.4); no('sofa' + i, 29.3 + i, 14.05); liga('sf' + i, 'sofa' + i); }
-  no('pufe0', 30.5, 21.3); no('pufe1', 32.6, 20.0); no('pufe2', 34.3, 21.6);
-  no('leitura0', 23.0, 21.0); no('leitura1', 23.0, 22.6);
-  liga('h4', 'dD', 'dIn', 'd1', 'dL', 'ping0'); liga('dIn', 'd2', 'sf0', 'sf1', 'sf2');
-  liga('d2', 'd3', 'ping1'); liga('d3', 'd4', 'd5', 'pufe0'); liga('d5', 'pufe1'); liga('d5', 'd6', 'pufe2');
-  liga('d4', 'd7', 'leitura0'); liga('d7', 'leitura1');
-
+  // ------------------------------------------------------------------ estações, locais e rotas
+  const ESTACOES = [];   // 12 estações: 3 ilhas × 2 fileiras × 2 mesas
+  const ILHAS = [6.6, 11.2, 15.8];
+  ILHAS.forEach(x0 => {
+    for (const fila of ['A', 'B']) for (const col of [0, 1]) {
+      const x = x0 + 0.7 + col * 1.4;
+      ESTACOES.push(fila === 'A' ? { x, y: 5.55, face: 's', fila, x0 } : { x, y: 8.65, face: 'n', fila, x0 });
+    }
+  });
+  // ordem: 0-1 fileira A da 1ª ilha, 2-3 fileira B da 1ª ilha, ... (os primeiros analistas aparecem de frente)
+  const NOS = {}, INFO_LOCAL = {};
+  const no = (n, x, y, info) => { NOS[n] = [x, y]; if (info) INFO_LOCAL[n] = info; };
+  ESTACOES.forEach((e, i) => {
+    no('mesa' + i, e.x, e.y, { f: e.face, sentado: true, digita: true });
+    no('c' + i, e.x, e.fila === 'A' ? 4.65 : 9.55, { f: e.face });
+  });
+  no('recepcao', 1.3, 11.1, { f: 'e', sentado: true, digita: true });
+  no('atlas', 3.0, 1.4, { f: 's', sentado: true });
+  no('sV', 3.0, 3.75, { f: 'n' });
+  no('entrada', 0.55, 13.9, { f: 'e' });
+  [10.4, 11.3, 12.2].forEach((y, i) => no('balcao' + i, 3.35, y, { f: 'w' }));
+  [7.9, 9.3, 10.7].forEach((x, i) => no('quadro' + i, x, 1.45, { f: 'n' }));
   // locais de descanso: [nó, o que faz, para onde olha, sentado, objeto na mão]
   const LOCAIS_DESCANSO = [
     ['ping0', 'jogando pingue-pongue', 'e', 0, 'raquete'], ['ping1', 'jogando pingue-pongue', 'w', 0, 'raquete'],
     ['sofa0', 'assistindo TV', 'n', 1], ['sofa1', 'assistindo TV', 'n', 1], ['sofa2', 'assistindo TV', 'n', 1],
-    ['comer0', 'fazendo um lanche', 'n', 1], ['comer1', 'tomando um café', 'n', 1, 'xicara'], ['comer2', 'fazendo um lanche', 'n', 1],
-    ['comer3', 'tomando um café', 'e', 1, 'xicara'], ['comer4', 'fazendo um lanche', 'e', 1], ['comer5', 'tomando um café', 'w', 1, 'xicara'],
+    ['comer0', 'tomando um café', 'e', 1, 'xicara'], ['comer1', 'fazendo um lanche', 'w', 1], ['comer2', 'tomando um café', 'n', 1, 'xicara'],
+    ['comer3', 'fazendo um lanche', 'e', 1], ['comer4', 'tomando um café', 'w', 1, 'xicara'], ['comer5', 'fazendo um lanche', 'n', 1],
     ['geladeira', 'pegando algo na geladeira', 'n', 0],
-    ['pufe0', 'descansando no pufe', 's', 1], ['pufe1', 'descansando no pufe', 's', 1], ['pufe2', 'descansando no pufe', 's', 1],
-    ['leitura0', 'lendo um livro', 'e', 1, 'livro'], ['leitura1', 'lendo um livro', 'e', 1, 'livro'],
+    ['pufe0', 'descansando no pufe', 'n', 1], ['pufe1', 'descansando no pufe', 'n', 1], ['pufe2', 'descansando no pufe', 'n', 1],
+    ['leitura0', 'lendo um livro', 's', 1, 'livro'], ['leitura1', 'lendo um livro', 's', 1, 'livro'],
   ];
-  const INFO_LOCAL = Object.fromEntries(LOCAIS_DESCANSO.map(([n, txt, f, s, item]) => [n, { txt, f, sentado: !!s, item }]));
-  ESTACOES.forEach((_, i) => { INFO_LOCAL['mesa' + i] = { f: 'n', sentado: true, digita: true }; INFO_LOCAL['c' + i] = { f: 'n' }; });
-  INFO_LOCAL.recepcao = { f: 'e', sentado: true, digita: true }; INFO_LOCAL.atlas = { f: 's', sentado: true };
-  INFO_LOCAL.sV = { f: 'n' };
-  for (let i = 0; i < 3; i++) { INFO_LOCAL['balcao' + i] = { f: 'w' }; INFO_LOCAL['quadro' + i] = { f: 'n' }; }
+  const POS_DESCANSO = {
+    ping0: [19.0, 12.3], ping1: [23.0, 12.3], sofa0: [15.5, 13.75], sofa1: [16.3, 13.75], sofa2: [17.1, 13.75],
+    comer0: [18.2, 2.9], comer1: [19.8, 2.9], comer2: [19.0, 3.7], comer3: [21.0, 2.9], comer4: [22.6, 2.9], comer5: [21.8, 3.7],
+    geladeira: [23.1, 1.45], pufe0: [19.8, 14.95], pufe1: [21.2, 15.1], pufe2: [22.6, 14.95], leitura0: [7.8, 13.05], leitura1: [9.4, 13.05],
+  };
+  for (const [n, txt, f, s, item] of LOCAIS_DESCANSO) no(n, ...POS_DESCANSO[n], { txt, f, sentado: !!s, item });
 
+  // ------------------------------------------------------------------ obstáculos e rotas (A* numa grade de 25 cm)
+  const GR = 0.25, GW = LARG / GR, GH = PROF / GR, BLOQ = new Uint8Array(GW * GH);
+  function bloquear(x0, y0, x1, y1, folga = 0.1) {
+    for (let j = Math.max(0, Math.floor((y0 - folga) / GR)); j < Math.min(GH, Math.ceil((y1 + folga) / GR)); j++)
+      for (let i = Math.max(0, Math.floor((x0 - folga) / GR)); i < Math.min(GW, Math.ceil((x1 + folga) / GR)); i++) BLOQ[j * GW + i] = 1;
+  }
+  const livre = (i, j) => i >= 0 && j >= 0 && i < GW && j < GH && !BLOQ[j * GW + i];
+  function aEstrela(a, b) {
+    const ci = p => [Math.min(GW - 1, Math.max(0, Math.floor(p[0] / GR))), Math.min(GH - 1, Math.max(0, Math.floor(p[1] / GR)))];
+    const [si, sj] = ci(a), [ti, tj] = ci(b), S = sj * GW + si, T = tj * GW + ti;
+    const g = new Float32Array(GW * GH).fill(Infinity), de = new Int32Array(GW * GH).fill(-1), fechado = new Uint8Array(GW * GH);
+    const h = k => { const dx = Math.abs(k % GW - ti), dy = Math.abs(((k / GW) | 0) - tj); return Math.max(dx, dy) + 0.414 * Math.min(dx, dy); };
+    const heap = [[h(S), S]];
+    const sobe = () => { let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+    const desce = () => { let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break; [heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } };
+    g[S] = 0;
+    const pode = (i, j, k) => k === T || k === S || livre(i, j);
+    while (heap.length) {
+      const [, u] = heap[0]; const ult = heap.pop(); if (heap.length) { heap[0] = ult; desce(); }
+      if (fechado[u]) continue;
+      if (u === T) break;
+      fechado[u] = 1;
+      const ui = u % GW, uj = (u / GW) | 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const vi = ui + di, vj = uj + dj; if (vi < 0 || vj < 0 || vi >= GW || vj >= GH) continue;
+        const v = vj * GW + vi;
+        if (!pode(vi, vj, v) || fechado[v]) continue;
+        if (di && dj && !(pode(ui + di, uj, uj * GW + ui + di) && pode(ui, uj + dj, (uj + dj) * GW + ui))) continue; // sem cortar quina
+        const ng = g[u] + (di && dj ? 1.414 : 1);
+        if (ng < g[v]) { g[v] = ng; de[v] = u; heap.push([ng + h(v), v]); sobe(); }
+      }
+    }
+    if (g[T] === Infinity) return null;
+    const cel = [];
+    for (let k = T; k !== -1 && k !== S; k = de[k]) cel.unshift(k);
+    return cel.map(k => [(k % GW + 0.5) * GR, (((k / GW) | 0) + 0.5) * GR]);
+  }
+  function visivel(p, q) { // linha reta livre entre p e q
+    const d = Math.hypot(q[0] - p[0], q[1] - p[1]), n = Math.ceil(d / 0.08);
+    for (let s = 1; s < n; s++) {
+      const x = p[0] + (q[0] - p[0]) * s / n, y = p[1] + (q[1] - p[1]) * s / n;
+      if (!livre(Math.floor(x / GR), Math.floor(y / GR))) return false;
+    }
+    return true;
+  }
+  const ROTAS = {};
   function rota(de, para) {
-    if (de === para) return [];
-    const dist = { [de]: 0 }, ant = {}, aberto = new Set(Object.keys(NOS));
-    while (aberto.size) {
-      let u = null;
-      for (const n of aberto) if (dist[n] !== undefined && (u === null || dist[n] < dist[u])) u = n;
-      if (u === null || u === para) break;
-      aberto.delete(u);
-      for (const [a, b] of ARESTAS) {
-        const v = a === u ? b : b === u ? a : null;
-        if (!v || !aberto.has(v)) continue;
-        const d = dist[u] + Math.hypot(NOS[u][0] - NOS[v][0], NOS[u][1] - NOS[v][1]);
-        if (dist[v] === undefined || d < dist[v]) { dist[v] = d; ant[v] = u; }
-      }
+    if (de === para || !NOS[de] || !NOS[para]) return NOS[para] && de !== para ? [para] : [];
+    const chave = de + '>' + para, nomeados = de[0] !== '~';
+    if (nomeados && ROTAS[chave]) return ROTAS[chave].slice();
+    const a = NOS[de], b = NOS[para], cam = aEstrela(a, b);
+    if (!cam) return [para];
+    cam[cam.length - 1] = b;
+    const pontos = [a, ...cam], suave = [a];
+    let i = 0;
+    while (i < pontos.length - 1) { // puxa o barbante: pula pontos enquanto a reta estiver livre
+      let j = pontos.length - 1;
+      while (j > i + 1 && !visivel(pontos[i], pontos[j])) j--;
+      suave.push(pontos[j]); i = j;
     }
-    if (dist[para] === undefined) return [para];
-    const r = [para];
-    while (r[0] !== de) r.unshift(ant[r[0]]);
-    return r.slice(1);
+    const nomes = suave.slice(1, -1).map(([x, y]) => { const n = '~' + x.toFixed(2) + ',' + y.toFixed(2); NOS[n] = [x, y]; return n; });
+    nomes.push(para);
+    if (nomeados) ROTAS[chave] = nomes.slice();
+    return nomes;
   }
 
-  // ------------------------------------------------------------------ desenho da sala (camada estática) + oclusores
-  const fundo = document.createElement('canvas');
-  let alvos = [];          // áreas clicáveis (quadros, bandeja)
-  let OCLUSORES = [];      // o que é redesenhado por cima de quem está atrás
-  let assinatura = '';
-  let REDESENHO = false;   // true ao redesenhar um oclusor sobre as pessoas (sem sombras no chão)
+  // ------------------------------------------------------------------ itens do cenário (cada um vira um sprite)
+  let ITENS = [], ALVOS_ARTE = [];
+  // box: pegada no chão [x0, y0, x1, y1]; z0/z1: altura; f(): desenha (nas coordenadas da arte)
+  const item = (box, z0, z1, f, o = {}) => ITENS.push({ box, z0, z1, f, ...o });
+  const BLOQUEIOS = [];
+  const obst = (x0, y0, x1, y1) => BLOQUEIOS.push([x0, y0, x1, y1]);
 
-  function telaDe(x0, y0, x1, y1, z1) {
-    const pts = [];
-    for (const x of [x0, x1]) for (const y of [y0, y1]) for (const z of [0, z1]) pts.push(P(x, y, z));
-    return { x0: Math.min(...pts.map(p => p[0])), x1: Math.max(...pts.map(p => p[0])), y0: Math.min(...pts.map(p => p[1])), y1: Math.max(...pts.map(p => p[1])) };
+  function mesaTrabalho(x0, y0, x1, y1, cor = COR.movel) {
+    const pe = (x, y) => caixa(x, y, x + 0.07, y + 0.07, 0, 0.7, tom(cor, 0.55), { brilho: false });
+    item([x0, y0, x1, y1], 0, 0.76, () => {
+      pe(x0 + 0.05, y0 + 0.05); pe(x1 - 0.12, y0 + 0.05); pe(x0 + 0.05, y1 - 0.12); pe(x1 - 0.12, y1 - 0.12);
+      caixa(x0, y0, x1, y1, 0.7, 0.76, cor);
+    }, { sombra: true });
+    obst(x0, y0, x1, y1);
+  }
+  function crt(x, y, z, face, tela) { // monitor de tubo; face: para onde a tela aponta
+    const w = 0.22, p = 0.2, h = 0.4, alongX = face === 'n' || face === 's';
+    const [bx0, by0, bx1, by1] = alongX ? [x - w, y - p, x + w, y + p] : [x - p, y - w, x + p, y + w];
+    caixa(x - 0.12, y - 0.1, x + 0.12, y + 0.1, z, z + 0.04, tom(COR.crt, 0.8), { brilho: false });
+    caixa(bx0, by0, bx1, by1, z + 0.04, z + h, COR.crt);
+    const corTela = !tela ? '#232A28' : tela === 'trabalhando' ? '#14402A' : tela === 'pendencia' ? '#5A1F1C' : tela === 'concluido' ? '#1C5A33' : '#1D3442';
+    if (face === 's' || face === 'e') { // tela visível
+      const eixo = face === 's' ? 'x' : 'y', c = face === 's' ? by1 + 0.001 : bx1 + 0.001, a0 = (face === 's' ? bx0 : by0) + 0.05, a1 = (face === 's' ? bx1 : by1) - 0.05;
+      painel(eixo, c, a0, a1, z + 0.1, z + h - 0.06, corTela);
+      if (tela === 'trabalhando') for (let k = 0; k < 3; k++) {
+        const l1 = a0 + 0.04, l2 = a0 + 0.04 + (a1 - a0 - 0.08) * [0.8, 0.5, 0.65][k];
+        painel(eixo, c + 0.001, l1, l2, z + h - 0.13 - k * 0.07, z + h - 0.11 - k * 0.07, '#7CE39A');
+      } else if (tela === 'pendencia') painel(eixo, c + 0.001, (a0 + a1) / 2 - 0.02, (a0 + a1) / 2 + 0.02, z + 0.16, z + h - 0.12, '#FF8A80');
+      else if (tela === 'concluido') painel(eixo, c + 0.001, a0 + 0.08, a1 - 0.08, z + 0.2, z + 0.24, '#A8F0BE');
+      else if (tela) painel(eixo, c + 0.001, (a0 + a1) / 2 - 0.03, (a0 + a1) / 2 + 0.03, z + 0.2, z + 0.24, '#5FA8C8');
+    } else { // costas do monitor: aberturas de ventilação
+      const eixo = face === 'n' ? 'x' : 'y', c = face === 'n' ? by1 + 0.001 : bx1 + 0.001, a0 = face === 'n' ? bx0 : by0;
+      for (let k = 0; k < 3; k++) painel(eixo, c, a0 + 0.1, a0 + 0.34, z + 0.14 + k * 0.07, z + 0.16 + k * 0.07, tom(COR.crt, 0.62));
+    }
+  }
+  function teclado(x, y, z, alongX) {
+    const [x0, y0, x1, y1] = alongX ? [x - 0.2, y - 0.07, x + 0.2, y + 0.07] : [x - 0.07, y - 0.2, x + 0.07, y + 0.2];
+    caixa(x0, y0, x1, y1, z, z + 0.025, '#D6CDB8', { brilho: false, contorno: '#8C8370' });
+  }
+  function luminaria(x, y, z, cor = '#F2C14E') {
+    caixa(x - 0.07, y - 0.07, x + 0.07, y + 0.07, z, z + 0.03, '#3A3A44', { brilho: false });
+    caixa(x - 0.015, y - 0.015, x + 0.015, y + 0.015, z, z + 0.32, '#3A3A44', { brilho: false, contorno: false });
+    cilindro(x, y, 0.11, z + 0.3, z + 0.42, cor, { topo: tom(cor, 1.1) });
+  }
+  function cadeiraEscritorio(x, y, face, cor = COR.cadeira) {
+    item([x - 0.22, y - 0.22, x + 0.22, y + 0.22], 0, 0.5, () => {
+      caixa(x - 0.2, y - 0.04, x + 0.2, y + 0.04, 0.02, 0.06, '#24262F', { brilho: false });
+      caixa(x - 0.04, y - 0.2, x + 0.04, y + 0.2, 0.02, 0.06, '#24262F', { brilho: false });
+      caixa(x - 0.03, y - 0.03, x + 0.03, y + 0.03, 0.06, 0.42, '#5B6070', { brilho: false, contorno: false });
+      caixa(x - 0.22, y - 0.22, x + 0.22, y + 0.22, 0.42, 0.5, cor);
+    });
+    const e = { n: [x - 0.22, y + 0.16, x + 0.22, y + 0.24], s: [x - 0.22, y - 0.24, x + 0.22, y - 0.16], e: [x - 0.24, y - 0.22, x - 0.16, y + 0.22], w: [x + 0.16, y - 0.22, x + 0.24, y + 0.22] }[face];
+    item(e, 0.5, 0.95, () => caixa(e[0], e[1], e[2], e[3], 0.5, 0.95, tom(cor, 1.08)));
+  }
+  function banqueta(x, y, cor = '#7A5236') {
+    item([x - 0.18, y - 0.18, x + 0.18, y + 0.18], 0, 0.48, () => {
+      caixa(x - 0.03, y - 0.03, x + 0.03, y + 0.03, 0, 0.42, '#3A3A44', { brilho: false, contorno: false });
+      cilindro(x, y, 0.18, 0.42, 0.48, cor);
+    });
+  }
+  function planta(x, y, esc = 1, tipo = 0) {
+    item([x - 0.22 * esc, y - 0.22 * esc, x + 0.22 * esc, y + 0.22 * esc], 0, 1.2 * esc, () => {
+      cilindro(x, y, 0.2 * esc, 0, 0.32 * esc, COR.vaso, { topo: '#4A3022' });
+      const [cx, cy] = Pa(x, y, 0.32 * esc), u = K * esc;
+      if (tipo === 1) { // folhas altas (espada)
+        const fs = [[-0.32, 1.0], [-0.12, 1.25], [0.08, 1.15], [0.26, 0.95], [-0.02, 0.8]];
+        for (const [dx, hh] of fs) { const x1 = cx + dx * u * 0.9, y1 = cy - hh * u * 1.1; poli([[cx - 2 + dx * 3, cy], [x1 - 1, y1], [x1 + 2, y1 + 2], [cx + 2 + dx * 3, cy]], COR.folha1); linha(cx + dx * 3, cy, x1, y1, COR.folha3); }
+        return;
+      }
+      const bolas = [[0, -0.42, 0.42], [-0.3, -0.25, 0.32], [0.3, -0.27, 0.33], [-0.12, -0.7, 0.3], [0.18, -0.62, 0.3]];
+      for (const [dx, dy, r] of bolas) disco(cx + dx * u, cy + dy * u, r * u + 1, r * u * 0.9 + 1, COR.folha3);
+      for (const [dx, dy, r] of bolas) disco(cx + dx * u, cy + dy * u, r * u, r * u * 0.9, COR.folha1);
+      for (const [dx, dy, r] of bolas) disco(cx + dx * u - r * u * 0.3, cy + dy * u - r * u * 0.3, r * u * 0.45, r * u * 0.38, COR.folha2);
+    }, { sombra: true });
+    obst(x - 0.22 * esc, y - 0.22 * esc, x + 0.22 * esc, y + 0.22 * esc);
+  }
+  function estante(x0, y0, x1, y1, h, frenteEixo, cor = COR.movelEsc) {
+    item([x0, y0, x1, y1], 0, h, () => {
+      caixa(x0, y0, x1, y1, 0, h, cor);
+      const prateleiras = Math.max(2, Math.round(h / 0.42));
+      for (let p = 0; p < prateleiras; p++) {
+        const z0 = 0.08 + p * (h - 0.12) / prateleiras, z1 = z0 + (h - 0.12) / prateleiras - 0.06;
+        if (frenteEixo === 'y') { // frente no plano x = x1
+          painel('y', x1 + 0.001, y0 + 0.05, y1 - 0.05, z0, z1 + 0.04, tom(cor, 0.45));
+          for (let a = y0 + 0.07, n = 0; a < y1 - 0.1; n++) { const w = 0.07 + ruido(n, p) * 0.06, alt = (z1 - z0) * (0.6 + ruido(p, n) * 0.4); painel('y', x1 + 0.002, a, Math.min(y1 - 0.06, a + w), z0, z0 + alt, LIVROS[(n * 3 + p) % LIVROS.length]); a += w + 0.012; }
+        } else { // frente no plano y = y1
+          painel('x', y1 + 0.001, x0 + 0.05, x1 - 0.05, z0, z1 + 0.04, tom(cor, 0.45));
+          for (let a = x0 + 0.07, n = 0; a < x1 - 0.1; n++) { const w = 0.07 + ruido(n, p) * 0.06, alt = (z1 - z0) * (0.6 + ruido(p, n) * 0.4); painel('x', y1 + 0.002, a, Math.min(x1 - 0.06, a + w), z0, z0 + alt, LIVROS[(n * 5 + p) % LIVROS.length]); a += w + 0.012; }
+        }
+      }
+    }, { sombra: true });
+    obst(x0, y0, x1, y1);
+  }
+  function vidro(x0, y0, x1, y1, h = 2.2) { // parede de vidro em trechos de ~1 m (cada trecho é ordenado com as pessoas)
+    const horiz = x1 - x0 > y1 - y0, a = horiz ? x0 : y0, b = horiz ? x1 : y1;
+    for (let s = a; s < b - 0.01; s += 1.5) {
+      const e = Math.min(b, s + 1.5), box = horiz ? [s, y0, e, y1] : [x0, s, x1, e];
+      item(box, 0, h, () => {
+        caixa(box[0], box[1], box[2], box[3], 0.0, h, COR.vidro, { alfa: 0.22, brilho: false, contorno: false });
+        // brilhos diagonais no vidro
+        const m = [[s + 0.35, s + 0.47], [s + 0.6, s + 0.66]];
+        for (const [p, q] of m) {
+          if (q > e) continue;
+          const pts = horiz ? [Pa(p, y1, h - 0.3), Pa(q, y1, h - 0.3), Pa(q - 0.25, y1, 0.4), Pa(p - 0.25, y1, 0.4)] : [Pa(x1, p, h - 0.3), Pa(x1, q, h - 0.3), Pa(x1, q - 0.25, 0.4), Pa(x1, p - 0.25, 0.4)];
+          poli(pts, '#FFFFFF', 0.18);
+        }
+        const aco = '#566079';
+        caixa(box[0], box[1], box[2], box[3], h - 0.05, h, aco, { brilho: false });
+        caixa(box[0], box[1], box[2], box[3], 0, 0.05, aco, { brilho: false });
+        if (horiz) caixa(s, y0, s + 0.04, y1, 0, h, aco, { brilho: false }); else caixa(x0, s, x1, s + 0.04, 0, h, aco, { brilho: false });
+      });
+      obst(box[0], box[1], box[2], box[3]);
+    }
   }
 
-  function desenharFundo(d) {
-    const cf = fundo.getContext('2d');
-    fundo.width = W * DPR; fundo.height = H * DPR;
-    cf.setTransform(DPR, 0, 0, DPR, 0, 0);
-    cf.clearRect(0, 0, W, H);
-    alvos = []; OCLUSORES = [];
-    caixa(cf, 0, 0, LARG, PROF, -0.35, 0, COR.piso, { esq: '#E2E4EA', dir: '#D3D6DE' });
-    for (const s of SALAS) {
-      const [x0, y0, x1, y1] = s.r;
-      poli(cf, [P(x0, y0), P(x1, y0), P(x1, y1), P(x0, y1)], s.id === 'corredor' ? COR.corredor : COR[s.id]);
-    }
-    // texturas e tapetes
-    cf.strokeStyle = 'rgba(120,130,150,.07)'; cf.lineWidth = 1;
-    for (let x = 24; x < 35.85; x += 1) { const a = P(x, 0.3), b = P(x, 8.5); cf.beginPath(); cf.moveTo(...a); cf.lineTo(...b); cf.stroke(); }
-    for (let y = 1; y < 8.5; y += 1) { const a = P(23.3, y), b = P(35.85, y); cf.beginPath(); cf.moveTo(...a); cf.lineTo(...b); cf.stroke(); }
-    for (let y = 1; y < 8.5; y += 0.5) { const a = P(15.9, y), b = P(23.0, y); cf.beginPath(); cf.moveTo(...a); cf.lineTo(...b); cf.stroke(); }
-    poli(cf, [P(5.6, 0.6), P(7.7, 0.6), P(7.7, 4.0), P(5.6, 4.0)], '#ECE6DA');
-    poli(cf, [P(9.4, 3.4), P(14.6, 3.4), P(14.6, 5.9), P(9.4, 5.9)], '#E3E8F0');
-    poli(cf, [P(17.0, 1.8), P(21.6, 1.8), P(21.6, 4.6), P(17.0, 4.6)], '#ECE4D8');
-    poli(cf, [P(27.9, 12.1), P(32.8, 12.1), P(32.8, 15.4), P(27.9, 15.4)], '#C9DBF6');
-    poli(cf, [P(0.35, 5.2), P(1.3, 5.2), P(1.3, 7.4), P(0.35, 7.4)], '#E7E2D6');
-    poli(cf, [P(22.2, 20.2), P(24.6, 20.2), P(24.6, 23.4), P(22.2, 23.4)], '#E9E1F5');
-    for (const s of SALAS) if (s.nome) textoChao(cf, s.nome, s.rot[0], s.rot[1], 0.36);
-    textoChao(cf, 'ENTRADA', 0.55, 7.25, 0.26, '#B4AFA2', 'y');
+  // ------------------------------------------------------------------ montagem do cenário (depende dos dados)
+  function montarItens(d) {
+    ITENS = []; BLOQUEIOS.length = 0; ALVOS_ARTE = [];
+    const est = d.estacoes || {};
 
-    const itens = [];
-    const add = (k, f) => itens.push({ k, f });
-    // oclusor: caixa no chão [x0,y0,x1,y1,altura] desenhada por f (também redesenhada sobre quem estiver atrás)
-    const ocl = (k, box, f) => { add(k, f); OCLUSORES.push({ k, box, f, tela: telaDe(...box) }); };
-    const cad = (x, y, face, cor) => {
-      add(x * 2 + y * 2, c => cadeira(c, x, y, face, cor));
-      if (face === 'n' || face === 'w') { // encosto entre a pessoa e quem olha a cena
-        const e = ENCOSTO(x, y, face);
-        OCLUSORES.push({ k: x * 2 + y * 2 + 0.01, box: [e[0], e[1], e[2], e[3], 0.95],
-          f: c => caixa(c, e[0], e[1], e[2], e[3], 0.46, 0.95, sombra(cor || COR.cadeira, 0.94)), tela: telaDe(e[0], e[1], e[2], e[3], 0.95) });
-      }
-    };
+    // ---- sala do gerente (vidro)
+    vidro(0, 4.96, 3.9, 5.04); vidro(5.1, 4.96, 6.0, 5.04); vidro(5.96, 0, 6.04, 5.04);
+    item([1.5, 2.1, 4.5, 2.9], 0, 0.78, () => {
+      caixa(1.5, 2.1, 4.5, 2.9, 0, 0.72, COR.movelEsc);
+      painel('x', 2.901, 1.7, 4.3, 0.12, 0.6, tom(COR.movelEsc, 0.9));
+      caixa(1.45, 2.05, 4.55, 2.95, 0.72, 0.78, tom(COR.movelEsc, 1.2));
+    }, { sombra: true });
+    obst(1.5, 2.1, 4.5, 2.9);
+    item([1.75, 2.2, 2.25, 2.62], 0.78, 1.2, () => crt(2.0, 2.4, 0.78, 'n', d.atlas_trabalhando ? 'trabalhando' : 'ligado'));
+    item([3.75, 2.2, 4.25, 2.62], 0.78, 1.2, () => crt(4.0, 2.4, 0.78, 'n', d.atlas_trabalhando ? 'trabalhando' : 'ligado'));
+    item([2.6, 2.3, 3.4, 2.6], 0.78, 0.82, () => { caixa(2.65, 2.32, 3.0, 2.58, 0.78, 0.8, '#F4F1E8', { brilho: false }); caixa(3.05, 2.35, 3.35, 2.55, 0.78, 0.81, '#E9E3D3', { brilho: false }); });
+    item([4.3, 2.75, 4.48, 2.9], 0.78, 1.25, () => luminaria(4.39, 2.82, 0.78, '#3E8E5B'));
+    cadeiraEscritorio(3.0, 1.4, 's', '#5A3B2E');
+    estante(0.0, 0.5, 0.42, 2.3, 2.0, 'y');
+    planta(0.65, 4.35, 1.25);
+    planta(5.45, 4.35, 0.9, 1);
 
-    // paredes (as internas escondem as pernas de quem passa atrás delas)
-    for (const [x0, y0, x1, y1, h] of PAREDES) {
-      const f = c => {
-        caixa(c, x0, y0, x1, y1, 0, h, COR.parede, { esq: COR.paredeE, dir: COR.paredeD });
-        if (h > 1.2 && y0 === 0) for (const [a, b] of JANELAS_X) { const i0 = Math.max(a, x0), i1 = Math.min(b, x1); if (i1 > i0) janela(c, 'x', i0, i1, y1); }
-        if (h > 1.2 && x0 === 0) for (const [a, b] of JANELAS_Y) { const i0 = Math.max(a, y0), i1 = Math.min(b, y1); if (i1 > i0) janela(c, 'y', i0, i1, x1); }
-      };
-      if (h > 1.2) add(x0 + x1 + y0 + y1 - 0.2, f); else ocl(x0 + x1 + y0 + y1 - 0.2, [x0, y0, x1, y1, h], f);
+    // ---- quadro de vagas e janela
+    planta(6.6, 0.55, 1.0, 1);
+    estante(15.2, 0, 16.8, 0.42, 1.85, 'x');
+    item([17.0, 0.3, 17.36, 0.66], 0, 1.35, () => { // bebedouro
+      caixa(17.0, 0.3, 17.36, 0.66, 0, 0.95, '#E8ECF0');
+      cilindro(17.18, 0.48, 0.15, 0.95, 1.35, '#7EC3EB', { topo: '#A9DAF5' });
+    }, { sombra: true });
+    obst(17.0, 0.3, 17.36, 0.66);
+
+    // ---- copa
+    item([17.6, 0, 22.2, 0.7], 0, 1.05, () => {
+      caixa(17.6, 0, 22.2, 0.68, 0, 0.88, '#E9E4DA');
+      for (let x = 17.6; x < 22.1; x += 0.9) painel('x', 0.681, x + 0.06, x + 0.84, 0.08, 0.8, '#DCD5C7');
+      caixa(17.55, 0, 22.25, 0.72, 0.88, 0.93, '#4C4A55');
+      caixa(19.6, 0.1, 20.4, 0.55, 0.925, 0.93, '#9AA3AD', { brilho: false }); // pia
+      caixa(18.0, 0.1, 18.45, 0.5, 0.93, 1.3, '#2E2E36'); caixa(18.1, 0.42, 18.35, 0.5, 0.95, 1.02, '#C0504D', { contorno: false }); // cafeteira
+      caixa(21.2, 0.08, 21.95, 0.55, 0.93, 1.25, '#C9CED6'); painel('x', 0.551, 21.3, 21.75, 0.98, 1.2, '#2B3640'); // micro-ondas
+    }, { sombra: true });
+    obst(17.6, 0, 22.2, 0.7);
+    item([22.6, 0, 23.6, 0.8], 0, 2.0, () => {
+      caixa(22.6, 0, 23.6, 0.8, 0, 2.0, '#CED4DC');
+      painel('x', 0.801, 22.62, 23.58, 1.28, 1.3, '#8E98A4');
+      painel('x', 0.802, 23.4, 23.45, 1.4, 1.8, '#6C7480'); painel('x', 0.802, 23.4, 23.45, 0.6, 1.1, '#6C7480');
+    }, { sombra: true });
+    obst(22.6, 0, 23.6, 0.8);
+    for (const [tx, ty, base] of [[19.0, 2.9, 0], [21.8, 2.9, 3]]) {
+      item([tx - 0.45, ty - 0.45, tx + 0.45, ty + 0.45], 0, 0.78, () => {
+        caixa(tx - 0.05, ty - 0.05, tx + 0.05, ty + 0.05, 0, 0.72, '#3A3A44', { brilho: false });
+        cilindro(tx, ty, 0.45, 0.72, 0.78, '#F1ECE2');
+        cilindro(tx + 0.12, ty - 0.08, 0.06, 0.78, 0.85, '#FFFFFF', { contorno: '#9A8F80' });
+      }, { sombra: true });
+      obst(tx - 0.45, ty - 0.45, tx + 0.45, ty + 0.45);
+      banqueta(...POS_DESCANSO['comer' + base]); banqueta(...POS_DESCANSO['comer' + (base + 1)]); banqueta(...POS_DESCANSO['comer' + (base + 2)]);
     }
 
     // ---- recepção
-    const fila = Math.min(14, (d.fila_triagem || 0) + (d.fila_analise || 0));
-    ocl(2 * 2.8 + 2 * 4.9, [1.3, 4.6, 2.8, 5.2, 0.95], c => caixa(c, 1.3, 4.6, 2.8, 5.2, 0, 0.95, '#FFFFFF', { sombra: 1 }));
-    ocl(2.8 + 3.55 + 1.35 + 5.25, [2.75, 1.35, 3.55, 5.25, 1.45], c => {
-      caixa(c, 2.8, 1.4, 3.5, 5.2, 0, 0.95, '#FFFFFF', { sombra: 1 });
-      caixa(c, 2.75, 1.35, 3.55, 5.25, 0.95, 1.0, '#F3F1EC');
-      caixa(c, 2.86, 2.5, 2.94, 3.3, 1.0, 1.42, '#2B2F38');
-      caixa(c, 2.95, 4.1, 3.42, 4.85, 1.0, 1.03, '#D9DCE3');
-      for (let i = 0; i < fila; i++) caixa(c, 3.0 + (i % 2) * 0.02, 4.15, 3.38, 4.8, 1.03 + i * 0.03, 1.05 + i * 0.03, i % 2 ? '#FFFFFF' : '#F4F4F4');
+    item([2.2, 9.6, 2.8, 12.6], 0, 1.06, () => {
+      caixa(2.25, 9.6, 2.8, 12.6, 0, 1.0, '#7B4A2A');
+      for (let y = 9.75; y < 12.5; y += 0.6) painel('y', 2.801, y, y + 0.45, 0.15, 0.85, '#6A3F23');
+      caixa(2.15, 9.55, 2.85, 12.65, 1.0, 1.06, '#C9A27A');
+    }, { sombra: true });
+    obst(2.2, 9.6, 2.8, 12.6);
+    item([2.25, 10.75, 2.65, 11.25], 1.06, 1.5, () => crt(2.45, 11.0, 1.06, 'w', 'ligado'));
+    item([2.3, 11.5, 2.55, 11.9], 1.06, 1.1, () => teclado(2.42, 11.6, 1.06, false));
+    const fila = Math.min(16, (d.fila_triagem || 0) + (d.fila_analise || 0));
+    item([2.3, 12.0, 2.75, 12.5], 1.06, 1.1 + fila * 0.025, () => {
+      caixa(2.3, 12.0, 2.75, 12.5, 1.06, 1.1, '#5B5F6E', { brilho: false });
+      for (let i = 0; i < fila; i++) caixa(2.34 + (i % 2) * 0.01, 12.04, 2.71, 12.46, 1.1 + i * 0.025, 1.12 + i * 0.025, i % 2 ? '#FFFFFF' : '#F1EEE6', { brilho: false, contorno: '#B8B2A4' });
     });
-    const topo = 1.06 + fila * 0.03;
-    alvos.push({ tipo: 'bandeja', pts: [P(2.9, 4.05, topo + 0.25), P(3.5, 4.05, topo + 0.25), P(3.5, 4.9, 1.0), P(2.9, 4.9, 1.0)] });
-    cad(2.0, 2.9, 'e');
-    add(6.75 * 2 + 1.1 * 2, c => { caixa(c, 5.9, 0.7, 7.6, 1.5, 0, 0.42, COR.estofado, { sombra: 1 }); caixa(c, 5.9, 0.7, 7.6, 0.95, 0.42, 0.85, sombra(COR.estofado, 0.95)); });
-    add(7.1 * 2 + 3.4 * 2, c => { caixa(c, 6.6, 3.0, 7.6, 3.8, 0, 0.42, COR.estofado, { sombra: 1 }); caixa(c, 7.38, 3.0, 7.6, 3.8, 0.42, 0.85, sombra(COR.estofado, 0.95)); });
-    add(6.3 * 2 + 2.5 * 2, c => cilindro(c, 6.3, 2.5, 0.32, 0, 0.42, '#FFFFFF'));
-    add(1.6, c => planta(c, 0.8, 0.8, 1.2)); add(7.5 * 2 + 7.9 * 2, c => planta(c, 7.5, 7.9)); add(0.8 * 2 + 4.4 * 2, c => planta(c, 0.8, 4.3, 0.9));
+    ALVOS_ARTE.push({ tipo: 'bandeja', pts: [Pa(2.3, 12.0, 1.2 + fila * 0.025), Pa(2.75, 12.0, 1.2 + fila * 0.025), Pa(2.75, 12.5, 1.06), Pa(2.3, 12.5, 1.06)] });
+    cadeiraEscritorio(1.3, 11.1, 'e', '#7A4F7E');
+    banqueta(0.55, 15.35, '#4F81BD'); banqueta(1.35, 15.35, '#4F81BD');
+    planta(0.5, 8.9, 1.15); planta(0.55, 12.6, 0.85, 1); planta(3.4, 15.45, 1.0);
 
-    // ---- vagas: quadro grande na parede (o painel lateral mostra os detalhes)
-    add(2 * 15.0 + 2 * 0.42, c => {
-      caixa(c, 9.0, 0.3, 15.0, 0.42, 0.45, 1.45, '#FFFFFF', { linha: '#DADDE4' });
-      const f = (x0, x1, z0, z1, cor) => poli(c, [P(x0, 0.43, z0), P(x1, 0.43, z0), P(x1, 0.43, z1), P(x0, 0.43, z1)], cor);
-      f(9.0, 15.0, 1.33, 1.45, ACENTO);
-      const vs = (d.vagas || []).filter(v => v.status !== 'cancelada').slice(0, 14);
-      vs.forEach((v, i) => {
-        const col = i % 7, lin = Math.floor(i / 7), x0 = 9.15 + col * 0.83, z1 = 1.25 - lin * 0.42;
-        const cor = v.status !== 'aberta' ? '#B9BDC6' : v.sem_responsavel ? '#E06A5F' : v.pendentes ? '#F2B33D' : '#5DB37E';
-        f(x0, x0 + 0.7, z1 - 0.34, z1, '#F1F3F6'); f(x0, x0 + 0.7, z1 - 0.07, z1, cor);
-        for (let k = 0; k < 3; k++) f(x0 + 0.06, x0 + 0.06 + (0.52 - k * 0.12), z1 - 0.14 - k * 0.06, z1 - 0.11 - k * 0.06, '#C9CDD6');
-      });
-      alvos.push({ tipo: 'vagas', pts: [P(9.0, 0.42, 1.45), P(15.0, 0.42, 1.45), P(15.0, 0.42, 0.45), P(9.0, 0.42, 0.45)] });
-    });
-    ocl(9.8 + 14.2 + 3.9 + 5.4, [9.8, 3.9, 14.2, 5.4, 0.74], c => caixa(c, 9.8, 3.9, 14.2, 5.4, 0, 0.74, COR.mesa, { sombra: 1, linha: '#E3E5EA' }));
-    for (const x of [10.6, 12.0, 13.4]) { cad(x, 3.3, 's'); cad(x, 6.0, 'n'); }
-    add(8.8 * 2 + 7.9 * 2, c => planta(c, 8.8, 7.9)); add(15.1 * 2 + 7.9 * 2, c => planta(c, 15.1, 7.9));
-
-    // ---- supervisor
-    ocl(17.4 + 21.2 + 3.4 + 4.2, [17.4, 3.4, 21.2, 4.2, 1.36], c => {
-      caixa(c, 17.4, 3.4, 21.2, 4.2, 0, 0.74, COR.mesa, { sombra: 1, linha: '#E3E5EA' });
-      for (const x of [18.0, 19.6]) { // monitores virados para o Atlas: daqui vemos a parte de trás
-        caixa(c, x + 0.35, 3.62, x + 0.45, 3.72, 0.74, 0.9, '#9AA0AA');
-        caixa(c, x, 3.48, x + 0.8, 3.58, 0.88, 1.36, '#3A3F4A');
-        if (d.atlas_trabalhando) poli(c, [P(x, 3.48, 1.36), P(x + 0.8, 3.48, 1.36), P(x + 0.8, 3.48, 1.39), P(x, 3.48, 1.39)], '#8FD3FF');
+    // ---- ilhas de trabalho (12 estações)
+    ILHAS.forEach((x0, k) => {
+      mesaTrabalho(x0, 6.3, x0 + 2.8, 7.1); mesaTrabalho(x0, 7.1, x0 + 2.8, 7.9);
+      for (let i = k * 4; i < k * 4 + 4; i++) {
+        const e = ESTACOES[i], fA = e.fila === 'A', tela = est[i] || null;
+        const my = fA ? 6.86 : 7.34;
+        item([e.x - 0.22, my - 0.2, e.x + 0.22, my + 0.2], 0.76, 1.16, () => crt(e.x, my, 0.76, fA ? 'n' : 's', tela));
+        item([e.x - 0.2, (fA ? 6.4 : 7.66) - 0.07, e.x + 0.2, (fA ? 6.4 : 7.66) + 0.07], 0.76, 0.79, () => teclado(e.x, fA ? 6.4 : 7.66, 0.76, true));
+        if (tela === 'trabalhando') item([e.x + 0.3, my - 0.15, e.x + 0.6, my + 0.15], 0.76, 0.8, () => caixa(e.x + 0.32, my - 0.14, e.x + 0.58, my + 0.14, 0.76, 0.79, '#FFFFFF', { brilho: false, contorno: '#B8B2A4' }));
+        cadeiraEscritorio(e.x, e.y, e.face);
       }
-      caixa(c, 18.9, 3.42, 19.6, 3.6, 0.74, 0.77, '#E6E8EC');
+      item([x0 + 0.08, 6.32, x0 + 0.26, 6.5], 0.76, 1.2, () => luminaria(x0 + 0.17, 6.41, 0.76));
+      item([x0 + 2.54, 7.5, x0 + 2.72, 7.68], 0.76, 1.2, () => luminaria(x0 + 2.63, 7.59, 0.76));
+      item([x0 + 1.25, 6.95, x0 + 1.55, 7.25], 0.76, 0.95, () => cilindro(x0 + 1.4, 7.1, 0.12, 0.76, 0.9, '#B95A2E', { topo: COR.folha1 }));
     });
-    cad(19.3, 2.6, 's', '#7D8492');
-    add(2 * 16.42 + 2 * 5.5, c => {
-      caixa(c, 16.3, 1.7, 16.42, 1.82, 0, 0.3, '#9AA0AA'); caixa(c, 16.3, 5.2, 16.42, 5.32, 0, 0.3, '#9AA0AA');
-      caixa(c, 16.3, 1.5, 16.42, 5.5, 0.3, 1.5, '#FFFFFF', { linha: '#DADDE4' });
-      const f = (y0, y1, z0, z1, cor) => poli(c, [P(16.43, y0, z0), P(16.43, y1, z0), P(16.43, y1, z1), P(16.43, y0, z1)], cor);
-      f(1.5, 5.5, 1.38, 1.5, ACENTO);
-      const q = d.quadro || {}, notas = [];
-      for (let i = 0; i < Math.min(6, q.vagas_abertas || 0); i++) notas.push('#BFE3C9');
-      for (let i = 0; i < Math.min(4, q.vagas_em_processamento || 0); i++) notas.push('#FFE69A');
-      for (let i = 0; i < Math.min(4, q.pendencias || 0); i++) notas.push('#F6B8B1');
-      notas.forEach((cor, i) => { const y0 = 1.7 + (i % 6) * 0.62, z1 = 1.28 - Math.floor(i / 6) * 0.3; f(y0, y0 + 0.5, z1 - 0.24, z1, cor); });
-      alvos.push({ tipo: 'quadro', pts: [P(16.42, 1.5, 1.5), P(16.42, 5.5, 1.5), P(16.42, 5.5, 0.3), P(16.42, 1.5, 0.3)] });
-    });
-    add(2 * 22.7 + 2 * 0.85, c => {
-      caixa(c, 21.0, 0.35, 22.7, 0.85, 0, 1.4, '#FFFFFF', { sombra: 1 });
-      const cores = ['#C9D3E3', '#E9D6B8', '#B8D2C2', '#DAC3D9', '#D7DAE0'];
-      for (let p = 0; p < 3; p++) for (let i = 0; i < 9; i++) {
-        const x = 21.1 + i * 0.17, z = 0.15 + p * 0.42;
-        poli(c, [P(x, 0.86, z), P(x + 0.13, 0.86, z), P(x + 0.13, 0.86, z + 0.3 - (i % 3) * 0.04), P(x, 0.86, z + 0.3 - (i % 3) * 0.04)], cores[(i + p) % 5]);
-      }
-    });
-    add(22.5 * 2 + 7.9 * 2, c => planta(c, 22.5, 7.9)); add(16.5 * 2 + 0.9 * 2, c => planta(c, 16.6, 0.9));
+    planta(10.3, 5.0, 0.9); planta(14.9, 5.0, 0.9); planta(19.4, 6.0, 1.2, 1);
 
-    // ---- alimentação
-    add(2 * 24.7 + 2 * 1.35, c => {
-      caixa(c, 23.7, 0.45, 24.7, 1.35, 0, 2.0, '#F4F6F8', { sombra: 1 });
-      const f = (x0, x1, z0, z1, cor) => poli(c, [P(x0, 1.36, z0), P(x1, 1.36, z0), P(x1, 1.36, z1), P(x0, 1.36, z1)], cor);
-      f(23.7, 24.7, 1.28, 1.3, '#D2D6DD'); f(24.55, 24.6, 1.4, 1.8, '#A7AEB9'); f(24.55, 24.6, 0.6, 1.1, '#A7AEB9');
-    });
-    add(2 * 31.4 + 2 * 1.1, c => {
-      caixa(c, 25.4, 0.35, 31.4, 1.1, 0, 0.95, '#FFFFFF', { sombra: 1 });
-      caixa(c, 26.4, 0.5, 27.4, 0.95, 0.93, 0.96, '#C9CED6');
-      caixa(c, 29.2, 0.45, 29.75, 0.9, 0.95, 1.42, '#3A3F4A'); caixa(c, 30.2, 0.45, 31.1, 0.95, 0.95, 1.35, '#E9EBEF');
-      for (let i = 0; i < 4; i++) caixa(c, 25.6 + i * 1.45, 0.36, 26.9 + i * 1.45, 0.4, 0.6, 0.62, '#E2E4EA');
-    });
-    for (const tx of [26.3, 29.8, 33.3]) {
-      const ty = 4.7;
-      for (const [dx, dy, f] of [[0, -1.15, 's'], [-1.15, 0, 'e'], [1.15, 0, 'w'], [0, 1.15, 'n']]) cad(tx + dx, ty + dy, f, '#C3C8D0');
-      ocl(tx * 2 + ty * 2 + 0.1, [tx - 0.75, ty - 0.75, tx + 0.75, ty + 0.75, 0.76], c => {
-        cilindro(c, tx, ty, 0.12, 0, 0.7, '#B8BEC8'); cilindro(c, tx, ty, 0.75, 0.7, 0.76, '#FFFFFF'); bola(c, tx + 0.2, ty - 0.1, 0.8, 0.07, '#F2C14E');
-      });
+    // ---- canto de leitura
+    estante(6.8, 11.6, 10.4, 12.0, 1.0, 'x', COR.movel);
+    for (const n of ['leitura0', 'leitura1']) {
+      const [x, y] = POS_DESCANSO[n];
+      item([x - 0.35, y - 0.35, x + 0.35, y + 0.35], 0, 0.45, () => caixa(x - 0.33, y - 0.3, x + 0.33, y + 0.33, 0, 0.42, '#C2703F'));
+      item([x - 0.35, y - 0.42, x + 0.35, y - 0.28], 0.42, 0.95, () => caixa(x - 0.35, y - 0.42, x + 0.35, y - 0.28, 0, 0.95, tom('#C2703F', 0.92)));
+      item([x + 0.28, y - 0.35, x + 0.4, y + 0.35], 0, 0.62, () => caixa(x + 0.28, y - 0.35, x + 0.4, y + 0.35, 0, 0.62, tom('#C2703F', 0.88)));
+      item([x - 0.4, y - 0.35, x - 0.28, y + 0.35], 0, 0.62, () => caixa(x - 0.4, y - 0.35, x - 0.28, y + 0.35, 0, 0.62, tom('#C2703F', 0.88)));
+      obst(x - 0.4, y - 0.42, x + 0.4, y - 0.28); obst(x + 0.28, y - 0.35, x + 0.4, y + 0.35); obst(x - 0.4, y - 0.35, x - 0.28, y + 0.35);
     }
-    add(35.4 * 2 + 7.9 * 2, c => planta(c, 35.4, 7.9, 1.1)); add(23.8 * 2 + 7.9 * 2, c => planta(c, 23.8, 7.9));
+    item([8.45, 12.95, 8.75, 13.25], 0, 0.55, () => { cilindro(8.6, 13.1, 0.16, 0.48, 0.54, COR.movel); caixa(8.57, 13.07, 8.63, 13.13, 0, 0.48, COR.movelEsc, { brilho: false }); });
+    item([10.3, 12.5, 10.55, 12.75], 0, 1.65, () => {
+      caixa(10.36, 12.56, 10.49, 12.69, 0, 0.04, '#3A3A44', { brilho: false });
+      caixa(10.41, 12.61, 10.44, 12.64, 0, 1.4, '#3A3A44', { brilho: false, contorno: false });
+      cilindro(10.425, 12.625, 0.16, 1.38, 1.62, '#F6E3B4', { topo: '#FFF1CC' });
+    });
+    obst(10.3, 12.5, 10.55, 12.75);
+    planta(11.3, 12.1, 1.25); planta(13.2, 15.4, 1.0, 1);
+    item([12.05, 13.45, 13.15, 14.55], 0, 0.78, () => {
+      caixa(12.55, 13.95, 12.65, 14.05, 0, 0.72, '#3A3A44', { brilho: false });
+      cilindro(12.6, 14.0, 0.55, 0.72, 0.78, COR.movel);
+      caixa(12.35, 13.8, 12.7, 14.05, 0.78, 0.8, '#F4F1E8', { brilho: false, contorno: '#B8B2A4' });
+    }, { sombra: true });
+    obst(12.05, 13.45, 13.15, 14.55);
+    cadeiraEscritorio(12.6, 13.15, 's', '#4B5068'); cadeiraEscritorio(12.6, 14.85, 'n', '#4B5068');
+    cadeiraEscritorio(11.75, 14.0, 'e', '#4B5068'); cadeiraEscritorio(13.45, 14.0, 'w', '#4B5068');
 
-    // ---- análise de currículos: 12 estações
-    ESTACOES.forEach(e => cad(e.x, e.y, 'n')); // o encosto fica na frente de quem trabalha
-    for (const fy of [13.0, 16.7, 20.4]) for (const [x0, x1] of BLOCOS) {
-      const est = ESTACOES.map((e, i) => [e, i]).filter(([e]) => e.mesaY === fy && e.x > x0 && e.x < x1);
-      ocl(x0 + x1 + fy * 2 + 0.8, [x0, fy - 0.06, x1, fy + 0.8, 1.32], c => {
-        caixa(c, x0, fy, x1, fy + 0.8, 0, 0.72, '#FFFFFF', { sombra: 1, linha: '#E3E5EA' });
-        caixa(c, x0, fy - 0.06, x1, fy + 0.02, 0.72, 1.12, '#E4E7EC');
-        for (const [e, i] of est) {
-          const oc = (d.estacoes || {})[i];
-          const tela = !oc ? '#4A505C' : oc === 'trabalhando' ? '#8FD3FF' : oc === 'pendencia' ? '#F2A39B' : oc === 'concluido' ? '#A8E0BC' : '#6F7C8F';
-          caixa(c, e.x - 0.05, e.mesaY + 0.12, e.x + 0.05, e.mesaY + 0.22, 0.72, 0.88, '#9AA0AA');
-          caixa(c, e.x - 0.45, e.mesaY + 0.08, e.x + 0.45, e.mesaY + 0.16, 0.86, 1.32, '#2B2F38');
-          poli(c, [P(e.x - 0.4, e.mesaY + 0.17, 0.9), P(e.x + 0.4, e.mesaY + 0.17, 0.9), P(e.x + 0.4, e.mesaY + 0.17, 1.28), P(e.x - 0.4, e.mesaY + 0.17, 1.28)], tela);
-          if (oc === 'trabalhando') for (let q = 0; q < 3; q++)
-            poli(c, [P(e.x - 0.32, e.mesaY + 0.18, 1.2 - q * 0.08), P(e.x + 0.1 - q * 0.08, e.mesaY + 0.18, 1.2 - q * 0.08), P(e.x + 0.1 - q * 0.08, e.mesaY + 0.18, 1.22 - q * 0.08), P(e.x - 0.32, e.mesaY + 0.18, 1.22 - q * 0.08)], '#FFFFFF');
-          caixa(c, e.x - 0.35, e.mesaY + 0.42, e.x + 0.35, e.mesaY + 0.6, 0.72, 0.75, '#E6E8EC');
-          if (oc === 'trabalhando') caixa(c, e.x - 0.75, e.mesaY + 0.3, e.x - 0.45, e.mesaY + 0.66, 0.72, 0.76, '#FFFFFF');
-        }
-      });
+    // ---- área de descanso
+    item([15.0, 10.6, 17.6, 11.0], 0, 0.5, () => caixa(15.0, 10.6, 17.6, 11.0, 0, 0.48, COR.movelEsc), { sombra: true });
+    item([15.4, 10.68, 17.2, 10.82], 0.5, 1.32, () => {
+      caixa(16.2, 10.7, 16.4, 10.8, 0.5, 0.6, '#1E2026', { brilho: false });
+      caixa(15.4, 10.68, 17.2, 10.82, 0.6, 1.32, '#1E2026');
+      painel('x', 10.821, 15.46, 17.14, 0.65, 1.27, d.tv_ligada ? '#5C9BD8' : '#2A2F3A');
+      if (d.tv_ligada) { painel('x', 10.822, 15.7, 16.5, 0.7, 0.92, '#8DC97A'); painel('x', 10.822, 16.6, 16.95, 1.0, 1.2, '#FFE08A'); painel('x', 10.822, 15.55, 16.2, 1.1, 1.17, '#E8F4FF'); }
+    });
+    obst(15.0, 10.6, 17.6, 11.0);
+    item([15.5, 12.1, 17.1, 12.6], 0, 0.42, () => { caixa(15.5, 12.1, 17.1, 12.6, 0.36, 0.42, COR.movel); for (const [x, y] of [[15.55, 12.15], [17.0, 12.15], [15.55, 12.5], [17.0, 12.5]]) caixa(x, y, x + 0.05, y + 0.05, 0, 0.36, COR.movelEsc, { brilho: false }); }, { sombra: true });
+    obst(15.5, 12.1, 17.1, 12.6);
+    const SOFA = '#A33F3F';
+    item([14.9, 13.4, 17.7, 14.1], 0, 0.42, () => caixa(15.1, 13.4, 17.5, 14.1, 0, 0.42, SOFA), { sombra: true });
+    item([14.9, 14.0, 17.7, 14.3], 0, 0.9, () => caixa(14.9, 14.0, 17.7, 14.3, 0, 0.9, tom(SOFA, 0.92)));
+    item([14.9, 13.4, 15.1, 14.0], 0, 0.62, () => caixa(14.9, 13.4, 15.1, 14.0, 0, 0.62, tom(SOFA, 0.95)));
+    item([17.5, 13.4, 17.7, 14.0], 0, 0.62, () => caixa(17.5, 13.4, 17.7, 14.0, 0, 0.62, tom(SOFA, 0.95)));
+    obst(14.9, 13.95, 17.7, 14.3); obst(14.9, 13.4, 15.1, 14.3); obst(17.5, 13.4, 17.7, 14.3);
+    item([19.6, 11.6, 22.4, 13.0], 0, 0.95, () => {
+      for (const [x, y] of [[19.8, 11.75], [22.15, 11.75], [19.8, 12.8], [22.15, 12.8]]) caixa(x, y, x + 0.07, y + 0.07, 0, 0.72, '#30343F', { brilho: false });
+      caixa(19.6, 11.6, 22.4, 13.0, 0.72, 0.78, '#2E7D5B', { topo: '#33895F' });
+      piso(19.62, 12.28, 22.38, 12.32, '#EAF5EF', undefined, 0.781);
+      piso(19.62, 11.62, 22.38, 11.65, '#EAF5EF', undefined, 0.781); piso(19.62, 12.95, 22.38, 12.98, '#EAF5EF', undefined, 0.781);
+      caixa(20.98, 11.5, 21.02, 13.1, 0.78, 0.92, '#F4F4F4', { brilho: false, contorno: '#9DA3AE' });
+    }, { sombra: true });
+    obst(19.6, 11.6, 22.4, 13.0);
+    for (const [n, cor] of [['pufe0', '#E07B39'], ['pufe1', '#4F81BD'], ['pufe2', '#9BBB59']]) {
+      const [x, y] = POS_DESCANSO[n];
+      item([x - 0.4, y - 0.4, x + 0.4, y + 0.4], 0, 0.4, () => {
+        const [cx, cy] = Pa(x, y, 0.16);
+        disco(cx, cy, 13, 8, tom(cor, 0.4)); disco(cx, cy - 1, 12, 7, tom(cor, 0.85)); disco(cx - 2, cy - 3, 9, 5, cor); disco(cx - 4, cy - 4, 4, 2, tom(cor, 1.2));
+      }, { sombra: true });
     }
-    add(2 * 0.9 + 2 * 17.6, c => { caixa(c, 0.35, 16.0, 0.9, 17.6, 0, 1.05, '#FFFFFF', { sombra: 1 }); caixa(c, 0.4, 16.4, 0.85, 17.2, 1.05, 1.25, '#D9DCE3'); });
-    add(20.4 * 2 + 11.9 * 2, c => { cilindro(c, 20.4, 11.9, 0.22, 0, 1.0, '#E6EBF2'); cilindro(c, 20.4, 11.9, 0.16, 1.0, 1.42, '#BFDDF2'); });
-    add(0.75 * 2 + 11.8 * 2, c => planta(c, 0.75, 11.8)); add(0.75 * 2 + 23.3 * 2, c => planta(c, 0.75, 23.3, 1.2)); add(20.5 * 2 + 23.4 * 2, c => planta(c, 20.5, 23.4));
+    planta(23.5, 10.4, 1.1); planta(23.5, 15.5, 1.2, 1); planta(14.0, 15.5, 0.95);
 
-    // ---- descanso e entretenimento
-    add(2 * 32.2 + 2 * 11.85, c => {
-      caixa(c, 28.4, 11.35, 32.0, 11.85, 0, 0.4, '#FFFFFF', { sombra: 1 });
-      caixa(c, 28.2, 11.3, 32.2, 11.4, 0.45, 1.05, '#22252C');
-      poli(c, [P(28.28, 11.41, 0.49), P(32.12, 11.41, 0.49), P(32.12, 11.41, 1.01), P(28.28, 11.41, 1.01)], d.tv_ligada ? '#6FA8E8' : '#343944');
-      if (d.tv_ligada) poli(c, [P(28.9, 11.42, 0.56), P(30.6, 11.42, 0.56), P(30.6, 11.42, 0.9), P(28.9, 11.42, 0.9)], '#9FD0F5');
-    });
-    add(29.2 + 31.2 + 12.6 + 13.1, c => caixa(c, 29.2, 12.6, 31.2, 13.1, 0, 0.38, '#FFFFFF', { sombra: 1, linha: '#E3E5EA' }));
-    add(28.4 + 32.2 + 13.7 + 14.6 - 0.2, c => {
-      caixa(c, 28.4, 13.7, 32.2, 14.6, 0, 0.42, '#C2CEDA', { sombra: 1 });
-      caixa(c, 28.4, 13.7, 28.66, 14.32, 0.42, 0.62, '#B6C3D0'); caixa(c, 31.94, 13.7, 32.2, 14.32, 0.42, 0.62, '#B6C3D0');
-    });
-    ocl(28.4 + 32.2 + 14.32 + 14.6, [28.4, 14.32, 32.2, 14.6, 0.88], c => caixa(c, 28.4, 14.32, 32.2, 14.6, 0.42, 0.88, '#B6C3D0'));
-    ocl(22.6 + 26.2 + 15.4 + 17.4, [22.6, 15.4, 26.2, 17.4, 0.94], c => {
-      for (const [x, y] of [[22.9, 15.6], [25.8, 15.6], [22.9, 17.05], [25.8, 17.05]]) caixa(c, x, y, x + 0.1, y + 0.1, 0, 0.72, '#8D939E');
-      caixa(c, 22.6, 15.4, 26.2, 17.4, 0.72, 0.78, '#4E8E77', { dir: '#3F735F', esq: '#46806B' });
-      poli(c, [P(22.65, 16.38, 0.781), P(26.15, 16.38, 0.781), P(26.15, 16.42, 0.781), P(22.65, 16.42, 0.781)], '#E9F2EE');
-      caixa(c, 24.38, 15.3, 24.42, 17.5, 0.78, 0.94, '#F4F4F4');
-    });
-    for (const [x, y] of [[30.5, 21.3], [32.6, 20.0], [34.3, 21.6]]) add(x * 2 + y * 2 - 0.2, c => { cilindro(c, x, y, 0.5, 0, 0.32, '#B9C6E6'); bola(c, x, y, 0.38, 0.32, '#B9C6E6'); });
-    // canto de leitura: estante na parede, duas poltronas e um abajur
-    add(2 * 21.9 + 2 * 22.8, c => {
-      caixa(c, 21.35, 19.4, 21.85, 23.0, 0, 1.7, '#FFFFFF', { sombra: 1 });
-      const cores = ['#C9D3E3', '#E9D6B8', '#B8D2C2', '#DAC3D9', '#F2C9B6'];
-      for (let p = 0; p < 4; p++) for (let i = 0; i < 16; i++) {
-        const y = 19.5 + i * 0.21, z = 0.12 + p * 0.4;
-        poli(c, [P(21.86, y, z), P(21.86, y + 0.16, z), P(21.86, y + 0.16, z + 0.3 - (i % 3) * 0.05), P(21.86, y, z + 0.3 - (i % 3) * 0.05)], cores[(i + p) % 5]);
-      }
-    });
-    for (const y of [21.0, 22.6]) {
-      add(23.0 * 2 + y * 2, c => {
-        caixa(c, 22.7, y - 0.4, 23.4, y + 0.4, 0, 0.42, '#D8C8E8', { sombra: 1 });
-        caixa(c, 22.6, y - 0.4, 22.82, y + 0.4, 0.42, 0.95, '#C9B6DC');
-        caixa(c, 22.7, y - 0.48, 23.4, y - 0.36, 0.42, 0.62, '#C9B6DC'); caixa(c, 22.7, y + 0.36, 23.4, y + 0.48, 0.42, 0.62, '#C9B6DC');
-      });
-    }
-    add(23.9 * 2 + 21.8 * 2, c => { cilindro(c, 23.9, 21.8, 0.22, 0, 0.5, '#FFFFFF'); cilindro(c, 23.9, 21.8, 0.03, 0.5, 1.35, '#8D939E'); bola(c, 23.9, 21.8, 1.42, 0.16, '#FFE7A8'); });
-    add(35.3 * 2 + 11.9 * 2, c => planta(c, 35.3, 11.9, 1.1)); add(35.3 * 2 + 23.3 * 2, c => planta(c, 35.3, 23.3, 1.2)); add(27.0 * 2 + 23.4 * 2, c => planta(c, 27.0, 23.4));
-    add(1.1 * 2 + 9.2 * 2, c => planta(c, 1.0, 9.3, 0.9)); add(35.3 * 2 + 9.5 * 2, c => planta(c, 35.3, 9.4, 0.9));
-
-    itens.sort((a, b) => a.k - b.k).forEach(i => i.f(cf));
-    OCLUSORES.sort((a, b) => a.k - b.k);
-    textoParede(cf, (d.marca || 'AI HUB').toUpperCase().slice(0, 18), 4.2, 0.31, 1.45, 0.42, ACENTO);
+    // pessoas não atravessam móveis (folga de 10 cm); só calculado uma vez
+    if (!BLOQ.preenchido) { for (const b of BLOQUEIOS) bloquear(...b); BLOQ.preenchido = true; }
   }
 
-  // redesenha, por cima da pessoa em (x, y), o que está na frente dela e a cobre na tela
-  function ocluir(c, x, y, tela) {
-    REDESENHO = true;
-    try {
-      for (const o of OCLUSORES) {
-        const [x0, y0, x1, y1] = o.box;
-        if (!((x < x0 && y < y1) || (y < y0 && x < x1))) continue;
-        const t = o.tela;
-        if (t.x1 < tela.x0 || t.x0 > tela.x1 || t.y1 < tela.y0 || t.y0 > tela.y1) continue;
-        o.f(c);
-      }
-    } finally { REDESENHO = false; }
+  // ------------------------------------------------------------------ camada fixa: piso, paredes, janelas, luz
+  function desenharBase(d) {
+    // sombra do bloco do escritório e laje
+    poli([Pa(0.5, 0.5, -0.3), Pa(LARG + 0.5, 0.5, -0.3), Pa(LARG + 0.5, PROF + 0.5, -0.3), Pa(0.5, PROF + 0.5, -0.3)], '#000000', 0.28);
+    caixa(0, 0, LARG, PROF, -0.3, 0, COR.piso1, { esq: COR.lajeE, dir: COR.lajeD, contorno: '#2A1C12', brilho: false });
+    // piso: ladrilho xadrez quente (área geral), tábuas (sala do gerente), ladrilho claro (copa)
+    for (let j = 0; j < PROF; j++) for (let i = 0; i < LARG; i++) {
+      const base = (i + j) % 2 ? COR.piso1 : COR.piso2, v = 0.97 + ruido(i, j) * 0.05;
+      piso(i, j, i + 1, j + 1, tom(base, v));
+    }
+    piso(0, 0, 6, 5, COR.madeira);
+    for (let y = 0.25; y < 5; y += 0.25) { const a = Pa(0, y), b = Pa(6, y); linha(a[0], a[1], b[0], b[1], COR.tabua); }
+    for (let r = 0; r < 20; r++) { const y = r * 0.25, x = ((r * 7) % 5) * 0.9 + 0.4; if (x < 6) { const a = Pa(x, y), b = Pa(x, y + 0.25); linha(a[0], a[1], b[0], b[1], COR.tabua); } }
+    for (let j = 0; j < 9; j++) for (let i = 0; i < 14; i++) piso(17.2 + i * 0.5, j * 0.5, 17.2 + i * 0.5 + 0.5, j * 0.5 + 0.5, (i + j) % 2 ? COR.cozinha1 : COR.cozinha2);
+    // tapetes
+    const tapete = (x0, y0, x1, y1, cor, borda) => { piso(x0, y0, x1, y1, borda); piso(x0 + 0.15, y0 + 0.15, x1 - 0.15, y1 - 0.15, cor); piso(x0 + 0.3, y0 + 0.3, x1 - 0.3, y1 - 0.3, tom(cor, 1.12)); piso(x0 + 0.45, y0 + 0.45, x1 - 0.45, y1 - 0.45, cor); };
+    tapete(1.0, 0.9, 5.0, 4.3, '#7A2E2E', '#C9A15B');
+    tapete(6.9, 12.3, 10.3, 14.5, '#3E5C76', '#D9C08A');
+    tapete(14.4, 11.2, 18.2, 14.9, '#2F6E6A', '#E8D6A8');
+    piso(0.05, 13.25, 1.1, 14.55, '#5A4A3A'); piso(0.15, 13.35, 1.0, 14.45, '#6B5A48');
+
+    // paredes do fundo (faces internas, topo e acabamentos)
+    caixa(-0.22, -0.22, LARG, 0, 0, ALT_PAREDE, COR.paredeD, { esq: COR.paredeD, dir: tom(COR.paredeD, 0.8), topo: COR.paredeTopo, contorno: '#151A30', brilho: false });
+    caixa(-0.22, 0, 0, PROF, 0, ALT_PAREDE, COR.paredeE, { esq: tom(COR.paredeE, 0.85), dir: COR.paredeE, topo: COR.paredeTopo, contorno: '#151A30', brilho: false });
+    painel('x', 0.001, 0, LARG, 0, 0.12, COR.rodape); painel('y', 0.001, 0, PROF, 0, 0.12, COR.rodape);
+    painel('x', 0.001, 0, LARG, ALT_PAREDE - 0.1, ALT_PAREDE, COR.moldura); painel('y', 0.001, 0, PROF, ALT_PAREDE - 0.1, ALT_PAREDE, COR.moldura);
+    for (let x = 1; x < LARG; x += 1) { const a = Pa(x, 0.002, 0.12), b = Pa(x, 0.002, ALT_PAREDE - 0.1); linha(a[0], a[1], b[0], b[1], tom(COR.paredeD, 0.93)); }
+    for (let y = 1; y < PROF; y += 1) { const a = Pa(0.002, y, 0.12), b = Pa(0.002, y, ALT_PAREDE - 0.1); linha(a[0], a[1], b[0], b[1], tom(COR.paredeE, 0.92)); }
+
+    // janelas com feixes de sol
+    const janela = (eixo, a0, a1) => {
+      const z0 = 0.9, z1 = 2.2, f = '#C99A6B';
+      painel(eixo, 0.003, a0 - 0.08, a1 + 0.08, z0 - 0.08, z1 + 0.08, f);
+      painel(eixo, 0.004, a0, a1, z0, z1, '#8FC3E3');
+      painel(eixo, 0.005, a0, a1, z0 + (z1 - z0) * 0.55, z1, '#B5DCF2');
+      painel(eixo, 0.006, a0 + (a1 - a0) * 0.62, a1, z0 + 0.15, z0 + 0.45, '#D8EEF9');
+      painel(eixo, 0.007, (a0 + a1) / 2 - 0.03, (a0 + a1) / 2 + 0.03, z0, z1, f);
+      painel(eixo, 0.007, a0, a1, (z0 + z1) / 2 - 0.03, (z0 + z1) / 2 + 0.03, f);
+      const sol = '#FFE6A6';
+      const chao = eixo === 'y' ? [[1.64, a0 + 0.57], [4.0, a0 + 1.4], [4.0, a1 + 1.4], [1.64, a1 + 0.57]] : [[a0 + 0.57, 1.64], [a0 + 1.4, 4.0], [a1 + 1.4, 4.0], [a1 + 0.57, 1.64]];
+      poli(chao.map(([x, y]) => Pa(x, y)), sol, 0.16);
+      const jan = eixo === 'y' ? [Pa(0, a0, z1), Pa(0, a1, z1), Pa(0, a1, z0), Pa(0, a0, z0)] : [Pa(a0, 0, z1), Pa(a1, 0, z1), Pa(a1, 0, z0), Pa(a0, 0, z0)];
+      const todos = [...jan, ...chao.map(([x, y]) => Pa(x, y))];
+      poli(envoltoria(todos), sol, 0.07);
+    };
+    janela('y', 6.0, 8.2); janela('x', 12.4, 14.8); janela('x', 4.9, 5.75);
+
+    // porta de entrada (parede esquerda)
+    painel('y', 0.003, 13.15, 14.65, 0, 2.18, '#3B2416');
+    painel('y', 0.004, 13.25, 14.55, 0, 2.1, '#7A4A2A');
+    painel('y', 0.005, 13.38, 14.42, 1.15, 1.95, '#86532F'); painel('y', 0.005, 13.38, 14.42, 0.15, 1.0, '#86532F');
+    painel('y', 0.006, 14.3, 14.4, 1.0, 1.1, '#F2C14E');
+    // quadro com paisagem (parede esquerda)
+    painel('y', 0.003, 9.35, 10.65, 1.05, 1.95, '#6B4A2A');
+    painel('y', 0.004, 9.45, 10.55, 1.13, 1.87, '#9FD3F0');
+    painel('y', 0.005, 9.45, 10.55, 1.13, 1.4, '#5DA35E'); painel('y', 0.006, 9.75, 10.4, 1.13, 1.52, '#4A8F52');
+    painel('y', 0.006, 9.6, 9.75, 1.62, 1.75, '#FFE08A');
+
+    // quadro de vagas: um cartão por vaga, colorido pela situação, com barra de progresso
+    painel('x', 0.003, 6.95, 11.65, 0.9, 2.2, '#8A8F99');
+    painel('x', 0.004, 7.02, 11.58, 0.97, 2.13, '#F4F2EA');
+    const vs = (d.vagas || []).filter(v => v.status !== 'cancelada').slice(0, 12);
+    vs.forEach((v, i) => {
+      const col = i % 6, lin = Math.floor(i / 6), x0 = 7.14 + col * 0.74, z1 = 2.02 - lin * 0.56;
+      const cor = v.status !== 'aberta' ? '#AEB4BF' : v.sem_responsavel ? '#E5655A' : v.pendentes ? '#F2B53D' : '#5DBB7E';
+      painel('x', 0.005, x0, x0 + 0.62, z1 - 0.46, z1, '#FFFFFF');
+      painel('x', 0.006, x0, x0 + 0.62, z1 - 0.1, z1, cor);
+      for (let k = 0; k < 2; k++) painel('x', 0.006, x0 + 0.05, x0 + 0.05 + (0.44 - k * 0.14), z1 - 0.19 - k * 0.08, z1 - 0.16 - k * 0.08, '#C9CDD6');
+      const prog = v.recebidos ? v.analisados / v.recebidos : 0;
+      painel('x', 0.006, x0 + 0.05, x0 + 0.57, z1 - 0.38, z1 - 0.34, '#E3E5EA');
+      if (prog > 0) painel('x', 0.007, x0 + 0.05, x0 + 0.05 + 0.52 * prog, z1 - 0.38, z1 - 0.34, '#3FB56B');
+    });
+    if (!vs.length) painel('x', 0.005, 8.6, 10.0, 1.4, 1.48, '#D9DCE3');
+    ALVOS_ARTE.push({ tipo: 'vagas', pts: [Pa(6.95, 0, 2.2), Pa(11.65, 0, 2.2), Pa(11.65, 0, 0.9), Pa(6.95, 0, 0.9)] });
+
+    // quadro geral do gerente (cortiça com notas: vagas abertas, em análise, pendências)
+    painel('x', 0.003, 1.35, 4.65, 1.1, 2.1, '#6B4A2A');
+    painel('x', 0.004, 1.45, 4.55, 1.18, 2.02, '#C49563');
+    const q = d.quadro || {}, notas = [];
+    for (let i = 0; i < Math.min(5, q.vagas_abertas || 0); i++) notas.push('#BFE8C9');
+    for (let i = 0; i < Math.min(4, q.vagas_em_processamento || 0); i++) notas.push('#FFE69A');
+    for (let i = 0; i < Math.min(4, q.pendencias || 0); i++) notas.push('#F6B1A8');
+    notas.forEach((cor, i) => {
+      const x0 = 1.6 + (i % 7) * 0.42, z1 = 1.92 - Math.floor(i / 7) * 0.4;
+      painel('x', 0.005, x0, x0 + 0.32, z1 - 0.3, z1, cor); painel('x', 0.006, x0 + 0.13, x0 + 0.19, z1 - 0.05, z1, '#D9534F');
+    });
+    ALVOS_ARTE.push({ tipo: 'quadro', pts: [Pa(1.35, 0, 2.1), Pa(4.65, 0, 2.1), Pa(4.65, 0, 1.1), Pa(1.35, 0, 1.1)] });
+
+    // armários da copa (presos à parede) e relógio com a hora real
+    caixa(17.6, 0, 22.2, 0.38, 1.55, 2.2, '#E9E4DA', { contorno: '#7D766A' });
+    for (let x = 17.6; x < 22.1; x += 1.15) { painel('x', 0.381, x + 0.06, x + 1.09, 1.6, 2.15, '#DDD6C8'); painel('x', 0.382, x + 0.5, x + 0.6, 1.62, 1.68, '#8C8578'); }
+    const agora = new Date(), [rx, rz] = [16.0, 2.2];
+    const circ = (r, cor) => { const pts = []; for (let k = 0; k < 20; k++) { const t = k / 20 * Math.PI * 2; pts.push(Pa(rx + Math.cos(t) * r, 0.005, rz + Math.sin(t) * r)); } poli(pts, cor); };
+    circ(0.17, '#2B2F3D'); circ(0.14, '#F4F2EA');
+    const ponteiro = (ang, l, cor) => { const a = Pa(rx, 0.006, rz), b = Pa(rx + Math.sin(ang) * l, 0.006, rz + Math.cos(ang) * l); linha(a[0], a[1], b[0], b[1], cor); };
+    ponteiro((agora.getHours() % 12 + agora.getMinutes() / 60) / 12 * Math.PI * 2, 0.08, '#2B2F3D');
+    ponteiro(agora.getMinutes() / 60 * Math.PI * 2, 0.12, '#C0504D');
+
+    // sombras de contato dos móveis
+    for (const it of ITENS) if (it.sombra) { const [x0, y0, x1, y1] = it.box; sombrear([Pa(x0 + 0.06, y0 + 0.06), Pa(x1 + 0.1, y0 + 0.06), Pa(x1 + 0.1, y1 + 0.1), Pa(x0 + 0.06, y1 + 0.1)], 0.82); }
+    // luz das luminárias sobre as mesas
+    ILHAS.forEach(x0 => { brilhoChao(x0 + 0.4, 6.7, 0.9, '#FFD98A', 0.1); brilhoChao(x0 + 2.4, 7.4, 0.9, '#FFD98A', 0.1); });
+    brilhoChao(4.2, 3.2, 1.0, '#FFE2A6', 0.09); brilhoChao(10.4, 13.0, 1.3, '#FFE2A6', 0.12);
+  }
+  function envoltoria(pts) { // casco convexo (feixes de luz)
+    const p = pts.map(([x, y]) => [x, y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    const cruz = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const inf = [], sup = [];
+    for (const q of p) { while (inf.length >= 2 && cruz(inf[inf.length - 2], inf[inf.length - 1], q) <= 0) inf.pop(); inf.push(q); }
+    for (const q of p.slice().reverse()) { while (sup.length >= 2 && cruz(sup[sup.length - 2], sup[sup.length - 1], q) <= 0) sup.pop(); sup.push(q); }
+    return inf.slice(0, -1).concat(sup.slice(0, -1));
   }
 
-  // ------------------------------------------------------------------ pessoas (corpo inteiro, com volume)
+  // ------------------------------------------------------------------ sprites dos móveis e ordem de desenho
+  let base = new Uint32Array(AW * AH);
+  const rascunho = new Uint32Array(AW * AH);
+  function construirSprites() {
+    for (const it of ITENS) {
+      alvo(rascunho, AW, AH);
+      it.f();
+      const [x0, y0, x1, y1] = A.sujo;
+      if (x1 < x0) { it.spr = null; continue; }
+      const w = x1 - x0 + 1, h = y1 - y0 + 1, buf = new Uint32Array(w * h);
+      for (let y = 0; y < h; y++) { const o = (y0 + y) * AW + x0; buf.set(rascunho.subarray(o, o + w), y * w); rascunho.fill(0, o, o + w); }
+      it.spr = { buf, w, h, ox: x0, oy: y0 };
+      it.tela = [x0, y0, x0 + w - 1, y0 + h - 1];
+    }
+    ordenarItens();
+  }
+  const E = 1e-6;
+  // -1: a desenha antes de b; 1: b antes de a; 0: indiferente
+  function ordem(a, b) {
+    const [ax0, ay0, ax1, ay1] = a.box, [bx0, by0, bx1, by1] = b.box;
+    const ax = ax1 <= bx0 + E, bx = bx1 <= ax0 + E, ay = ay1 <= by0 + E, by = by1 <= ay0 + E;
+    if ((ax || ay) && !(bx || by)) return -1;
+    if ((bx || by) && !(ax || ay)) return 1;
+    if (ax || ay || bx || by) return 0; // separados na diagonal: não se cobrem na tela
+    if (a.z1 <= b.z0 + E) return -1;   // um em cima do outro (monitor sobre a mesa)
+    if (b.z1 <= a.z0 + E) return 1;
+    return (ax0 + ax1 + ay0 + ay1) - (bx0 + bx1 + by0 + by1) <= 0 ? -1 : 1;
+  }
+  const cruza = (s, t) => s[0] <= t[2] && t[0] <= s[2] && s[1] <= t[3] && t[1] <= s[3];
+  function ordenarItens() {
+    const its = ITENS.filter(i => i.spr), n = its.length, antes = Array.from({ length: n }, () => []), grau = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      if (!cruza(its[i].tela, its[j].tela)) continue;
+      const o = ordem(its[i], its[j]);
+      if (o < 0) { antes[i].push(j); grau[j]++; } else if (o > 0) { antes[j].push(i); grau[i]++; }
+    }
+    const prof = i => its[i].box[0] + its[i].box[2] + its[i].box[1] + its[i].box[3];
+    const prontos = [], feitos = new Uint8Array(n), saida = [];
+    for (let i = 0; i < n; i++) if (!grau[i]) prontos.push(i);
+    while (saida.length < n) {
+      if (!prontos.length) { let m = -1; for (let i = 0; i < n; i++) if (!feitos[i] && (m < 0 || prof(i) < prof(m))) m = i; prontos.push(m); grau[m] = 0; } // ciclo: quebra pelo mais ao fundo
+      prontos.sort((a, b) => prof(a) - prof(b));
+      const i = prontos.shift();
+      if (feitos[i]) continue;
+      feitos[i] = 1; saida.push(its[i]);
+      for (const j of antes[i]) if (!feitos[j] && --grau[j] === 0) prontos.push(j);
+    }
+    ITENS = saida;
+  }
+
+  // ------------------------------------------------------------------ pessoas (sprites 24 × 40, pés em (12, 38))
   const CALCAS = ['#2F3B52', '#3A3A3A', '#5A4632', '#4B5D7A', '#6B6F76', '#2E4A3E', '#283447'];
   const SAPATOS = ['#2B2B2B', '#EDEDED', '#5A3E2B', '#30405F'];
-  function escolha(chave, lista) { let h = 7; for (const ch of String(chave)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return lista[h % lista.length]; }
-
-  // cilindro em pé na tela, a partir da junta (x, y), girado por ang; luz vinda da esquerda
-  function membro(c, x, y, ang, comp, larg, cor, mao) {
-    c.save(); c.translate(x, y); c.rotate(ang);
-    const g = c.createLinearGradient(-larg / 2, 0, larg / 2, 0);
-    g.addColorStop(0, sombra(cor, 0.96)); g.addColorStop(0.35, sombra(cor, 1.16)); g.addColorStop(1, sombra(cor, 0.7));
-    c.fillStyle = g; c.beginPath(); c.roundRect(-larg / 2, -larg * 0.3, larg, comp + larg * 0.3, larg / 2); c.fill();
-    c.strokeStyle = 'rgba(25,25,40,.25)'; c.lineWidth = Math.max(0.6, larg * 0.1); c.stroke();
-    if (mao) {
-      const gm = c.createRadialGradient(-larg * 0.15, comp - larg * 0.1, larg * 0.05, 0, comp, larg * 0.6);
-      gm.addColorStop(0, sombra(mao, 1.1)); gm.addColorStop(1, sombra(mao, 0.85));
-      c.fillStyle = gm; c.beginPath(); c.arc(0, comp, larg * 0.55, 0, 7); c.fill();
-    }
-    c.restore();
+  const SW = 24, SH = 40, PX = 12, PY = 38;
+  const SPRITES = new Map();
+  function sprite(ap, vista, pose, quadro, humor, objeto) {
+    const chave = [ap.pele, ap.cabelo, ap.estilo, ap.camisa, ap.oculos, ap.barba, ap.calca, ap.sapato, vista, pose, quadro, humor, objeto].join('|');
+    let s = SPRITES.get(chave);
+    if (!s) { s = gerarSprite(ap, vista, pose, quadro, humor, objeto); SPRITES.set(chave, s); }
+    return s;
   }
-  const angulo = (dx, dy) => Math.atan2(-dx, dy);
-  function sapato(c, x, y, u, cor, lado) {
-    const g = c.createRadialGradient(x - u * 0.04, y - u * 0.03, u * 0.01, x, y, u * 0.13);
-    g.addColorStop(0, sombra(cor, 1.25)); g.addColorStop(1, sombra(cor, 0.8));
-    c.fillStyle = g; c.beginPath(); c.ellipse(x + lado * u * 0.03, y, u * 0.11, u * 0.06, 0, 0, 7); c.fill();
-  }
-  function tronco(c, sx, yOmbro, yQuadril, largO, largQ, cor, frente, pele) {
-    const r = largO * 0.3;
-    c.beginPath();
-    c.moveTo(sx - largQ / 2, yQuadril);
-    c.lineTo(sx - largO / 2, yOmbro + r); c.quadraticCurveTo(sx - largO / 2, yOmbro, sx - largO / 2 + r, yOmbro);
-    c.lineTo(sx + largO / 2 - r, yOmbro); c.quadraticCurveTo(sx + largO / 2, yOmbro, sx + largO / 2, yOmbro + r);
-    c.lineTo(sx + largQ / 2, yQuadril); c.closePath();
-    const g = c.createLinearGradient(sx - largO / 2, yOmbro, sx + largO / 2, yQuadril);
-    g.addColorStop(0, sombra(cor, 1.12)); g.addColorStop(0.45, cor); g.addColorStop(1, sombra(cor, 0.72));
-    c.fillStyle = g; c.fill();
-    c.strokeStyle = 'rgba(25,25,40,.28)'; c.lineWidth = Math.max(0.7, largO * 0.04); c.stroke();
-    if (frente) { // gola em V
-      c.fillStyle = sombra(pele, 0.95); c.beginPath(); c.moveTo(sx - largO * 0.14, yOmbro); c.lineTo(sx, yOmbro + largO * 0.2); c.lineTo(sx + largO * 0.14, yOmbro); c.fill();
-    } else {
-      c.strokeStyle = 'rgba(0,0,0,.12)'; c.beginPath(); c.moveTo(sx, yOmbro + largO * 0.12); c.lineTo(sx, yQuadril - largO * 0.1); c.stroke();
-    }
-  }
-
-  function cabecaFrente(c, sx, sy, R, ap, o) {
-    const pele = ap.pele || '#EEC49C', cab = ap.cabelo || '#3B2618', est = ap.estilo || 'curto';
-    const vf = (o.virar || 0) * R * 0.13; // rosto levemente virado para onde a pessoa olha
-    c.save();
-    if (est === 'longo') { c.fillStyle = cab; c.beginPath(); c.ellipse(sx, sy + R * 0.25, R * 1.05, R * 1.1, 0, 0, 7); c.fill(); }
-    if (est === 'black') { c.fillStyle = cab; c.beginPath(); c.arc(sx, sy - R * 0.15, R * 1.22, 0, 7); c.fill(); }
-    c.fillStyle = sombra(pele, 0.93);
-    c.beginPath(); c.arc(sx - R * 0.93 + vf * 0.3, sy + R * 0.08, R * 0.2, 0, 7); c.arc(sx + R * 0.93 + vf * 0.3, sy + R * 0.08, R * 0.2, 0, 7); c.fill();
-    const g = c.createRadialGradient(sx - R * 0.35, sy - R * 0.4, R * 0.15, sx, sy, R * 1.05);
-    g.addColorStop(0, sombra(pele, 1.12)); g.addColorStop(1, sombra(pele, 0.88));
-    c.fillStyle = g; c.beginPath(); c.ellipse(sx, sy, R * 0.92, R, 0, 0, 7); c.fill();
-    c.strokeStyle = 'rgba(25,25,40,.18)'; c.lineWidth = Math.max(0.6, R * 0.05); c.stroke();
-    c.fillStyle = cab;
-    if (est === 'curto' || est === 'longo' || est === 'coque' || est === 'topete') {
-      c.beginPath(); c.moveTo(sx - R * 0.95, sy - R * 0.05);
-      c.quadraticCurveTo(sx - R * 1.0, sy - R * 1.12, sx, sy - R * 1.1);
-      c.quadraticCurveTo(sx + R * 1.0, sy - R * 1.12, sx + R * 0.95, sy - R * 0.05);
-      c.quadraticCurveTo(sx + R * 0.7, sy - R * 0.62, sx + R * 0.1 + vf, sy - R * 0.55);
-      c.quadraticCurveTo(sx - R * 0.6, sy - R * 0.5, sx - R * 0.95, sy - R * 0.05); c.fill();
-      if (est === 'topete') { c.beginPath(); c.ellipse(sx + R * 0.15, sy - R * 0.95, R * 0.62, R * 0.32, -0.25, 0, 7); c.fill(); }
-      if (est === 'coque') { c.beginPath(); c.arc(sx, sy - R * 1.22, R * 0.36, 0, 7); c.fill(); }
-      if (est === 'longo') { c.fillRect(sx - R * 1.0, sy - R * 0.2, R * 0.22, R * 1.1); c.fillRect(sx + R * 0.78, sy - R * 0.2, R * 0.22, R * 1.1); }
-    } else if (est === 'cacheado' || est === 'black') {
-      const n = est === 'black' ? 9 : 7;
-      for (let i = 0; i < n; i++) { const a = Math.PI * (1.05 + i * 0.9 / (n - 1)); c.beginPath(); c.arc(sx + Math.cos(a) * R * 0.82, sy - R * 0.2 + Math.sin(a) * R * 0.85, R * 0.34, 0, 7); c.fill(); }
-      c.beginPath(); c.ellipse(sx, sy - R * 0.72, R * 0.75, R * 0.38, 0, 0, 7); c.fill();
-    } else if (est === 'careca') {
-      c.fillStyle = 'rgba(255,255,255,.2)'; c.beginPath(); c.ellipse(sx - R * 0.3, sy - R * 0.6, R * 0.3, R * 0.15, -0.5, 0, 7); c.fill();
-    }
-    // brilho no cabelo (volume)
-    if (est !== 'careca') { c.fillStyle = 'rgba(255,255,255,.13)'; c.beginPath(); c.ellipse(sx - R * 0.35, sy - R * 0.82, R * 0.32, R * 0.12, -0.35, 0, 7); c.fill(); }
-    if (ap.barba) { c.fillStyle = sombra(cab, 1.05); c.globalAlpha = 0.85; c.beginPath(); c.ellipse(sx + vf, sy + R * 0.55, R * 0.62, R * 0.38, 0, 0, Math.PI); c.fill(); c.globalAlpha = 1; }
-    const olhoY = sy + R * 0.02, dx = R * 0.34, x0 = sx + vf, dormindo = o.humor === 'calmo';
-    c.fillStyle = '#FFFFFF';
-    if (!dormindo) { c.beginPath(); c.ellipse(x0 - dx, olhoY, R * 0.17, R * 0.2, 0, 0, 7); c.ellipse(x0 + dx, olhoY, R * 0.17, R * 0.2, 0, 0, 7); c.fill(); }
-    c.fillStyle = '#2A2320';
-    const ol = (o.olhar || 0) + vf * 0.4;
-    if (dormindo) {
-      c.strokeStyle = '#2A2320'; c.lineWidth = Math.max(1, R * 0.08);
-      c.beginPath(); c.arc(x0 - dx, olhoY - R * 0.02, R * 0.12, 0.15 * Math.PI, 0.85 * Math.PI); c.stroke();
-      c.beginPath(); c.arc(x0 + dx, olhoY - R * 0.02, R * 0.12, 0.15 * Math.PI, 0.85 * Math.PI); c.stroke();
-    } else {
-      c.beginPath(); c.arc(x0 - dx + ol, olhoY + R * 0.04, R * 0.1, 0, 7); c.arc(x0 + dx + ol, olhoY + R * 0.04, R * 0.1, 0, 7); c.fill();
-      c.fillStyle = '#FFFFFF'; c.beginPath(); c.arc(x0 - dx + ol + R * 0.04, olhoY, R * 0.035, 0, 7); c.arc(x0 + dx + ol + R * 0.04, olhoY, R * 0.035, 0, 7); c.fill();
-    }
-    c.strokeStyle = sombra(cab, 0.9); c.lineWidth = Math.max(1, R * 0.07); c.lineCap = 'round';
-    const pr = o.humor === 'preocupado' ? 0.1 : 0;
-    c.beginPath(); c.moveTo(x0 - dx - R * 0.16, olhoY - R * 0.3 + pr * R); c.lineTo(x0 - dx + R * 0.14, olhoY - R * 0.33 - pr * R);
-    c.moveTo(x0 + dx - R * 0.14, olhoY - R * 0.33 - pr * R); c.lineTo(x0 + dx + R * 0.16, olhoY - R * 0.3 + pr * R); c.stroke();
-    c.fillStyle = 'rgba(232,120,110,.22)'; c.beginPath(); c.arc(x0 - R * 0.55, sy + R * 0.32, R * 0.15, 0, 7); c.arc(x0 + R * 0.55, sy + R * 0.32, R * 0.15, 0, 7); c.fill();
-    c.strokeStyle = '#8A4B3C'; c.lineWidth = Math.max(1, R * 0.08);
-    c.beginPath();
-    if (o.humor === 'preocupado') c.arc(x0, sy + R * 0.58, R * 0.16, 1.15 * Math.PI, 1.85 * Math.PI);
-    else if (o.humor === 'focado') { c.moveTo(x0 - R * 0.14, sy + R * 0.45); c.lineTo(x0 + R * 0.14, sy + R * 0.45); }
-    else c.arc(x0, sy + R * 0.32, R * 0.22, 0.2 * Math.PI, 0.8 * Math.PI);
-    c.stroke();
-    if (ap.oculos) {
-      c.strokeStyle = '#2A2F3A'; c.lineWidth = Math.max(1, R * 0.08);
-      c.beginPath(); c.roundRect(x0 - dx - R * 0.26, olhoY - R * 0.2, R * 0.5, R * 0.4, R * 0.12); c.roundRect(x0 + dx - R * 0.24, olhoY - R * 0.2, R * 0.5, R * 0.4, R * 0.12);
-      c.moveTo(x0 - R * 0.1, olhoY - R * 0.04); c.lineTo(x0 + R * 0.1, olhoY - R * 0.04); c.stroke();
-    }
-    c.restore();
-  }
-
-  function cabecaCostas(c, sx, sy, R, ap) {
-    const pele = ap.pele || '#EEC49C', cab = ap.cabelo || '#3B2618', est = ap.estilo || 'curto';
-    c.save();
-    c.fillStyle = sombra(pele, 0.9);
-    c.beginPath(); c.arc(sx - R * 0.93, sy + R * 0.1, R * 0.19, 0, 7); c.arc(sx + R * 0.93, sy + R * 0.1, R * 0.19, 0, 7); c.fill();
-    const g = c.createRadialGradient(sx - R * 0.35, sy - R * 0.4, R * 0.15, sx, sy, R * 1.05);
-    if (est === 'careca') {
-      g.addColorStop(0, sombra(pele, 1.12)); g.addColorStop(1, sombra(pele, 0.86));
-      c.fillStyle = g; c.beginPath(); c.ellipse(sx, sy, R * 0.92, R, 0, 0, 7); c.fill();
-      c.fillStyle = 'rgba(255,255,255,.2)'; c.beginPath(); c.ellipse(sx - R * 0.3, sy - R * 0.55, R * 0.3, R * 0.15, -0.5, 0, 7); c.fill();
-    } else {
-      g.addColorStop(0, sombra(cab, 1.35)); g.addColorStop(1, sombra(cab, 0.85));
-      c.fillStyle = sombra(pele, 0.92); c.beginPath(); c.ellipse(sx, sy + R * 0.2, R * 0.55, R * 0.75, 0, 0, 7); c.fill(); // nuca
-      c.fillStyle = g;
-      if (est === 'black') { c.beginPath(); c.arc(sx, sy - R * 0.15, R * 1.22, 0, 7); c.fill(); }
-      else if (est === 'cacheado') {
-        for (let i = 0; i < 9; i++) { const a = Math.PI * (0.95 + i * 1.1 / 8); c.beginPath(); c.arc(sx + Math.cos(a) * R * 0.78, sy - R * 0.1 + Math.sin(a) * R * 0.8, R * 0.36, 0, 7); c.fill(); }
-        c.beginPath(); c.ellipse(sx, sy - R * 0.2, R * 0.85, R * 0.75, 0, 0, 7); c.fill();
-      } else {
-        c.beginPath(); c.ellipse(sx, sy - R * 0.08, R * 0.95, R * 0.98, 0, Math.PI * 0.92, Math.PI * 2.08); c.closePath(); c.fill();
-        if (est === 'longo') { c.beginPath(); c.roundRect(sx - R * 0.95, sy - R * 0.2, R * 1.9, R * 1.75, R * 0.5); c.fill(); }
-        if (est === 'coque') { c.beginPath(); c.arc(sx, sy - R * 1.18, R * 0.36, 0, 7); c.fill(); }
-        if (est === 'topete') { c.beginPath(); c.ellipse(sx + R * 0.1, sy - R * 0.92, R * 0.6, R * 0.3, -0.2, 0, 7); c.fill(); }
-      }
-      c.fillStyle = 'rgba(255,255,255,.13)'; c.beginPath(); c.ellipse(sx - R * 0.35, sy - R * 0.7, R * 0.34, R * 0.14, -0.35, 0, 7); c.fill();
-    }
-    c.restore();
-  }
-
-  function item(c, tipo, x, y, u) {
-    if (tipo === 'raquete') {
-      c.fillStyle = '#8A5A3C'; c.fillRect(x - u * 0.02, y - u * 0.02, u * 0.04, u * 0.12);
-      c.fillStyle = '#D64545'; c.beginPath(); c.ellipse(x, y - u * 0.1, u * 0.1, u * 0.12, 0, 0, 7); c.fill();
-    } else if (tipo === 'xicara') {
-      c.fillStyle = '#FFFFFF'; c.beginPath(); c.roundRect(x - u * 0.06, y - u * 0.1, u * 0.12, u * 0.12, u * 0.02); c.fill();
-      c.strokeStyle = '#C9CED6'; c.lineWidth = Math.max(0.6, u * 0.02); c.stroke();
-      c.fillStyle = '#6B4128'; c.fillRect(x - u * 0.045, y - u * 0.095, u * 0.09, u * 0.025);
-    } else if (tipo === 'livro') {
-      c.fillStyle = '#5B5BD6'; c.beginPath(); c.roundRect(x - u * 0.17, y - u * 0.14, u * 0.34, u * 0.22, u * 0.02); c.fill();
-      c.fillStyle = '#FFFFFF'; c.fillRect(x - u * 0.15, y - u * 0.12, u * 0.14, u * 0.18); c.fillRect(x + u * 0.01, y - u * 0.12, u * 0.14, u * 0.18);
-    }
-  }
-
-  // Pessoa inteira com os pés em (sx, sy). o: {dir, sentado, andando, fase, humor, olhar, digitando, item, t}
-  function pessoa(c, sx, sy, u, ap, o = {}) {
-    const dir = o.dir || 's', frente = dir === 's' || dir === 'e', lado = (dir === 'e' || dir === 'n') ? 1 : -1;
-    const pele = ap.pele || '#EEC49C', cam = ap.camisa || '#3B6EC8';
+  function gerarSprite(ap, vista, pose, quadro, humor, objeto) {
+    const buf = new Uint32Array(SW * SH);
+    alvo(buf, SW, SH);
+    const pele = ap.pele || '#EEC49C', cab = ap.cabelo || '#3B2618', est = ap.estilo || 'curto', cam = ap.camisa || '#3B6EC8';
     const calca = ap.calca || escolha((ap.cabelo || '') + cam, CALCAS), sap = ap.sapato || escolha(cam + pele, SAPATOS);
-    const R = u * 0.4, t = o.t || 0;
-    const bob = o.andando ? -Math.abs(Math.sin(o.fase || 0)) * u * 0.05 : Math.sin(t * 1.6) * u * 0.012;
-    c.save();
-    if (o.sentado) {
-      const yQ = sy - u * 0.46 + bob, yO = yQ - u * 0.56, yC = yO - u * 0.37;
-      if (frente) { // coxas para frente (na direção do olhar) e canelas até o chão
-        for (const k of [-1, 1]) {
-          const hx = sx + k * u * 0.1, jx = hx + lado * u * 0.34, jy = yQ + u * 0.2;
-          membro(c, hx, yQ, angulo(jx - hx, jy - yQ), Math.hypot(jx - hx, jy - yQ), u * 0.17, calca);
-          membro(c, jx, jy, 0, sy + u * 0.2 - jy, u * 0.15, calca);
-          sapato(c, jx, sy + u * 0.2, u, sap, lado);
-        }
-      }
-      tronco(c, sx, yO, yQ, u * 0.58, u * 0.48, cam, frente, pele);
-      const dig = o.digitando ? Math.sin(t * 14) * u * 0.02 : 0;
-      for (const k of [-1, 1]) {
-        const ox = sx + k * u * 0.28, oy = yO + u * 0.06;
-        if (frente) { const hx = sx + k * u * 0.16 + lado * u * 0.22, hy = yQ + u * 0.08; membro(c, ox, oy, angulo(hx - ox, hy - oy), Math.hypot(hx - ox, hy - oy), u * 0.13, cam, pele); }
-        else membro(c, ox, oy, k * -0.35, u * 0.36 + k * dig, u * 0.13, cam, pele);
-      }
-      if (frente) cabecaFrente(c, sx, yC, R, ap, { ...o, virar: lado }); else cabecaCostas(c, sx, yC, R, ap);
-      if (o.item && frente) item(c, o.item, sx + lado * u * 0.1, yQ - u * 0.05, u);
-    } else {
-      const yQ = sy - u * 0.62 + bob, yO = yQ - u * 0.56, yC = yO - u * 0.36, f = o.fase || 0;
-      for (const k of [-1, 1]) { // pernas: no andar, uma vai e a outra vem
-        const sw = o.andando ? Math.sin(f + (k > 0 ? Math.PI : 0)) : 0;
-        const hx = sx + k * u * 0.1, px = hx + sw * u * 0.09 * lado, py = sy - Math.max(0, sw) * u * 0.07 + bob * 0.2;
-        membro(c, hx, yQ, angulo(px - hx, py - yQ), Math.hypot(px - hx, py - yQ), u * 0.16, calca);
-        sapato(c, px, py, u, sap, lado);
-      }
-      tronco(c, sx, yO, yQ, u * 0.58, u * 0.46, cam, frente, pele);
-      c.fillStyle = sombra(calca, 0.8); c.fillRect(sx - u * 0.23, yQ - u * 0.06, u * 0.46, u * 0.05); // cinto
-      for (const k of [-1, 1]) {
-        const sw = o.andando ? Math.sin(f + (k > 0 ? 0 : Math.PI)) * 0.3 : 0;
-        const segura = o.item === 'raquete' && k === lado;
-        membro(c, sx + k * u * 0.28, yO + u * 0.06, segura ? k * -0.9 : k * -0.12 + sw, u * (segura ? 0.36 : 0.48), u * 0.13, cam, pele);
-        if (segura) item(c, 'raquete', sx + k * u * 0.6, yO + u * 0.26, u);
-      }
-      if (frente) cabecaFrente(c, sx, yC, R, ap, { ...o, virar: lado }); else cabecaCostas(c, sx, yC, R, ap);
+    const peleS = tom(pele, 0.84), cabS = tom(cab, 0.72), cabC = tom(cab, 1.4), camS = tom(cam, 0.76), camC = tom(cam, 1.16), calcaS = tom(calca, 0.74);
+    const r = (x, y, w, h, cor) => ret(x, y, w, h, cor), p = (x, y, cor) => ponto(x, y, cor);
+    const frente = vista === 'frente', sentado = pose === 'senta' || pose === 'digita', anda = pose === 'anda';
+    const bob = anda && (quadro === 1 || quadro === 3) ? -1 : 0;
+
+    // pernas e sapatos
+    if (!sentado) {
+      const passo = anda ? (quadro === 1 ? 1 : quadro === 3 ? -1 : 0) : 0;
+      const perna = (x, dx, lev, cor) => { r(x + dx, 30 + bob, 4, 36 - lev - (30 + bob), cor); r(x + dx - (frente ? 0 : 1), 36 - lev, 5, 2, sap); };
+      perna(8, frente ? -passo : passo, passo > 0 ? 1 : 0, calca);
+      perna(12, frente ? passo : -passo, passo < 0 ? 1 : 0, calcaS);
+      r(12, 31 + bob, 1, 4, tom(calca, 0.6));
+    } else if (frente) { // coxas para frente (direita da tela) e canelas para baixo
+      r(9, 29, 9, 3, calcaS); r(15, 31, 3, 5, calcaS); r(15, 36, 5, 2, sap);
+      r(8, 30, 9, 3, calca); r(13, 32, 3, 5, calca); r(13, 37, 5, 1, sap);
     }
-    c.restore();
+    // tronco
+    const t0 = 19 + bob;
+    r(8, t0, 8, 1, cam); r(7, t0 + 1, 10, 10, cam);
+    r(15, t0 + 1, 2, 10, camS); r(7, t0 + 1, 1, 9, camC); r(7, t0 + 10, 10, 1, camS);
+    r(7, t0 + 10, 10, 1, tom(calca, 0.6)); // cinto
+    if (frente) { r(11, t0, 2, 2, peleS); p(11, t0 + 2, peleS); } else r(10, t0, 4, 1, camS);
+    // braços
+    const digita = pose === 'digita', sobe = digita ? (quadro % 2) : 0;
+    if (digita && frente) { // antebraços sobre a mesa, para a frente
+      r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS);
+      r(14, t0 + 6 - sobe, 6, 2, cam); r(20, t0 + 6 - sobe, 2, 2, pele);
+      r(10, t0 + 7 + sobe - 1, 6, 2, camS); r(16, t0 + 6 + sobe, 2, 2, peleS);
+    } else if (objeto === 'xicara' && sentado && frente) {
+      r(5, t0 + 1, 2, 7, cam); r(5, t0 + 8, 2, 2, pele);
+      r(17, t0 + 1, 2, 3, camS); r(14, t0 + 4, 4, 2, camS); r(14, t0 + 6, 2, 2, peleS);
+      r(14, t0 + 2, 3, 3, '#FFFFFF'); r(14, t0 + 2, 3, 1, '#6B4128'); p(17, t0 + 3, '#D6D0C4');
+    } else if (objeto === 'livro' && sentado && frente) {
+      r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS);
+      r(9, t0 + 4, 8, 5, '#3E5C9A'); r(10, t0 + 4, 3, 4, '#FFFFFF'); r(13, t0 + 4, 3, 4, '#F1EEE6'); p(9, t0 + 9, pele); p(16, t0 + 9, peleS);
+    } else {
+      const bal = anda ? (quadro === 1 ? 1 : quadro === 3 ? -1 : 0) : 0;
+      r(5, t0 + 1 + bal, 2, 5, cam); r(5, t0 + 6 + bal, 2, 3, pele);
+      r(17, t0 + 1 - bal, 2, 5, camS); r(17, t0 + 6 - bal, 2, 3, peleS);
+      if (objeto === 'raquete' && frente) { r(18, t0 + 4, 4, 5, '#D64545'); r(19, t0 + 5, 2, 3, '#E86A5C'); r(19, t0 + 9, 2, 2, '#7A4A2A'); }
+    }
+    // cabeça
+    const c0 = 6 + bob;
+    const cabeca = (cor) => { r(8, c0, 8, 1, cor); r(7, c0 + 1, 10, 1, cor); r(6, c0 + 2, 12, 9, cor); r(7, c0 + 11, 10, 1, cor); };
+    if (est === 'longo') { r(5, c0 + 3, 4, 13, cabS); if (!frente) r(15, c0 + 3, 4, 13, cabS); } // cabelo comprido atrás
+    if (est === 'black') { disco(12, c0 + 5, 8.5, 7.5, cab); }
+    cabeca(pele);
+    r(16, c0 + 3, 2, 8, peleS); r(7, c0 + 11, 10, 1, peleS);
+    if (frente) {
+      // orelha à esquerda; olhos e boca deslocados para a direita (rosto em 3/4)
+      r(8, c0 + 5, 2, 3, peleS); p(8, c0 + 6, tom(pele, 0.7));
+      const olho = '#231A16', ey = c0 + 6;
+      if (humor === 'calmo') { r(11, ey + 1, 2, 1, olho); r(14, ey + 1, 2, 1, olho); }
+      else { r(12, ey, 1, 2, olho); r(15, ey, 1, 2, olho); }
+      if (ap.oculos) { const k = '#1E1E26'; r(11, ey - 1, 3, 1, k); r(14, ey - 1, 3, 1, k); r(11, ey + 2, 3, 1, k); r(14, ey + 2, 3, 1, k); p(11, ey, k); p(11, ey + 1, k); p(17, ey, k); p(17, ey + 1, k); p(13, ey, k); }
+      const by = c0 + 9, bc = '#7A3B2E';
+      if (humor === 'preocupado') { p(12, by + 1, bc); r(13, by, 2, 1, bc); p(15, by + 1, bc); }
+      else if (humor === 'focado') r(13, by, 2, 1, bc);
+      else { p(12, by - 1, bc); r(13, by, 2, 1, bc); p(15, by - 1, bc); }
+      if (humor === 'preocupado') { r(11, ey - 2, 2, 1, cabS); r(15, ey - 2, 2, 1, cabS); }
+      if (ap.barba) { r(9, c0 + 8, 9, 3, cabS); r(10, c0 + 11, 7, 1, cabS); r(13, by, 2, 1, tom(pele, 0.7)); }
+    } else {
+      r(10, c0 + 10, 5, 2, peleS); // nuca
+    }
+    // cabelo
+    if (est !== 'careca') {
+      if (frente) {
+        if (est === 'black') { /* já desenhado atrás da cabeça */ r(7, c0, 10, 2, cab); r(6, c0 + 1, 3, 4, cab); }
+        else if (est === 'cacheado') { for (let i = 0; i < 6; i++) disco(7 + i * 2, c0 + 1 + (i % 2), 2, 2, cab); r(6, c0 + 1, 12, 3, cab); r(6, c0 + 4, 2, 5, cab); p(8, c0 + 4, cab); }
+        else {
+          r(8, c0 - 1, 8, 1, cab); r(7, c0, 10, 2, cab); r(6, c0 + 2, 12, 2, cab); r(6, c0 + 4, 2, 5, cab); r(8, c0 + 4, 2, 1, cab);
+          r(14, c0 + 4, 3, 1, cab);
+          if (est === 'topete') { r(10, c0 - 3, 7, 3, cab); r(15, c0 - 2, 3, 2, cab); }
+          if (est === 'coque') { disco(9, c0 - 2, 2.6, 2.6, cab); }
+          if (est === 'longo') { r(5, c0 + 2, 2, 12, cab); r(17, c0 + 3, 1, 6, cab); }
+        }
+        r(8, c0, 3, 1, cabC); p(7, c0 + 1, cabC);
+      } else {
+        if (est === 'black') { /* já desenhado */ } else if (est === 'cacheado') { for (let i = 0; i < 6; i++) disco(7 + i * 2, c0 + 1 + (i % 2), 2, 2, cab); r(6, c0 + 1, 12, 9, cab); r(7, c0 + 10, 10, 1, cab); }
+        else {
+          r(8, c0 - 1, 8, 1, cab); r(7, c0, 10, 1, cab); r(6, c0 + 1, 12, 9, cab); r(7, c0 + 10, 8, 1, cab);
+          r(15, c0 + 5, 2, 3, peleS); p(16, c0 + 6, tom(pele, 0.7)); // orelha à direita (de costas, virado para a direita)
+          if (est === 'topete') r(9, c0 - 3, 7, 3, cab);
+          if (est === 'coque') disco(12, c0 - 1, 2.8, 2.6, cab);
+          if (est === 'longo') { r(6, c0 + 10, 12, 8, cab); r(7, c0 + 18, 10, 1, cabS); }
+        }
+        r(9, c0, 4, 1, cabC); r(8, c0 + 1, 2, 1, cabC);
+      }
+    } else if (!frente) { r(9, c0 + 1, 3, 1, tom(pele, 1.1)); }
+    else { r(9, c0 + 1, 3, 1, tom(pele, 1.12)); }
+
+    // contorno escuro em volta da silhueta
+    const fora = new Uint8Array(SW * SH);
+    for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) {
+      if (buf[y * SW + x] >>> 24) continue;
+      if ((x > 0 && buf[y * SW + x - 1] >>> 24) || (x < SW - 1 && buf[y * SW + x + 1] >>> 24) || (y > 0 && buf[(y - 1) * SW + x] >>> 24) || (y < SH - 1 && buf[(y + 1) * SW + x] >>> 24)) fora[y * SW + x] = 1;
+    }
+    const k = pk(CONTORNO);
+    for (let i = 0; i < fora.length; i++) if (fora[i]) buf[i] = k;
+    return { buf, w: SW, h: SH };
   }
 
-  // retrato (busto) para painéis e para o canal da equipe
-  function avatar(c, sx, sy, R, ap, o = {}) {
-    const pele = ap.pele || '#EEC49C', cam = ap.camisa || '#3B6EC8';
-    const corpoAlt = o.sentado ? R * 0.95 : R * 1.45;
-    c.save();
-    const g = c.createLinearGradient(sx - R, sy + R * 0.6, sx + R, sy + R * 2);
-    g.addColorStop(0, sombra(cam, 1.12)); g.addColorStop(1, sombra(cam, 0.78));
-    c.fillStyle = g;
-    c.beginPath(); c.moveTo(sx - R * 0.95, sy + R * 0.7 + corpoAlt); c.lineTo(sx - R * 0.95, sy + R * 1.15);
-    c.quadraticCurveTo(sx - R * 0.9, sy + R * 0.62, sx, sy + R * 0.6); c.quadraticCurveTo(sx + R * 0.9, sy + R * 0.62, sx + R * 0.95, sy + R * 1.15);
-    c.lineTo(sx + R * 0.95, sy + R * 0.7 + corpoAlt); c.closePath(); c.fill();
-    c.fillStyle = sombra(pele, 0.9); c.beginPath(); c.ellipse(sx, sy + R * 0.66, R * 0.26, R * 0.14, 0, 0, 7); c.fill();
-    c.restore();
-    cabecaFrente(c, sx, sy, R, ap, o);
+  // ------------------------------------------------------------------ quadro final
+  let frame = null, img = null, arte = null, actx = null;
+  let S = 2, DX = 0, DY = 0, W = 0, H = 0, assinatura = '', alvosTela = [];
+  function preparar() {
+    arte = document.createElement('canvas'); arte.width = AW; arte.height = AH;
+    actx = arte.getContext('2d'); img = actx.createImageData(AW, AH); frame = new Uint32Array(img.data.buffer);
+  }
+  function colar(spr, ox, oy, espelho = false) {
+    const { buf, w, h } = spr;
+    for (let y = 0; y < h; y++) {
+      const fy = oy + y; if (fy < 0 || fy >= AH) continue;
+      for (let x = 0; x < w; x++) {
+        const fx = ox + x; if (fx < 0 || fx >= AW) continue;
+        const v = buf[y * w + (espelho ? w - 1 - x : x)], a = v >>> 24;
+        if (!a) continue;
+        const i = fy * AW + fx;
+        if (a === 255) { frame[i] = v; continue; }
+        const d = frame[i], f = a / 255, g = 1 - f;
+        frame[i] = empac(Math.round((v & 255) * f + (d & 255) * g), Math.round(((v >>> 8) & 255) * f + ((d >>> 8) & 255) * g),
+          Math.round(((v >>> 16) & 255) * f + ((d >>> 16) & 255) * g), Math.max(a, d >>> 24));
+      }
+    }
+  }
+  function marcaChao(x, y, cor, alfa, rx = 9, ry = 4.5) { // sombra / destaque no chão sob a pessoa (direto no quadro)
+    const [cx, cy] = Pa(x, y);
+    alvo(frame, AW, AH);
+    disco(Math.round(cx), Math.round(cy), rx, ry, cor, alfa);
   }
 
-  // ------------------------------------------------------------------ API pública
   const Cena = {
-    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota, avatar, pessoa, ocluir,
+    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota,
     medir(w, h, dpr, zoom = 1) {
-      DPR = dpr;
-      // contorno da planta em projeção (com folga para cabeças e etiquetas no fundo)
-      const largura = (LARG + PROF) * C + 1.2, altura = (LARG + PROF) * S + 0.35 + 2.6;
-      T = Math.max(14, Math.min((w - 16) / largura, (h - 16) / altura)) * zoom;
-      W = Math.max(w, largura * T + 16); H = Math.max(h, altura * T + 16);
-      const minX = -PROF * C - 0.6, maxX = LARG * C + 0.6, minY = -2.6, maxY = (LARG + PROF) * S + 0.35;
-      OX = W / 2 - ((minX + maxX) / 2) * T;
-      OY = H / 2 - ((minY + maxY) / 2) * T;
-      assinatura = '';
+      const ajuste = Math.min((w - 24) / AW, (h - 24) / AH);
+      // tela estreita (celular em pé): ajusta pela altura e deixa arrastar para os lados
+      let s = (ajuste >= 1 ? ajuste : Math.max(1, Math.min(2, (h - 24) / AH * 0.85))) * zoom;
+      const dev = s * dpr, inteiro = Math.floor(dev);
+      if (inteiro >= 1 && inteiro >= dev * 0.86) s = inteiro / dpr; // pixels inteiros: arte nítida
+      S = s;
+      W = Math.max(w, Math.ceil(AW * S + 24)); H = Math.max(h, Math.ceil(AH * S + 24));
+      DX = Math.round((W - AW * S) / 2 * dpr) / dpr; DY = Math.round((H - AH * S) / 2 * dpr) / dpr;
       return { largura: W, altura: H };
     },
-    escala: () => T,
-    projetar: P,
+    escala: () => K * S,
+    projetar: (x, y, z = 0) => { const [a, b] = Pa(x, y, z); return [DX + a * S, DY + b * S]; },
     atualizarFundo(d) {
-      const ass = JSON.stringify([W, H, DPR, d.fila_triagem, d.fila_analise, d.estacoes, d.tv_ligada, d.atlas_trabalhando, d.marca,
-        (d.vagas || []).map(v => [v.status, v.sem_responsavel, v.pendentes > 0]), d.quadro && [d.quadro.vagas_abertas, d.quadro.vagas_em_processamento, d.quadro.pendencias]]);
-      if (ass !== assinatura) { assinatura = ass; desenharFundo(d); }
+      const agora = new Date();
+      const ass = JSON.stringify([d.fila_triagem, d.fila_analise, d.estacoes, d.tv_ligada, d.atlas_trabalhando, agora.getHours(), agora.getMinutes(),
+        (d.vagas || []).map(v => [v.status, v.sem_responsavel, v.pendentes > 0, v.recebidos, v.analisados]), d.quadro && [d.quadro.vagas_abertas, d.quadro.vagas_em_processamento, d.quadro.pendencias]]);
+      if (ass === assinatura) return;
+      assinatura = ass;
+      if (!frame) preparar();
+      montarItens(d);
+      base = new Uint32Array(AW * AH);
+      alvo(base, AW, AH);
+      desenharBase(d);
+      construirSprites();
     },
-    fundo: () => fundo,
-    alvos: () => alvos,
+    // pessoas: [{ id, x, y, ap, dir, pose, quadro, humor, item, destaque }]; extra: { bolinha: [x, y, z] | null }
+    desenhar(ctx, pessoas, extra = {}) {
+      if (!frame) return [];
+      frame.set(base);
+      const dyn = pessoas.map(p => {
+        const espelho = p.dir === 's' || p.dir === 'w', vista = p.dir === 's' || p.dir === 'e' ? 'frente' : 'costas';
+        const spr = sprite(p.ap || {}, vista, p.pose, p.quadro, p.humor, p.item);
+        const [ax, ay] = Pa(p.x, p.y), ox = Math.round(ax) - (espelho ? SW - 1 - PX : PX), oy = Math.round(ay) - PY;
+        return { p, spr, espelho, ox, oy, box: [p.x - 0.12, p.y - 0.12, p.x + 0.12, p.y + 0.12], z0: 0, z1: 1.7, tela: [ox, oy, ox + SW - 1, oy + SH - 1], prof: p.x + p.y };
+      });
+      if (extra.bolinha) {
+        const [bx, by, bz] = extra.bolinha, [sx, sy] = Pa(bx, by, bz);
+        dyn.push({ bola: [Math.round(sx), Math.round(sy)], sombraBola: Pa(bx, by, 0.78), box: [bx - 0.03, by - 0.03, bx + 0.03, by + 0.03], z0: 0.78, z1: 1.5, tela: [sx - 2, sy - 2, sx + 2, sy + 2], prof: bx + by });
+      }
+      // posição de cada pessoa na ordem dos móveis: depois de tudo que está atrás e antes do que está na frente
+      const n = ITENS.length;
+      dyn.sort((a, b) => a.prof - b.prof);
+      for (const e of dyn) {
+        let frenteMin = n, atrasMax = -1;
+        for (let i = 0; i < n; i++) {
+          const it = ITENS[i];
+          if (!cruza(it.tela, e.tela)) continue;
+          const [ix0, iy0, ix1, iy1] = it.box, [ex0, ey0, ex1, ey1] = e.box;
+          const sobrepoe = !(ix1 <= ex0 + E || ex1 <= ix0 + E || iy1 <= ey0 + E || ey1 <= iy0 + E);
+          const o = sobrepoe ? (it.z1 <= 0.65 ? -1 : 1) : ordem(it, e);
+          if (o < 0) atrasMax = i; else if (o > 0 && i < frenteMin) frenteMin = i;
+        }
+        e.pos = atrasMax >= frenteMin ? atrasMax + 1 : frenteMin;
+      }
+      for (let i = 0; i < dyn.length; i++) for (let j = 0; j < i; j++) if (cruza(dyn[i].tela, dyn[j].tela) && dyn[i].pos < dyn[j].pos) dyn[i].pos = dyn[j].pos;
+      const porPos = new Map();
+      for (const e of dyn) { if (!porPos.has(e.pos)) porPos.set(e.pos, []); porPos.get(e.pos).push(e); }
+      const desenhaDyn = e => {
+        if (e.bola) {
+          alvo(frame, AW, AH); disco(Math.round(e.sombraBola[0]), Math.round(e.sombraBola[1]), 2, 1, '#000000', 0.3);
+          ret(e.bola[0] - 1, e.bola[1] - 1, 2, 2, '#FFF6D6'); ponto(e.bola[0], e.bola[1], '#E7B400');
+          return;
+        }
+        const { p } = e;
+        marcaChao(p.x, p.y, '#000000', 0.22);
+        if (p.destaque) { marcaChao(p.x, p.y, '#F5B544', 0.55, 11, 5.5); marcaChao(p.x, p.y, '#000000', 0.12, 8, 4); }
+        colar(e.spr, e.ox, e.oy, e.espelho);
+      };
+      for (let i = 0; i <= n; i++) {
+        for (const e of porPos.get(i) || []) desenhaDyn(e);
+        if (i < n && ITENS[i].spr) { const s = ITENS[i].spr; colar(s, s.ox, s.oy); }
+      }
+      for (const [pos, lista] of porPos) if (pos > n) lista.forEach(desenhaDyn);
+      actx.putImageData(img, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(arte, 0, 0, AW, AH, DX, DY, AW * S, AH * S);
+      alvosTela = ALVOS_ARTE.map(a => ({ tipo: a.tipo, pts: a.pts.map(([x, y]) => [DX + x * S, DY + y * S]) }));
+      return dyn.filter(e => e.p).map(e => {
+        const [fx, fy] = Pa(e.p.x, e.p.y);
+        return { id: e.p.id, sx: DX + fx * S, sy: DY + fy * S, hx: DX + fx * S, hy: DY + (fy - (PY - 4)) * S,
+          x0: DX + (e.ox + 4) * S, y0: DY + (e.oy + 2) * S, x1: DX + (e.ox + SW - 4) * S, y1: DY + (e.oy + SH) * S };
+      });
+    },
+    alvos: () => alvosTela,
     dentro(pt, pts) {
       let ok = false;
       for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -704,6 +931,19 @@
         if ((yi > pt[1]) !== (yj > pt[1]) && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) ok = !ok;
       }
       return ok;
+    },
+    // retrato em pixel art para os painéis: cabeça e ombros, de frente, ampliados sem suavização
+    retrato(k, tam, ap, fundo = '#2A2540') {
+      const s = sprite(ap || {}, 'frente', 'pe', 0, 'feliz', null), c = document.createElement('canvas');
+      c.width = SW; c.height = SH;
+      const ic = c.getContext('2d'), id = ic.createImageData(SW, SH);
+      new Uint32Array(id.data.buffer).set(s.buf); ic.putImageData(id, 0, 0);
+      k.save(); k.beginPath(); k.arc(tam / 2, tam / 2, tam / 2, 0, 7); k.clip();
+      k.fillStyle = fundo; k.fillRect(0, 0, tam, tam);
+      k.imageSmoothingEnabled = false;
+      const recorte = 20, esc = tam / recorte;
+      k.drawImage(c, 2, 3, recorte, recorte, 0, tam * 0.08, recorte * esc, recorte * esc);
+      k.restore();
     },
   };
   window.Cena = Cena;

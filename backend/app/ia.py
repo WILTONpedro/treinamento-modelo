@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from . import config, uso_ia
 from .catalogo import CATEGORIAS_DISPONIVEIS
-from .personalidade import bordao, maiuscula
+from .personalidade import bordao
 from .uso_ia import IAIndisponivel  # noqa: F401  (reexportado para quem chama)
 
 log = logging.getLogger("hub.ia")

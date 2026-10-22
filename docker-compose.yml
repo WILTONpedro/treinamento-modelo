@@ -1,4 +1,6 @@
-# Produção num servidor com Docker: API + PostgreSQL + HTTPS automático (Caddy).
+# Produção num servidor com Docker: API + HTTPS automático (Caddy) e o banco:
+#   - no Supabase (recomendado): python -m app.preparar --docker --supabase "postgresql://..." ...
+#   - ou um PostgreSQL próprio aqui (perfil banco-local): python -m app.preparar --docker ...
 #   1) cd backend && python -m app.preparar --docker --dominio rh.suaempresa.com.br --gemini-key ...
 #   2) aponte o DNS do domínio para este servidor e libere as portas 80 e 443
 #   3) docker compose up -d --build
@@ -7,18 +9,20 @@ services:
     build: .
     env_file: .env
     volumes:
-      - dados:/dados               # currículos cifrados
+      - dados:/dados               # currículos cifrados (quando ARMAZENAMENTO=disco)
     depends_on:
       db:
         condition: service_healthy
+        required: false            # com o banco no Supabase o serviço db não sobe
     restart: unless-stopped
 
   db:
     image: postgres:16-alpine
+    profiles: ["banco-local"]      # ativado por COMPOSE_PROFILES=banco-local no .env
     environment:
       POSTGRES_USER: hub
       POSTGRES_DB: hub
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?rode python -m app.preparar --docker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - banco:/var/lib/postgresql/data
     healthcheck:

@@ -2,10 +2,12 @@
 
     cd backend
     python -m app.preparar --docker --dominio rh.suaempresa.com.br --empresa "Sua Empresa" \\
-        --admin-email rh@suaempresa.com.br --gemini-key SUA_CHAVE
+        --admin-email rh@suaempresa.com.br --gemini-key SUA_CHAVE --supabase "postgresql://..."
 
---docker   escreve ../.env (lido pelo docker-compose: app + PostgreSQL + HTTPS automático)
-sem ele    escreve ./.env (servidor simples com SQLite, para rodar com uvicorn)
+--docker    escreve ../.env (lido pelo docker-compose: app + HTTPS automático)
+sem ele     escreve ./.env (servidor simples, para rodar com uvicorn)
+--supabase  banco no Supabase (URL do pooler, modo sessão): dados e arquivos dos currículos ficam lá
+sem ele     com --docker, um PostgreSQL próprio no servidor; sem --docker, SQLite
 
 Nunca sobrescreve um .env existente (use --forcar). Mostra a senha inicial do administrador e a
 chave da API de triagem uma única vez: guarde-as num cofre de senhas.
@@ -33,7 +35,7 @@ def montar(a: argparse.Namespace) -> tuple[str, dict]:
         "# sem CHAVE_ARQUIVOS os currículos cifrados não podem ser lidos.",
         "AMBIENTE=producao",
         "",
-        "# --- Identidade",
+        "# --- Identidade (APP_NOME vazio = sem nome na tela)",
         f"APP_NOME={a.nome}",
         "APP_SUBTITULO=Escritório de Recrutamento",
         f"EMPRESA_NOME={a.empresa}",
@@ -58,14 +60,20 @@ def montar(a: argparse.Namespace) -> tuple[str, dict]:
         "RETENCAO_DIAS=180",
         "RETENCAO_CONVERSAS_HORAS=72",
     ]
+    if a.supabase:
+        linhas += ["", "# --- Banco no Supabase (schema hub, fora da API pública; arquivos cifrados no banco)",
+                   f"DATABASE_URL={a.supabase}",
+                   "DB_SCHEMA=hub",
+                   "ARMAZENAMENTO=banco"]
     if a.docker:
-        senha_banco = secrets.token_urlsafe(24)
-        segredos["POSTGRES_PASSWORD"] = senha_banco
-        linhas += ["", "# --- Docker (docker-compose.yml)",
-                   f"DOMINIO={a.dominio}",
-                   f"POSTGRES_PASSWORD={senha_banco}",
-                   f"DATABASE_URL=postgresql+psycopg://hub:{senha_banco}@db:5432/hub",
-                   "PASTA_DADOS=/dados"]
+        linhas += ["", "# --- Docker (docker-compose.yml)", f"DOMINIO={a.dominio}", "PASTA_DADOS=/dados"]
+        if not a.supabase:
+            senha_banco = secrets.token_urlsafe(24)
+            segredos["POSTGRES_PASSWORD"] = senha_banco
+            linhas += ["# sobe o PostgreSQL junto com o app (sem esta linha: banco externo, ex. Supabase)",
+                       "COMPOSE_PROFILES=banco-local",
+                       f"POSTGRES_PASSWORD={senha_banco}",
+                       f"DATABASE_URL=postgresql+psycopg://hub:{senha_banco}@db:5432/hub"]
     return "\n".join(linhas) + "\n", segredos
 
 
@@ -74,7 +82,8 @@ def main(argv=None) -> int:
     ap.add_argument("--docker", action="store_true", help="escreve ../.env para o docker-compose (PostgreSQL + HTTPS)")
     ap.add_argument("--dominio", default="localhost", help="domínio público, ex.: rh.suaempresa.com.br (só com --docker)")
     ap.add_argument("--empresa", default="", help="nome da empresa (aparece nos prompts e na LGPD)")
-    ap.add_argument("--nome", default="AI Hub", help="nome do sistema exibido na tela")
+    ap.add_argument("--nome", default="", help="nome do sistema exibido na tela (vazio: nenhum)")
+    ap.add_argument("--supabase", default="", help="URL do banco no Supabase (Connect → Session pooler), com usuário e senha")
     ap.add_argument("--admin-email", default="admin@suaempresa.com.br")
     ap.add_argument("--gemini-key", default=os.environ.get("GEMINI_API_KEY", ""), help="chave do Gemini (ou defina depois)")
     ap.add_argument("--arquivo", help="caminho do arquivo a gerar (padrão: ../.env com --docker, ./.env sem)")

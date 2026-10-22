@@ -1,4 +1,4 @@
-/* AI Hub — interface do escritório.
+/* Interface do escritório de recrutamento.
    Fonte da verdade: a API. O escritório só representa o que ela informa
    (estados dos agentes, filas, vagas, análises e eventos em tempo real).
    Balões: pensamentos e falas de trabalho vêm de eventos reais; o papo de descanso
@@ -17,11 +17,27 @@
   const ORIGEM = { indicacao: 'indicado por um colega', atlas: 'encaminhado pelo Atlas', banco: 'banco de talentos' };
   const TIPOS_CANAL = ['conversa', 'contratacao', 'agente_dispensado', 'indicacao', 'encaminhamento_automatico', 'fila_redistribuida'];
   const FONTE = '600 12px system-ui,-apple-system,Segoe UI,sans-serif', FONTE_PENS = 'italic 600 12px system-ui,-apple-system,Segoe UI,sans-serif';
-  const ACENTO = '#5B5BD6';
+  const ACENTO = '#F5B544';
+  const svg = d => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+  const ICONE = { // traços no estilo Feather (MIT)
+    equipe: svg('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'),
+    vagas: svg('<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>'),
+    quadro: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>'),
+    mais: svg('<path d="M12 5v14M5 12h14"/>'), menos: svg('<path d="M5 12h14"/>'),
+    tudo: svg('<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>'),
+    enviar: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/>'),
+    contratar: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><path d="M20 8v6M23 11h-6"/>'),
+    engrenagem: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>'),
+    sino: svg('<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>'),
+    chave: svg('<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M16 7l3 3M14 9l2 2"/>'),
+    sair: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
+    balao: svg('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
+    info: svg('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>'),
+  };
   const PAPEIS = { recrutador: 'Recrutador', supervisor: 'Supervisor', admin: 'Administrador' };
   const FINALIDADES = { triagem: 'Triagem', analise: 'Análises', consulta: 'Consultas entre colegas', revisao: 'Revisões com ajuda',
     chat: 'Chat individual', equipe: 'Canal da equipe', encaminhamento: 'Encaminhamento pelo Atlas', sugestao_vaga: 'Sugestão de vaga', teste: 'Teste de conexão' };
-  let MARCA = { nome: 'AI Hub', subtitulo: 'Escritório de Recrutamento', empresa: '' };
+  let MARCA = { nome: '', subtitulo: 'Escritório de Recrutamento', empresa: '' };
 
   let EU = null, D = null, P = null, SEL = null, HOVER = null, CATEGORIAS = [], ESPECIALIDADES = [];
   const VIS = {}, CHATS = {}, AGS = {}, entrando = new Set(), SAINDO = new Map(), ESPERA_BALAO = {};
@@ -51,13 +67,19 @@
     return dado;
   }
 
-  // identidade configurável (APP_NOME / APP_SUBTITULO no servidor)
+  // identidade configurável (APP_NOME / APP_SUBTITULO no servidor); sem nome, nada de marca na tela
   async function carregarMarca() {
     try { const r = await fetch('/api/marca'); if (r.ok) MARCA = await r.json(); } catch (_) { /* mantém o padrão */ }
-    document.title = `${MARCA.nome} · ${MARCA.subtitulo}`;
-    const pal = MARCA.nome.split(/\s+/).filter(Boolean), sigla = /^[A-Z0-9]{2,3}$/.test(pal[0] || '') ? pal[0]  // "AI Hub" → AI
-      : (pal.length > 1 ? pal.map(p => p[0]).join('') : pal[0] || 'AI').slice(0, 2).toUpperCase();
+    const nome = (MARCA.nome || '').trim(), sub = MARCA.subtitulo || 'Escritório de Recrutamento';
+    document.title = nome ? `${nome} · ${sub}` : sub;
+    const pal = nome.split(/\s+/).filter(Boolean), sigla = /^[A-Z0-9]{2,3}$/.test(pal[0] || '') ? pal[0]
+      : (pal.length > 1 ? pal.map(p => p[0]).join('') : pal[0] || '').slice(0, 2).toUpperCase();
     for (const el of document.querySelectorAll('[data-marca]')) el.textContent = el.dataset.marca === 'sigla' ? sigla : (MARCA[el.dataset.marca] || '');
+    $('#marca').classList.toggle('oculto', !nome);
+    $('#login-titulo').textContent = nome || 'Entrar';
+    $('#login-sub').textContent = (MARCA.empresa ? MARCA.empresa + ' · ' : '') + sub;
+    const av = $('#login-avatar');
+    if (av) Cena.retrato(av.getContext('2d'), 72, { pele: '#E8B98F', cabelo: '#2B1D14', estilo: 'curto', camisa: '#F5B544' });
   }
 
   // ================================================================ login
@@ -74,8 +96,7 @@
   let iniciado = false;
   async function iniciar() {
     if (iniciado) return; iniciado = true;
-    $('#legenda').innerHTML = Object.entries(ESTADOS).filter(([k]) => k !== 'conversando')
-      .map(([, [c, n]]) => `<span><i class="d" style="background:${c}"></i>${n}</span>`).join('');
+    $('#legenda').innerHTML = Object.entries(ESTADOS).map(([, [c, n]]) => `<span><i class="d" style="background:${c}"></i>${n}</span>`).join('');
     [CATEGORIAS, ESPECIALIDADES] = await Promise.all([api('GET', '/api/categorias'), api('GET', '/api/especialidades')]);
     await carregar();
     montarTopo(); montarFerramentas(); montarAtividade();
@@ -90,11 +111,14 @@
   function montarTopo() {
     const demo = D.ia_modo !== 'gemini';
     $('#usuario').innerHTML = `<span class="selo pausa oculto" id="selo-pausa" title="">IA pausada</span>
-      <span class="selo ${demo ? 'demo' : ''}" title="${demo ? 'Análises por regras locais, sem enviar dados a serviços externos' : 'Análises feitas pelo Gemini'}">${demo ? 'Modo demonstração' : 'IA: Gemini'}</span>
-      <span>${esc(EU.nome)}<small> · ${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>
-      <button class="btn mini claro" id="trocar-senha" title="Trocar senha">Trocar senha</button><button class="btn mini escuro" id="sair">Sair</button>`;
+      <span class="selo ${demo ? 'demo' : 'ia'}" title="${demo ? 'Análises por regras locais, sem enviar dados a serviços externos' : 'Análises feitas pelo Gemini'}">${demo ? 'Modo demonstração' : 'IA: Gemini'}</span>
+      <button class="icone" id="sino" title="Atividade recente" aria-label="Atividade recente">${ICONE.sino}<span class="cont oculto" id="sino-cont"></span></button>
+      <span class="quem">${esc(EU.nome)}<small>${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>
+      <button class="icone" id="trocar-senha" title="Trocar senha" aria-label="Trocar senha">${ICONE.chave}</button>
+      <button class="icone" id="sair" title="Sair" aria-label="Sair">${ICONE.sair}</button>`;
     $('#sair').onclick = async () => { await api('POST', '/auth/sair'); location.reload(); };
     $('#trocar-senha').onclick = () => modalSenha(false);
+    $('#sino').onclick = e => { e.stopPropagation(); alternarAtividade(); };
     atualizarSelos();
   }
   function atualizarSelos() {
@@ -106,12 +130,13 @@
   }
 
   function montarFerramentas() {
-    const b = [['equipe', '💬 Equipe']];
-    if (EU.papel !== 'recrutador') b.push(['nova-vaga', '＋ Nova vaga'], ['enviar', 'Enviar currículos'], ['ativar', 'Contratar agente'], ['admin', '⚙ Administração']);
-    $('#ferramentas').innerHTML = b.map(([id, t]) => `<button class="btn" data-f="${id}">${t}</button>`).join('');
+    const b = [['equipe', 'Equipe', 'equipe'], ['vagas', 'Vagas', 'vagas'], ['quadro', 'Quadro geral', 'quadro']];
+    if (EU.papel !== 'recrutador') b.push(['nova-vaga', 'Nova vaga', 'mais'], ['enviar', 'Enviar currículos', 'enviar'], ['ativar', 'Contratar agente', 'contratar'], ['admin', 'Administração', 'engrenagem']);
+    $('#ferramentas').innerHTML = b.map(([id, t, ic]) => `<button class="btn" data-f="${id}" title="${t}">${ICONE[ic]}<span>${t}</span></button>`).join('');
     $('#ferramentas').onclick = e => {
       const f = e.target.closest('[data-f]'); if (!f) return;
-      ({ equipe: () => abrir({ tipo: 'equipe' }), 'nova-vaga': modalVaga, enviar: modalEnviar, ativar: modalAtivar, admin: () => modalAdmin() })[f.dataset.f]();
+      ({ equipe: () => abrir({ tipo: 'equipe' }), vagas: () => abrir({ tipo: 'vagas', filtro: 'todas' }), quadro: () => abrir({ tipo: 'quadro' }),
+        'nova-vaga': modalVaga, enviar: modalEnviar, ativar: modalAtivar, admin: () => modalAdmin() })[f.dataset.f]();
     };
   }
 
@@ -348,14 +373,17 @@
   // zoom: botões e pinça/Ctrl+roda; arrastar move a vista; 💭 liga/desliga os balões
   const zb = document.createElement('div');
   zb.id = 'zoom';
-  zb.innerHTML = '<button title="Aproximar">+</button><button title="Afastar">−</button><button title="Ver tudo">⤢</button>' +
-    `<button title="Mostrar/ocultar pensamentos e falas" class="${BALOES ? 'on' : ''}">💭</button>`;
+  zb.innerHTML = `<button title="Aproximar">${ICONE.mais}</button><button title="Afastar">${ICONE.menos}</button><button title="Ver tudo">${ICONE.tudo}</button>` +
+    `<button title="Mostrar/ocultar pensamentos e falas" class="${BALOES ? 'on' : ''}">${ICONE.balao}</button><button title="Legenda dos estados">${ICONE.info}</button>`;
   $('#esq').appendChild(zb);
   zb.onclick = e => {
-    const i = [...zb.children].indexOf(e.target.closest('button'));
+    const b = e.target.closest('button'); if (!b) return;
+    const i = [...zb.children].indexOf(b);
     if (i === 0) zoom(ZOOM * 1.25); if (i === 1) zoom(ZOOM / 1.25); if (i === 2) zoom(1);
-    if (i === 3) { BALOES = !BALOES; gravarPref('hub.baloes', BALOES); zb.children[3].classList.toggle('on', BALOES); }
+    if (i === 3) { BALOES = !BALOES; gravarPref('hub.baloes', BALOES); b.classList.toggle('on', BALOES); }
+    if (i === 4) { e.stopPropagation(); const l = $('#legenda'), r = b.getBoundingClientRect(); l.style.top = r.top + 'px'; l.style.right = (innerWidth - r.left + 8) + 'px'; l.classList.toggle('oculto'); b.classList.toggle('on', !l.classList.contains('oculto')); }
   };
+  addEventListener('click', e => { if (!e.target.closest('#legenda')) { $('#legenda').classList.add('oculto'); zb.children[4].classList.remove('on'); } });
   $('#palco').addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault(); const r = $('#palco').getBoundingClientRect();
@@ -380,7 +408,7 @@
       if (v.no && v.no.startsWith('sofa')) tv = true;
       if (a.funcao === 'supervisor' && a.estado === 'trabalhando') atlas = true;
     }
-    return { ...D, estacoes: est, tv_ligada: tv, atlas_trabalhando: atlas, marca: MARCA.nome };
+    return { ...D, estacoes: est, tv_ligada: tv, atlas_trabalhando: atlas };
   }
 
   let ult = 0, T0 = performance.now(), posicoes = [];
@@ -391,78 +419,67 @@
       Cena.atualizarFundo(fundoDados());
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
       ctx.clearRect(0, 0, LW, LH);
-      ctx.drawImage(Cena.fundo(), 0, 0, LW, LH);
       desenharAgentes((t - T0) / 1000);
     }
     requestAnimationFrame(quadroAnim);
   }
 
+  const FONTE_NOME = '700 12px system-ui,-apple-system,Segoe UI,sans-serif', FONTE_EST = '600 11px system-ui,-apple-system,Segoe UI,sans-serif';
   function desenharAgentes(seg) {
-    const Tt = Cena.escala(), R = Tt * 0.4;
-    if (HOVER && HOVER.tipo !== 'agente') {
-      const a = Cena.alvos().find(x => x.tipo === HOVER.tipo);
-      if (a) { ctx.beginPath(); a.pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.strokeStyle = ACENTO; ctx.lineWidth = 3; ctx.stroke(); }
-    }
-    posicoes = todos().filter(a => VIS[a.id]).map(a => {
-      const v = VIS[a.id], info = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0, sentado = !andando && !!info.sentado;
-      const [sx, sy] = Cena.projetar(v.x, v.y, 0), fase = seg * 9 + a.id;
-      const dir = andando ? (v.dir || 's') : (info.f || v.dir || 's');
-      const bob = andando ? -Math.abs(Math.sin(fase)) * Tt * 0.05 : Math.sin(seg * 1.6 + a.id) * Tt * 0.012;
-      return { a, v, sx, sy, hx: sx, hy: sy - (sentado ? 1.39 : 1.54) * Tt + bob, R, sentado, andando, dir, fase,
-               item: andando ? null : info.item, digitando: sentado && info.digita && a.estado === 'trabalhando' };
-    }).sort((p, q) => p.sy - q.sy);
-
-    // bolinha do pingue-pongue só quando há dois jogadores de verdade na mesa
-    const jog = posicoes.filter(p => !p.andando && (p.v.no === 'ping0' || p.v.no === 'ping1'));
-    if (jog.length === 2) {
-      const f = (Math.sin(seg * 3.2) + 1) / 2, x = 22.9 + f * 3.0, alt = 0.95 + Math.abs(Math.sin(seg * 6.4)) * 0.45;
-      const [bx, by] = Cena.projetar(x, 16.4, alt), [ox, oy] = Cena.projetar(x, 16.4, 0.78);
-      ctx.fillStyle = 'rgba(0,0,0,.15)'; ctx.beginPath(); ctx.ellipse(ox, oy, 3, 1.5, 0, 0, 7); ctx.fill();
-      ctx.fillStyle = '#FFF7D6'; ctx.strokeStyle = '#E7B400'; ctx.beginPath(); ctx.arc(bx, by, Math.max(2.5, Tt * 0.09), 0, 7); ctx.fill(); ctx.stroke();
-    }
-
-    for (const p of posicoes) {
-      const { a, v, sx, sy, hx, hy, R } = p, e = estadoVisual(a);
-      ctx.fillStyle = 'rgba(30,35,50,.18)'; ctx.beginPath(); ctx.ellipse(sx, sy + (p.sentado ? Tt * 0.08 : 0), Tt * 0.36, Tt * 0.18, 0, 0, 7); ctx.fill();
-      if (SEL === a.id || (HOVER && HOVER.id === a.id)) {
-        ctx.strokeStyle = ACENTO; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(sx, sy, Tt * 0.5, Tt * 0.25, 0, 0, 7); ctx.stroke();
-      }
+    const lista = todos().filter(a => VIS[a.id]).map(a => {
+      const v = VIS[a.id], info = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0, sentado = !andando && !!info.sentado, e = estadoVisual(a);
+      const digitando = sentado && info.digita && a.estado === 'trabalhando';
       const humor = e === 'pendencia' ? 'preocupado' : e === 'trabalhando' ? 'focado'
         : (e === 'descansando' && /sofa|pufe/.test(v.no || '')) ? 'calmo' : 'feliz';
-      Cena.pessoa(ctx, sx, sy, Tt, a.aparencia || {}, { dir: p.dir, sentado: p.sentado, andando: p.andando, fase: p.fase, humor,
-        digitando: p.digitando, item: p.item, t: seg + a.id, olhar: e === 'trabalhando' ? Math.sin(seg * 2 + a.id) * R * 0.05 : 0 });
-      // o que está na frente da pessoa (balcão, mesa, encosto, parede) é redesenhado por cima dela
-      Cena.ocluir(ctx, v.x, v.y, { x0: sx - Tt * 0.75, x1: sx + Tt * 0.75, y0: hy - R * 1.4, y1: sy + Tt * 0.3 });
-      if (a.estado === 'pendencia' || a.pendencias) {
-        ctx.fillStyle = '#D64545'; ctx.beginPath(); ctx.arc(hx + R * 0.85, hy - R * 0.85, R * 0.36, 0, 7); ctx.fill();
-        ctx.fillStyle = '#fff'; ctx.font = `800 ${Math.round(R * 0.5)}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('!', hx + R * 0.85, hy - R * 0.83); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      return { a, v, id: a.id, x: v.x, y: v.y, ap: a.aparencia || {}, andando,
+        dir: andando ? (v.dir || 's') : (info.f || v.dir || 's'),
+        pose: andando ? 'anda' : digitando ? 'digita' : sentado ? 'senta' : 'pe',
+        quadro: andando ? Math.floor(seg * 7 + a.id) % 4 : digitando ? Math.floor(seg * 5 + a.id) % 2 : 0,
+        humor, item: andando ? null : (info.item || null), destaque: SEL === a.id || (HOVER && HOVER.id === a.id) };
+    });
+    // bolinha do pingue-pongue só quando há dois jogadores de verdade na mesa
+    const jog = lista.filter(p => !p.andando && (p.v.no === 'ping0' || p.v.no === 'ping1'));
+    const fb = (Math.sin(seg * 3.2) + 1) / 2;
+    const bolinha = jog.length === 2 ? [19.8 + fb * 2.4, 12.3, 0.84 + Math.abs(Math.sin(seg * 6.4)) * 0.4] : null;
+    const telas = Cena.desenhar(ctx, lista, { bolinha }), porId = new Map(lista.map(p => [p.id, p]));
+    posicoes = telas.map(t => ({ ...porId.get(t.id), ...t }));
+    if (HOVER && HOVER.tipo !== 'agente') { // contorno do quadro ou da bandeja sob o mouse
+      const a = Cena.alvos().find(x => x.tipo === HOVER.tipo);
+      if (a) { ctx.beginPath(); a.pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p))); ctx.closePath(); ctx.strokeStyle = ACENTO; ctx.lineWidth = 2; ctx.stroke(); }
+    }
+    for (const p of posicoes) {
+      const { a, v, hx, hy } = p, e = estadoVisual(a);
+      if (a.estado === 'pendencia' || a.pendencias) { // "!" vermelho sobre a cabeça
+        const bx = hx + 13, by = hy + 6;
+        ctx.fillStyle = '#E5534B'; ctx.strokeStyle = '#1B1420'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bx, by, 7.5, 0, 7); ctx.stroke(); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('!', bx, by + 0.5); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
       }
-      if (e === 'conversando' && !(BALOES && v.baloes[0] && v.baloes[0].t0)) {
-        const bx = hx + R * 0.9, by = hy - R * 1.2;
-        ctx.fillStyle = '#fff'; ctx.strokeStyle = '#D9D9D3'; ctx.beginPath(); ctx.roundRect(bx, by - R * 0.5, R * 1.3, R * 0.8, R * 0.35); ctx.fill(); ctx.stroke();
-        ctx.fillStyle = '#6B6B66'; for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(bx + R * (0.35 + k * 0.3), by - R * 0.1, R * 0.08 + (Math.floor(seg * 3) % 3 === k ? R * 0.03 : 0), 0, 7); ctx.fill(); }
+      if (e === 'conversando' && !(BALOES && v.baloes[0] && v.baloes[0].t0)) { // "…" de quem está conversando
+        const bx = hx + 9, by = hy - 4;
+        ctx.fillStyle = '#FFFFFF'; ctx.strokeStyle = '#1B1420'; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(bx, by - 8, 26, 15, 6); ctx.stroke(); ctx.fill();
+        ctx.fillStyle = '#5A5F70';
+        for (let k = 0; k < 3; k++) { ctx.beginPath(); ctx.arc(bx + 7 + k * 6, by - 0.5, Math.floor(seg * 3) % 3 === k ? 2.2 : 1.6, 0, 7); ctx.fill(); }
       }
     }
-    // etiquetas (estilo da referência: nome + bolinha de status), sem sobreposição
+    // etiquetas: nome + bolinha de status, sem sobreposição
     const caixas = [];
     for (const p of [...posicoes].sort((q, r) => r.hy - q.hy)) {
-      const { a, hx, hy, R } = p, e = estadoVisual(a), [cor, rot] = ESTADOS[e] || ESTADOS.aguardando;
-      ctx.font = '700 12px system-ui,-apple-system,Segoe UI,sans-serif'; const wn = ctx.measureText(a.nome).width;
-      ctx.font = '600 11px system-ui,-apple-system,Segoe UI,sans-serif'; const ws = ctx.measureText(rot).width;
-      const w = wn + ws + 32, h = 22;
-      let x = hx - w / 2, y = hy - R * 1.45 - h;
+      const { a, hx, hy } = p, e = estadoVisual(a), [cor, rot] = ESTADOS[e] || ESTADOS.aguardando;
+      ctx.font = FONTE_NOME; const wn = ctx.measureText(a.nome).width;
+      ctx.font = FONTE_EST; const ws = ctx.measureText(rot).width;
+      const w = wn + ws + 30, h = 21;
+      let x = hx - w / 2, y = hy - h - 4;
       for (let tent = 0; tent < 6; tent++) {
         const bate = caixas.find(c => x < c.x + c.w + 3 && x + w + 3 > c.x && y < c.y + c.h + 2 && y + h + 2 > c.y);
         if (!bate) break; y = bate.y - h - 3;
       }
       caixas.push({ x, y, w, h, id: a.id });
-      ctx.save(); ctx.shadowColor = 'rgba(33,30,22,.18)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2;
-      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 7); ctx.fill(); ctx.restore();
-      if (SEL === a.id) { ctx.strokeStyle = ACENTO; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect(x, y, w, h, 7); ctx.stroke(); }
-      ctx.fillStyle = '#211E16'; ctx.font = '700 12px system-ui,-apple-system,Segoe UI,sans-serif'; ctx.fillText(a.nome, x + 9, y + 15);
-      ctx.fillStyle = cor; ctx.beginPath(); ctx.arc(x + 17 + wn, y + 11, 3.6, 0, 7); ctx.fill();
-      ctx.fillStyle = '#6B6B66'; ctx.font = '600 11px system-ui,-apple-system,Segoe UI,sans-serif'; ctx.fillText(rot, x + 24 + wn, y + 15);
+      ctx.fillStyle = 'rgba(17,16,26,.88)'; ctx.beginPath(); ctx.roundRect(x, y, w, h, 6); ctx.fill();
+      ctx.strokeStyle = SEL === a.id ? ACENTO : 'rgba(255,255,255,.1)'; ctx.lineWidth = SEL === a.id ? 2 : 1; ctx.stroke();
+      ctx.fillStyle = '#F2F3F7'; ctx.font = FONTE_NOME; ctx.fillText(a.nome, x + 8, y + 14.5);
+      ctx.fillStyle = cor; ctx.beginPath(); ctx.arc(x + 16 + wn, y + 10.5, 3.5, 0, 7); ctx.fill();
+      ctx.fillStyle = '#A9B0C2'; ctx.font = FONTE_EST; ctx.fillText(rot, x + 23 + wn, y + 14.5);
     }
     posicoes.caixas = caixas;
     if (BALOES) desenharBaloes(caixas);
@@ -556,8 +573,8 @@
   function acertar(mx, my) {
     for (const c of (posicoes.caixas || []).slice().reverse())
       if (mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h) return { tipo: 'agente', id: c.id };
-    for (const p of [...posicoes].reverse())
-      if (Math.hypot(mx - p.hx, my - p.hy) < p.R * 1.3 || (Math.abs(mx - p.sx) < p.R * 0.85 && my > p.hy && my < p.sy)) return { tipo: 'agente', id: p.a.id };
+    for (const p of [...posicoes].sort((q, r) => r.sy - q.sy))
+      if (mx >= p.x0 && mx <= p.x1 && my >= p.y0 && my <= p.y1) return { tipo: 'agente', id: p.a.id };
     for (const a of Cena.alvos()) if (Cena.dentro([mx, my], a.pts)) return { tipo: a.tipo };
     return null;
   }
@@ -591,7 +608,18 @@
   });
 
   // ================================================================ atividade recente
-  function montarAtividade() { $('#atividade').onclick = e => { if (e.target.closest('header')) $('#atividade').classList.toggle('fechado'); }; }
+  let NAO_LIDOS = 0, ATIV_ABERTA = false;
+  function montarAtividade() { addEventListener('click', e => { if (ATIV_ABERTA && !e.target.closest('#atividade, #sino')) alternarAtividade(false); }); }
+  function alternarAtividade(forcar) {
+    ATIV_ABERTA = typeof forcar === 'boolean' ? forcar : !ATIV_ABERTA;
+    $('#atividade').classList.toggle('oculto', !ATIV_ABERTA);
+    const s = $('#sino'); if (s) s.classList.toggle('on', ATIV_ABERTA);
+    if (ATIV_ABERTA) { NAO_LIDOS = 0; atualizarSino(); atividade(); }
+  }
+  function atualizarSino() {
+    const c = $('#sino-cont'); if (!c) return;
+    c.textContent = NAO_LIDOS > 99 ? '99+' : String(NAO_LIDOS); c.classList.toggle('oculto', !NAO_LIDOS);
+  }
   function textoEvento(e) {
     if (e.tipo !== 'conversa') return esc(e.mensagem);
     const d = e.dados || {}, de = (AGS[e.agente_id] || {}).nome || d.de || '', para = (AGS[d.destino_id] || {}).nome || d.para;
@@ -599,8 +627,11 @@
   }
   function atividade(novoId) {
     if (!D) return;
-    $('#atividade').innerHTML = `<header>ATIVIDADE RECENTE <span class="mini">· tempo real</span></header>` +
-      D.eventos.slice(0, 6).map(e => `<p class="${e.id === novoId ? 'novo' : ''}"><b>${hora(e.ts)}</b><span>${textoEvento(e)}</span></p>`).join('');
+    if (novoId && !ATIV_ABERTA) { NAO_LIDOS++; atualizarSino(); }
+    if (!ATIV_ABERTA) return;
+    $('#atividade').innerHTML = `<header><i class="vivo"></i>Atividade <span>· tempo real</span></header><div class="lista-ev">` +
+      ((D.eventos || []).slice(0, 25).map(e => `<p class="${e.id === novoId ? 'novo' : ''}"><b>${hora(e.ts)}</b><span>${textoEvento(e)}</span></p>`).join('')
+        || '<p class="mini">Nada por enquanto.</p>') + '</div>';
   }
 
   // ================================================================ painel lateral
@@ -627,11 +658,7 @@
     } catch (e) { if (!silencioso) $('#pi').innerHTML = `<div class="ph"><h2>Erro</h2><button class="x" data-a="x">×</button></div><div id="pb"><p class="erro">${esc(e.message)}</p></div>`; }
   }
 
-  function rosto(k, s, ap) {
-    k.save(); k.beginPath(); k.arc(s / 2, s / 2, s / 2, 0, 7); k.clip();
-    k.fillStyle = '#E4E3FB'; k.fillRect(0, 0, s, s);
-    Cena.avatar(k, s / 2, s * 0.44, s * 0.265, ap || {}, { sentado: true }); k.restore();
-  }
+  const rosto = (k, s, ap) => Cena.retrato(k, s, ap || {});
   function desenharRosto() {
     const c = $('#rosto'); if (!c) return;
     const a = D.agentes.find(x => x.id === P.id); if (!a) return;

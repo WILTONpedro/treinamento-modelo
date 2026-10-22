@@ -23,7 +23,7 @@ from .db import sessao
 from .models import (Agente, Analise, Candidato, Candidatura, Configuracao, Contratacao, Curriculo, Decisao,
                      Especialidade, Evento, Pendencia, Tarefa, Vaga, VagaAgente, agora, iso)
 from .personalidade import bordao, falar, maiuscula, perfil_para, publico
-from .seguranca import apagar_arquivo, ler_arquivo, salvar_arquivo
+from .arquivos import apagar_arquivo, ler_arquivo, salvar_arquivo
 
 log = logging.getLogger("hub.servicos")
 MAX_ESTACOES = 12
@@ -146,7 +146,7 @@ def registrar_curriculo(db: Session, conteudo: bytes, nome_arquivo: str, mime: s
                           rec.id, curriculo_id=existente.id)
         return existente, False
     cur = Curriculo(sha256=sha, arquivo_nome=os.path.basename(nome_arquivo)[:250], mime=triagem.mime_de(nome_arquivo, mime),
-                    tamanho=len(conteudo), caminho=salvar_arquivo(sha, conteudo),
+                    tamanho=len(conteudo), caminho=salvar_arquivo(sha, conteudo, db),
                     texto=triagem.extrair_texto(conteudo, nome_arquivo), origem=origem)
     db.add(cur)
     db.flush()
@@ -163,7 +163,7 @@ def executar_triagem(tarefa_id: int):
         rec = recepcao(db)
         _ocupar(rec, t, f"triando o currículo #{cur.id}")
         _pensar(db, rec, falar(perfil(rec), "pensando"))
-        dados = (ler_arquivo(cur.caminho), cur.arquivo_nome, cur.mime, cur.texto)
+        dados = (ler_arquivo(cur.caminho, db), cur.arquivo_nome, cur.mime, cur.texto)
     try:
         resultado = triagem.triar(*dados)  # fora da transação: a IA pode demorar
     except ia.IAIndisponivel:
@@ -1373,7 +1373,7 @@ def anonimizar_titular(db, cand: Candidato, motivo: str):
     nome_antigo = cand.nome
     curs = db.scalars(select(Curriculo).where(Curriculo.candidato_id == cand.id)).all()
     for c in curs:
-        apagar_arquivo(c.caminho)
+        apagar_arquivo(c.caminho, db)
         c.caminho, c.texto, c.triagem_json, c.resumo_triagem = None, None, None, None
         c.arquivo_nome, c.status, c.sha256 = "removido", "anonimizado", f"anon-{c.id}"
     ids = select(Candidatura.id).where(Candidatura.candidato_id == cand.id)

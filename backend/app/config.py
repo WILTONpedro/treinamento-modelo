@@ -51,14 +51,30 @@ PASTA_DADOS.mkdir(parents=True, exist_ok=True)
 PASTA_ARQUIVOS = PASTA_DADOS / "arquivos"
 PASTA_ARQUIVOS.mkdir(parents=True, exist_ok=True)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{PASTA_DADOS / 'hub.db'}")
+
+
+def _url_banco(url: str) -> str:
+    """Aceita a URL como o painel do Supabase/Postgres mostra (postgresql://...): usa o driver psycopg 3 e,
+    no Supabase, exige conexão cifrada."""
+    if url.startswith(("postgres://", "postgresql://")):
+        url = "postgresql+psycopg://" + url.split("://", 1)[1]
+    if url.startswith("postgresql+psycopg://") and "supabase" in url and "sslmode=" not in url:
+        url += ("&" if "?" in url else "?") + "sslmode=require"
+    return url
+
+
+DATABASE_URL = _url_banco(os.environ.get("DATABASE_URL", f"sqlite:///{PASTA_DADOS / 'hub.db'}"))
+# Schema do PostgreSQL usado pelo sistema (no Supabase: "hub", fora da API pública). Vazio = padrão do usuário.
+DB_SCHEMA = os.environ.get("DB_SCHEMA", "").strip()
+# Onde ficam os arquivos dos currículos (sempre cifrados): disco | banco (recomendado com Supabase)
+ARMAZENAMENTO = os.environ.get("ARMAZENAMENTO", "disco").strip().lower()
 
 SEED_DEMO = _bool("SEED_DEMO", False)  # demonstração: nunca em produção
 # producao = o sistema se recusa a subir com configuração insegura (veja problemas_producao)
 AMBIENTE = os.environ.get("AMBIENTE", "desenvolvimento").strip().lower()
 
 # --- Identidade (sem marca fixa: ajuste para a sua empresa) -------------------
-APP_NOME = os.environ.get("APP_NOME", "AI Hub")
+APP_NOME = os.environ.get("APP_NOME", "").strip()  # vazio: nenhum nome na tela
 APP_SUBTITULO = os.environ.get("APP_SUBTITULO", "Escritório de Recrutamento")
 # Nome da empresa contratante, usado nos prompts ("Recrutador Sênior da empresa X") e na LGPD
 EMPRESA_NOME = os.environ.get("EMPRESA_NOME", "").strip()
@@ -159,6 +175,8 @@ def problemas_producao() -> list[str]:
         p.append("COOKIE_SECURE precisa ser true (acesso só por HTTPS)")
     if SEED_DEMO:
         p.append("SEED_DEMO precisa ser false (cria usuário e dados de demonstração)")
+    if ARMAZENAMENTO not in ("disco", "banco"):
+        p.append("ARMAZENAMENTO precisa ser disco ou banco")
     if IA_MODO != "gemini":
         p.append("IA_MODO precisa ser gemini (o modo demonstração é heurístico)")
     elif not GEMINI_API_KEY:

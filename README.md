@@ -1,10 +1,10 @@
-# AI Hub — Escritório de Recrutamento Multiagente
+# Escritório de Recrutamento Multiagente
 
-Escritório isométrico em que agentes de IA apoiam o RH: a **Bia** (recepção) recebe e tria os currículos que
-chegam por e-mail, o **Atlas** (gerente) distribui o trabalho — e **contrata reforço quando precisa** — e os
-**analistas** (Sofia, Flávio e quem o Atlas contratar) comparam cada currículo com os requisitos da vaga e
-recomendam candidatos com evidências. Cada agente tem **personalidade própria**, mostra o que está pensando em
-**balões** e **pede ajuda a colegas** de outra área quando tem dúvida sobre um currículo.
+Escritório em pixel art isométrica em que agentes de IA apoiam o RH: a **Bia** (recepção) recebe e tria os
+currículos que chegam por e-mail, o **Atlas** (gerente) distribui o trabalho — e **contrata reforço quando
+precisa** — e os **analistas** (Sofia, Flávio e quem o Atlas contratar) comparam cada currículo com os
+requisitos da vaga e recomendam candidatos com evidências. Cada agente tem **personalidade própria**, mostra
+o que está pensando em **balões** e **pede ajuda a colegas** de outra área quando tem dúvida sobre um currículo.
 **A decisão final é sempre do recrutador.**
 
 O escritório só mostra o que acontece de verdade: cada personagem sentado no computador tem uma tarefa real na
@@ -21,7 +21,9 @@ leitura do currículo encontrou.
                ▲ supervisão do Atlas: contrata, reforça, dispensa, tenta de novo, boletim, pausa da IA
                │ eventos (SSE, tempo real): pensamentos, falas, contratações
                ▼
-        escritório isométrico (frontend/) ── balões, painéis, currículo, chat, canal da equipe, administração
+        escritório em pixel art (frontend/) ── balões, painéis, currículo, chat, canal da equipe, administração
+
+ banco: Supabase (PostgreSQL, São Paulo) — dados e arquivos dos currículos, cifrados
 ```
 
 ## Estrutura
@@ -36,14 +38,16 @@ backend/
   app/ia.py           análise, consulta e revisão, sugestões do Atlas, chat (streaming) e conversa em grupo
                       (Gemini ou modo demonstração)
   app/uso_ia.py       tokens e custo de cada chamada, limite diário e pausa automática da IA
+  app/arquivos.py     arquivos dos currículos, cifrados, no disco ou no próprio banco
   app/preparar.py     gera o .env de produção com segredos fortes
   app/models.py       modelo de dados
-  app/seguranca.py    login, papéis, senhas, auditoria, arquivos cifrados
+  app/seguranca.py    login, papéis, senhas, auditoria, chave dos arquivos
   app/email_imap.py   leitura de caixa de e-mail (opcional, desligada)
   demo/               currículos fictícios para demonstração
   tests/              testes ponta a ponta
-frontend/             escritório (HTML + JS puro, sem dependências)
-Dockerfile, docker-compose.yml, Caddyfile   produção: app + PostgreSQL + HTTPS automático
+frontend/             escritório (HTML + JS puro, sem dependências): cena.js desenha a pixel art
+supabase/             script que prepara um projeto do Supabase (papel e schema próprios)
+Dockerfile, docker-compose.yml, Caddyfile   produção: app + HTTPS automático (+ PostgreSQL local opcional)
 LGPD.md               como o sistema atende a LGPD e o que validar com o jurídico
 ```
 
@@ -62,7 +66,8 @@ Abra `http://localhost:8000` e entre com `admin@demo.local` / `demo1234`. A demo
 exemplo e alimenta 17 currículos fictícios aos poucos, para ver a equipe trabalhando. As análises nesse modo
 são heurísticas e vêm marcadas como tal. O que dá para ver acontecer sozinho:
 
-1. ninguém cobre a vaga de vendas: o Atlas contrata alguém da área comercial, que chega, se apresenta e assume a vaga;
+1. ninguém cobre a vaga de vendas: o Atlas contrata alguém da área comercial, que entra pela porta, se apresenta
+   e assume a vaga;
 2. o currículo de um promotor de vendas cai na vaga de vendedor: quem analisa pede ajuda a "promotores", não há ninguém,
    o Atlas anota a necessidade e o ponto fica para o recrutador verificar;
 3. a Priscila (almoxarifado, pasta LOGÍSTICA) cai com o Flávio; ele vai até a mesa da Sofia pedir ajuda,
@@ -70,14 +75,45 @@ são heurísticas e vêm marcadas como tal. O que dá para ver acontecer sozinho
 4. o Tiago (professor) não cai em pasta nenhuma: o Atlas lê, não acha vaga parecida e pede ajuda ao recrutador;
 5. chega um lote de currículos de produção: a fila do Flávio passa do limite, o Atlas contrata reforço e
    divide a fila;
-6. quem fica ocioso vai descansar (pingue-pongue, sofá, pufes, leitura, café) e puxa papo com os colegas.
+6. quem fica ocioso vai descansar (pingue-pongue, sofá com TV, pufes, leitura, café) e puxa papo com os colegas.
 
 **Testes:** `cd backend && pip install -r requirements-dev.txt && python -m pytest -q`
+(para rodar no PostgreSQL, defina `DATABASE_URL`, `DB_SCHEMA` e `ARMAZENAMENTO=banco` antes).
+
+## Banco de dados no Supabase
+
+O banco recomendado é um projeto do **Supabase** na região **São Paulo (sa-east-1)**: os dados dos candidatos
+ficam no Brasil, com backups e painel para consulta. O sistema guarda lá **tudo**: vagas, candidatos,
+análises, auditoria e também os **arquivos dos currículos**, sempre **cifrados** antes de sair do servidor
+(tabela `arquivos_curriculo`, com `ARMAZENAMENTO=banco`).
+
+Como o banco fica protegido:
+
+- as tabelas ficam no schema **`hub`**, fora da API pública do Supabase (a chave pública do projeto não enxerga nada);
+- o sistema conecta com um papel próprio, **`hub_app`**, que só tem acesso a esse schema (não usa o usuário `postgres`);
+- RLS (row level security) fica ligado em todas as tabelas, sem políticas: mesmo que alguém exponha o schema na
+  API, nenhum outro papel lê linha alguma;
+- a conexão é cifrada (`sslmode=require` é acrescentado sozinho para hosts do Supabase).
+
+**Projeto novo do zero:** rode `supabase/configurar.sql` no SQL Editor do Supabase (troque a senha indicada).
+Na primeira inicialização o sistema cria as tabelas, os índices e o RLS sozinho.
+
+**URL de conexão** (`DATABASE_URL`): no painel, *Connect → Session pooler* (porta 5432, funciona em IPv4).
+Troque o usuário `postgres.<ref>` por `hub_app.<ref>` e use a senha do papel `hub_app`:
+
+```
+postgresql://hub_app.<ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
+```
+
+No plano gratuito o banco tem 500 MB (cerca de 2 a 3 mil currículos com arquivo; a retenção da LGPD apaga os
+antigos) e o projeto pausa após 7 dias sem uso; para produção contínua, o plano Pro remove a pausa e inclui
+backups diários. Para guardar uma cópia por conta própria:
+`pg_dump "postgresql://hub_app.<ref>:<senha>@...:5432/postgres" -n hub | gzip > backup-$(date +%F).sql.gz`.
 
 ## Colocar em produção
 
-O caminho recomendado é um servidor (VPS) com Docker: a aplicação, o PostgreSQL e o Caddy (HTTPS automático
-com Let's Encrypt) sobem juntos.
+O caminho recomendado é um servidor (VPS) com Docker: a aplicação e o Caddy (HTTPS automático com Let's
+Encrypt) sobem juntos, com o banco no Supabase.
 
 **1. Domínio.** Crie um registro DNS `A` (ex.: `rh.suaempresa.com.br`) apontando para o IP do servidor e
 libere as portas 80 e 443.
@@ -88,14 +124,16 @@ libere as portas 80 e 443.
 cd backend
 python3 -m pip install cryptography          # só para o gerador; o resto roda no Docker
 python3 -m app.preparar --docker --dominio rh.suaempresa.com.br --empresa "Sua Empresa" \
-    --admin-email rh@suaempresa.com.br --gemini-key SUA_CHAVE_DO_GEMINI
+    --admin-email rh@suaempresa.com.br --gemini-key SUA_CHAVE_DO_GEMINI \
+    --supabase "postgresql://hub_app.<ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:5432/postgres"
 cd ..
 ```
 
 Isso grava `.env` na raiz (permissão 600, fora do Git) com `AMBIENTE=producao`, segredo de sessão, chave de
-criptografia dos currículos, chave da API de triagem, senha do banco e senha inicial do administrador. A senha
-inicial e a chave da triagem aparecem **uma única vez** na tela: guarde-as num cofre de senhas, junto com uma
-cópia do `.env` (sem a `CHAVE_ARQUIVOS` os currículos cifrados não podem ser lidos).
+criptografia dos currículos, chave da API de triagem, a conexão com o Supabase e a senha inicial do
+administrador. A senha inicial e a chave da triagem aparecem **uma única vez** na tela: guarde-as num cofre de
+senhas, junto com uma cópia do `.env` (sem a `CHAVE_ARQUIVOS` os currículos cifrados não podem ser lidos).
+Sem `--supabase`, o compose sobe também um PostgreSQL próprio no servidor (perfil `banco-local`).
 
 **3. Subir.**
 
@@ -105,34 +143,26 @@ docker compose logs -f app          # acompanhe a primeira subida
 ```
 
 Abra `https://rh.suaempresa.com.br`, entre com o e-mail do administrador e a senha inicial: o sistema pede
-uma senha nova no primeiro acesso. Em **⚙ Administração → IA e custos**, use **Testar conexão com a IA** para
+uma senha nova no primeiro acesso. Em **Administração → IA e custos**, use **Testar conexão com a IA** para
 conferir chave, créditos e modelo.
 
 Com `AMBIENTE=producao` o sistema **se recusa a subir** se faltar algo essencial (segredo fraco, chave de
 arquivos ou da triagem ausente, cookie sem HTTPS, dados de demonstração ligados, IA sem chave) e mostra o
 motivo no log.
 
-**Backups** (agende diariamente e guarde fora do servidor):
-
-```bash
-docker compose exec -T db pg_dump -U hub hub | gzip > backup-$(date +%F).sql.gz        # banco
-docker run --rm -v "$(basename "$PWD")_dados:/dados" -v "$PWD:/b" alpine \
-    tar czf /b/arquivos-$(date +%F).tgz -C /dados .                                    # currículos cifrados
-```
-
 **Atualizar:** `git pull && docker compose up -d --build` (o banco é migrado na inicialização).
 
-**Sem Docker** (servidor simples, SQLite): `python -m app.preparar` (grava `backend/.env`), depois
+**Sem Docker:** `python -m app.preparar --supabase "..."` (grava `backend/.env`), depois
 `uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers` atrás de um proxy com HTTPS
 (Caddy/Nginx) que **não** faça buffer de `/api/eventos/stream` e `/api/agentes/*/chat/stream`. Mantenha um
 único processo: o trabalhador da fila roda dentro da API.
 
 ### Usuários e senhas
 
-- Em **⚙ Administração → Usuários** (administrador) você cria acessos, muda o papel, desativa e gera uma nova
+- Em **Administração → Usuários** (administrador) você cria acessos, muda o papel, desativa e gera uma nova
   senha temporária. A senha temporária aparece só uma vez; a pessoa escolhe a dela no primeiro acesso.
-- **Trocar senha** fica no topo da tela. Ao trocar, as outras sessões abertas com a senha antiga caem; mudar o
-  papel ou desativar alguém também encerra as sessões dessa pessoa na hora.
+- O ícone de chave no topo troca a própria senha. Ao trocar, as outras sessões abertas com a senha antiga caem;
+  mudar o papel ou desativar alguém também encerra as sessões dessa pessoa na hora.
 - Senhas com pelo menos 10 caracteres, não só números; login com limite de tentativas. Sempre fica pelo menos
   um administrador ativo.
 
@@ -170,7 +200,7 @@ de **US$ 4 a cada mil currículos**; consultas entre colegas, chat e canal da eq
 - contexto do chat e do canal da equipe enxuto (só os registros necessários).
 
 **Controle de gasto e pausa automática.**
-- Cada chamada registra tokens (entrada, cache, saída, raciocínio) e custo estimado. Veja em **⚙ Administração
+- Cada chamada registra tokens (entrada, cache, saída, raciocínio) e custo estimado. Veja em **Administração
   → IA e custos** (gasto do dia, últimos 30 dias e para onde vão os tokens) e no quadro geral.
 - `IA_LIMITE_DIARIO_USD` (padrão US$ 3) é o teto por dia, no fuso `FUSO_HORARIO`. Ao atingir, a fila de IA
   pausa até o dia seguinte; nada se perde.
@@ -204,12 +234,22 @@ Se preferir que o próprio sistema leia a caixa de entrada, ligue `IMAP_ATIVO=tr
 
 ## O escritório
 
-Planta maior, em seis ambientes ligados por um corredor: **recepção** (Bia e o balcão de entrada), **vagas em
-aberto** (quadro que os agentes consultam), **sala do gerente** (Atlas), **alimentação** (mesas, café e
-geladeira), **análise de currículos** (12 estações em três fileiras) e **descanso** (pingue-pongue, sofás com
-TV, pufes e cantinho de leitura). Os personagens têm corpo inteiro com volume e sombra, viram para onde andam,
-caminham pelas portas e sentam para digitar; móveis à frente de alguém são redesenhados por cima, como num
-cenário 3D. Clique em uma sala ou personagem para abrir o painel; role ou use os botões para dar zoom.
+Pixel art isométrica (2D com volume), desenhada pixel a pixel no navegador e ampliada sem suavização — bordas
+nítidas como num jogo. Planta aberta com: **recepção** (Bia, balcão com a bandeja de currículos, porta de
+entrada), **sala de vidro do gerente** (Atlas, mesa executiva, quadro de cortiça com as pendências), **quadro de
+vagas** na parede (um cartão por vaga, com a barra de progresso das análises), **três ilhas de trabalho** com 12
+estações (monitores de tubo que acendem quando há trabalho, luminárias), **copa** (balcão, cafeteira, geladeira,
+mesas), **canto de leitura**, **mesa de reunião** e **área de descanso** (sofá com TV, pingue-pongue, pufes).
+Janelas com feixes de sol, relógio com a hora real e plantas.
+
+Os personagens têm corpo inteiro com contorno, viram para os quatro lados, andam pelos corredores desviando dos
+móveis (rotas calculadas numa grade), sentam, digitam e seguram café, livro ou raquete. Quem passa atrás de uma
+mesa, do sofá ou do vidro da sala do gerente aparece atrás deles. Nada de texto pintado no cenário: o nome do
+sistema só aparece se `APP_NOME` estiver definido.
+
+Clique num personagem, no quadro de vagas, no quadro do gerente ou na bandeja da recepção para abrir o painel.
+A **atividade em tempo real** fica no sino do topo (com contador do que chegou), e a legenda dos estados no
+botão de informação ao lado do zoom.
 
 ## A equipe viva
 
@@ -222,7 +262,7 @@ chat e do canal da equipe; na demonstração, ela aparece nas frases montadas a 
 **Balões.** Nuvem = pensamento; balão = fala. Os de trabalho vêm de eventos reais: o que a leitura do currículo
 encontrou ("✔ Excel intermediário: está no currículo"), a dúvida levada ao colega, a resposta, as boas-vindas a
 quem chegou. O papo no descanso e os pensamentos de quem está à toa são só ambientação, tirados da
-personalidade. O botão 💭 (ao lado do zoom) liga e desliga os balões.
+personalidade. O botão de balão (ao lado do zoom) liga e desliga os balões.
 
 **Colegas que se ajudam.** Na análise, o agente pode concluir que outra especialidade responde melhor a uma
 dúvida (termo técnico, certificação, perfil de outra área). Então:
@@ -265,7 +305,7 @@ vaga aberta. Todo o histórico aparece em "Contratações e dispensas" (painel d
 
 - **Chat com um agente**: resposta em streaming (aparece sendo digitada), na voz do agente, a partir dos registros
   dele; se o assunto for de um colega, ele diz com quem falar.
-- **Canal da equipe** (botão 💬 Equipe): você escreve para o time e quem tem a informação responde — o Atlas
+- **Canal da equipe** (botão Equipe): você escreve para o time e quem tem a informação responde — o Atlas
   organiza, chama quem tem vagas, e um colega pode complementar o outro. O mesmo canal mostra, em tempo real, o
   que os agentes dizem entre si (pedidos de ajuda, contratações, boletins). O que você escreve não é armazenado.
 
@@ -276,7 +316,10 @@ Todas as variáveis estão comentadas em `backend/.env.example`. As principais:
 | Variável | Padrão | Para quê |
 |---|---|---|
 | `AMBIENTE` | `desenvolvimento` | `producao` recusa subir com configuração insegura |
-| `APP_NOME`, `APP_SUBTITULO`, `EMPRESA_NOME` | `AI Hub`, `Escritório de Recrutamento`, vazio | nome na tela e empresa citada nos prompts e na LGPD |
+| `DATABASE_URL` | SQLite em `PASTA_DADOS` | banco; com Supabase, a URL do pooler em modo sessão |
+| `DB_SCHEMA` | vazio | schema do PostgreSQL (`hub` no Supabase) |
+| `ARMAZENAMENTO` | `disco` | onde ficam os arquivos dos currículos, cifrados: `disco` ou `banco` (Supabase) |
+| `APP_NOME`, `APP_SUBTITULO`, `EMPRESA_NOME` | vazio, `Escritório de Recrutamento`, vazio | nome na tela (vazio: nenhum) e empresa citada nos prompts e na LGPD |
 | `GEMINI_MODELO` | `gemini-3.5-flash-lite` | modelo de tudo (ou `GEMINI_MODELO_TRIAGEM` / `GEMINI_MODELO_AGENTES`) |
 | `GEMINI_PENSAMENTO` | `minimal` | nível de raciocínio (`minimal`, `low`, `medium`, `high`, `padrao`) |
 | `IA_LIMITE_DIARIO_USD` | `3` | teto de gasto estimado por dia (0 = sem teto) |
@@ -295,13 +338,13 @@ Todas as variáveis estão comentadas em `backend/.env.example`. As principais:
 
 | Estado | Origem no sistema | No escritório |
 |---|---|---|
-| Trabalhando | tarefa em execução ou na fila do agente | sentado, digitando, tela acesa |
-| Aguardando | tem vagas, sem tarefas | na estação, tela apagada |
+| Trabalhando | tarefa em execução ou na fila do agente | sentado digitando, monitor com texto verde |
+| Aguardando | tem vagas, sem tarefas (ou a IA está pausada) | sentado na estação, monitor em espera |
 | Disponível | ativo, sem vaga atribuída | na estação |
-| Descansando | ocioso há `SEGUNDOS_PARA_DESCANSO` | pingue-pongue, sofá/TV, pufe, leitura, alimentação |
-| Com pendência | pendência aberta em seu nome | “!” vermelho; detalhes no quadro geral |
-| Concluído | acabou de esvaziar a fila | tela verde por alguns segundos |
-| Em deslocamento | caminhada visual disparada por evento real (buscar currículos, consultar vagas, pedir ajuda a um colega, chegar contratado, sair dispensado, ir/voltar do descanso) | anda pelos corredores e portas |
+| Descansando | ocioso há `SEGUNDOS_PARA_DESCANSO` | pingue-pongue, sofá com TV, pufe, leitura, copa |
+| Com pendência | pendência aberta em seu nome | “!” vermelho, cara preocupada; detalhes no quadro geral |
+| Concluído | acabou de esvaziar a fila | monitor verde por alguns segundos |
+| Em deslocamento | caminhada visual disparada por evento real (buscar currículos, consultar vagas, pedir ajuda a um colega, chegar contratado, sair dispensado, ir/voltar do descanso) | anda pelo escritório |
 | Conversando | fala com um colega (consulta, boas-vindas, papo no descanso) | balão de fala |
 
 O deslocamento é só visual: a tarefa já começou no servidor, o descanso nunca atrasa o processamento.
@@ -325,11 +368,12 @@ O deslocamento é só visual: a tarefa já começou no servidor, o descanso nunc
 
 ## Limitações conhecidas
 
-- Até 12 analistas ativos (12 estações na sala de análise); o Atlas libera estações de quem está sem vagas.
+- Até 12 analistas ativos (12 estações); o Atlas libera estações de quem está sem vagas.
 - Leitura de PDF escaneado/imagem depende do Gemini (o modo demonstração não faz OCR).
 - O chat (individual e do canal da equipe) não guarda o que você escreve no servidor (minimização de dados);
   some ao recarregar a página. As falas entre agentes ficam `RETENCAO_CONVERSAS_HORAS`.
 - Cada consulta entre colegas é mais uma leitura do currículo pela IA (custo e latência maiores com Gemini);
   desligue com `COLABORACAO=false` se preferir.
 - Os custos exibidos são estimativas a partir dos tokens informados pela API; a cobrança oficial é a do Google.
-- Bancos criados por versões anteriores são atualizados na inicialização (colunas novas são acrescentadas).
+- No celular o escritório abre ajustado à altura da tela; arraste para os lados para ver tudo.
+- Bancos criados por versões anteriores são atualizados na inicialização (colunas e índices novos são acrescentados).

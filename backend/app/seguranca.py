@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from . import config
 from .db import obter_db
-from .models import Usuario, Auditoria, Configuracao, agora
+from .models import Usuario, Auditoria, agora
 
 log = logging.getLogger("hub.seguranca")
 COOKIE = "hub_sessao"
@@ -121,11 +121,11 @@ def auditar(db: Session, usuario: Usuario | None, acao: str, recurso: str, recur
                      detalhes=detalhes))
 
 
-# --------------------------------------------------------------------------- arquivos cifrados
+# --------------------------------------------------------------------------- chave dos arquivos (ver arquivos.py)
 _fernet: Fernet | None = None
 
 
-def _chave(db: Session | None = None) -> Fernet:
+def cifra() -> Fernet:
     global _fernet
     if _fernet:
         return _fernet
@@ -142,24 +142,3 @@ def _chave(db: Session | None = None) -> Fernet:
                         "sem ela os currículos não podem ser lidos.", arq)
     _fernet = Fernet(chave.encode() if isinstance(chave, str) else chave)
     return _fernet
-
-
-def salvar_arquivo(sha: str, conteudo: bytes) -> str:
-    caminho = config.PASTA_ARQUIVOS / f"{sha}.bin"
-    if not caminho.exists():
-        caminho.write_bytes(_chave().encrypt(conteudo))
-    return str(caminho)
-
-
-def ler_arquivo(caminho: str) -> bytes:
-    with open(caminho, "rb") as f:
-        return _chave().decrypt(f.read())
-
-
-def apagar_arquivo(caminho: str | None):
-    if caminho and os.path.exists(caminho):
-        # sobrescreve antes de remover (melhor esforço em discos comuns)
-        tam = os.path.getsize(caminho)
-        with open(caminho, "r+b") as f:
-            f.write(secrets.token_bytes(tam))
-        os.remove(caminho)

@@ -1,4 +1,4 @@
-"""AI Hub — API do escritório de recrutamento multiagente."""
+"""API do escritório de recrutamento multiagente."""
 import asyncio
 import json
 import logging
@@ -19,8 +19,9 @@ from .catalogo import CATEGORIAS_DISPONIVEIS
 from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
                      SolicitacaoTitular, Usuario, Vaga, agora, iso)
+from .arquivos import ler_arquivo
 from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferir_senha, criar_token, exigir, gerar_hash,
-                        ler_arquivo, limitar_login, senha_temporaria, usuario_atual, validar_senha)
+                        limitar_login, senha_temporaria, usuario_atual, validar_senha)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hub")
@@ -158,7 +159,7 @@ async def ciclo_de_vida(app: FastAPI):
         t.cancel()
 
 
-app = FastAPI(title=config.APP_NOME, lifespan=ciclo_de_vida, docs_url="/api/docs", redoc_url=None)
+app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=ciclo_de_vida, docs_url="/api/docs", redoc_url=None)
 if config.ORIGENS_CORS:
     app.add_middleware(CORSMiddleware, allow_origins=config.ORIGENS_CORS, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
@@ -529,7 +530,7 @@ def arquivo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), 
         raise HTTPException(404, "Arquivo indisponível.")
     auditar(db, u, "abrir_arquivo", "curriculo", cur_id, request)
     nome = "curriculo-%d%s" % (cur.id, Path(cur.arquivo_nome).suffix.lower())
-    return Response(ler_arquivo(cur.caminho), media_type=cur.mime,
+    return Response(ler_arquivo(cur.caminho, db), media_type=cur.mime,
                     headers={"Content-Disposition": f'inline; filename="{nome}"'})
 
 

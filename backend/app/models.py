@@ -1,6 +1,6 @@
 """Modelo de dados. Datas em UTC (naive) — o front converte para o fuso local."""
 from datetime import datetime, timezone
-from sqlalchemy import (String, Integer, Boolean, DateTime, Text, JSON, ForeignKey,
+from sqlalchemy import (String, Integer, Boolean, DateTime, Text, JSON, ForeignKey, LargeBinary,
                         UniqueConstraint, Index, Float)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -47,7 +47,7 @@ class Agente(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     nome: Mapped[str] = mapped_column(String(60))
     funcao: Mapped[str] = mapped_column(String(20))  # supervisor|recepcao|analista
-    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"))
+    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"), index=True)
     personalidade: Mapped[str] = mapped_column(Text, default="")
     perfil: Mapped[dict | None] = mapped_column(JSON, default=dict)  # jeito de falar, bordões, papo (personalidade.py)
     aparencia: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -82,7 +82,7 @@ class Vaga(Base):
 class VagaAgente(Base):
     __tablename__ = "vaga_agentes"
     vaga_id: Mapped[int] = mapped_column(ForeignKey("vagas.id"), primary_key=True)
-    agente_id: Mapped[int] = mapped_column(ForeignKey("agentes.id"), primary_key=True)
+    agente_id: Mapped[int] = mapped_column(ForeignKey("agentes.id"), primary_key=True, index=True)
     atribuido_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
 
 
@@ -104,11 +104,11 @@ class Curriculo(Base):
     __tablename__ = "curriculos"
     id: Mapped[int] = mapped_column(primary_key=True)
     sha256: Mapped[str] = mapped_column(String(64), unique=True)  # evita reprocessar o mesmo arquivo
-    candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"))
+    candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"), index=True)
     arquivo_nome: Mapped[str] = mapped_column(String(260))
     mime: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
     tamanho: Mapped[int] = mapped_column(Integer, default=0)
-    caminho: Mapped[str | None] = mapped_column(String(300))  # arquivo cifrado em disco
+    caminho: Mapped[str | None] = mapped_column(String(300))  # onde está o arquivo cifrado (disco ou "banco:<sha>")
     texto: Mapped[str | None] = mapped_column(Text)
     origem: Mapped[str] = mapped_column(String(20), default="email")
     recebido_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
@@ -122,14 +122,22 @@ class Curriculo(Base):
     candidato: Mapped[Candidato | None] = relationship()
 
 
+class ArquivoCurriculo(Base):
+    """Arquivo original do currículo, cifrado (Fernet), quando ARMAZENAMENTO=banco (ver arquivos.py)."""
+    __tablename__ = "arquivos_curriculo"
+    sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conteudo: Mapped[bytes] = mapped_column(LargeBinary)
+    criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
+
+
 class Candidatura(Base):
     """Um currículo considerado em uma vaga. Única por (currículo, vaga)."""
     __tablename__ = "candidaturas"
     __table_args__ = (UniqueConstraint("curriculo_id", "vaga_id", name="uq_curriculo_vaga"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     curriculo_id: Mapped[int] = mapped_column(ForeignKey("curriculos.id"))
-    vaga_id: Mapped[int] = mapped_column(ForeignKey("vagas.id"))
-    candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"))
+    vaga_id: Mapped[int] = mapped_column(ForeignKey("vagas.id"), index=True)
+    candidato_id: Mapped[int | None] = mapped_column(ForeignKey("candidatos.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="na_fila")  # na_fila|em_analise|analisada|erro
     # como chegou à vaga: triagem (pasta) | banco (banco de talentos) | atlas (encaminhado) | indicacao (colega)
     origem: Mapped[str | None] = mapped_column(String(20), default="triagem")
@@ -146,7 +154,7 @@ class Analise(Base):
     __table_args__ = (UniqueConstraint("candidatura_id", "agente_id", name="uq_analise_agente"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     candidatura_id: Mapped[int] = mapped_column(ForeignKey("candidaturas.id"))
-    agente_id: Mapped[int] = mapped_column(ForeignKey("agentes.id"))
+    agente_id: Mapped[int] = mapped_column(ForeignKey("agentes.id"), index=True)
     tipo: Mapped[str] = mapped_column(String(20), default="principal")  # principal|segunda_opiniao
     compatibilidade: Mapped[str] = mapped_column(String(10), default="BAIXA")
     recomendado: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -166,7 +174,7 @@ class Decisao(Base):
     candidatura_id: Mapped[int] = mapped_column(ForeignKey("candidaturas.id"), index=True)
     decisao: Mapped[str] = mapped_column(String(20))  # entrevista|banco_talentos|descartado
     observacao: Mapped[str] = mapped_column(Text, default="")
-    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuarios.id"))
+    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuarios.id"), index=True)
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
 
 
@@ -176,9 +184,9 @@ class Tarefa(Base):
     __table_args__ = (Index("ix_tarefa_fila", "status", "tipo", "agente_id"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     tipo: Mapped[str] = mapped_column(String(20))  # TRIAGEM|DISTRIBUICAO|ANALISE|CONSULTA|REVISAO
-    curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"))
-    candidatura_id: Mapped[int | None] = mapped_column(ForeignKey("candidaturas.id"))
-    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
+    curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"), index=True)
+    candidatura_id: Mapped[int | None] = mapped_column(ForeignKey("candidaturas.id"), index=True)
+    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"), index=True)
     motivo: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(20), default="pendente")  # pendente|executando|concluida|erro
     tentativas: Mapped[int] = mapped_column(Integer, default=0)
@@ -195,15 +203,15 @@ class Pendencia(Base):
     # ARQUIVO_ILEGIVEL|SEM_ESPECIALISTA|TRIAGEM_MANUAL|ERRO_IA|PROPOSTA_CONTRATACAO|ESTACOES_LOTADAS
     tipo: Mapped[str] = mapped_column(String(40))
     descricao: Mapped[str] = mapped_column(Text)
-    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
-    curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"))
-    candidatura_id: Mapped[int | None] = mapped_column(ForeignKey("candidaturas.id"))
-    vaga_id: Mapped[int | None] = mapped_column(ForeignKey("vagas.id"))
-    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"))
+    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"), index=True)
+    curriculo_id: Mapped[int | None] = mapped_column(ForeignKey("curriculos.id"), index=True)
+    candidatura_id: Mapped[int | None] = mapped_column(ForeignKey("candidaturas.id"), index=True)
+    vaga_id: Mapped[int | None] = mapped_column(ForeignKey("vagas.id"), index=True)
+    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="aberta")
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
     resolvido_em: Mapped[datetime | None] = mapped_column(DateTime)
-    resolvido_por_id: Mapped[int | None] = mapped_column(ForeignKey("usuarios.id"))
+    resolvido_por_id: Mapped[int | None] = mapped_column(ForeignKey("usuarios.id"), index=True)
 
 
 class Evento(Base):
@@ -225,8 +233,8 @@ class Contratacao(Base):
     """Histórico de contratações (ativações) e dispensas feitas pelo Atlas ou pelo recrutador."""
     __tablename__ = "contratacoes"
     id: Mapped[int] = mapped_column(primary_key=True)
-    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"))
-    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"))
+    especialidade_id: Mapped[int | None] = mapped_column(ForeignKey("especialidades.id"), index=True)
+    agente_id: Mapped[int | None] = mapped_column(ForeignKey("agentes.id"), index=True)
     acao: Mapped[str] = mapped_column(String(20), default="contratacao")  # contratacao|retorno|dispensa|sem_estacao
     motivo: Mapped[str] = mapped_column(String(30), default="manual")  # sem_especialista|sobrecarga|consulta|manual|estacao
     descricao: Mapped[str] = mapped_column(Text, default="")
@@ -239,7 +247,7 @@ class Auditoria(Base):
     __tablename__ = "auditoria"
     id: Mapped[int] = mapped_column(primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=agora, index=True)
-    usuario_id: Mapped[int | None] = mapped_column(ForeignKey("usuarios.id"))
+    usuario_id: Mapped[int | None] = mapped_column(ForeignKey("usuarios.id"), index=True)
     acao: Mapped[str] = mapped_column(String(60))
     recurso: Mapped[str] = mapped_column(String(40))
     recurso_id: Mapped[int | None] = mapped_column(Integer)
@@ -251,10 +259,10 @@ class SolicitacaoTitular(Base):
     """Pedidos de titulares (art. 18 LGPD): acesso, correção, eliminação."""
     __tablename__ = "solicitacoes_titular"
     id: Mapped[int] = mapped_column(primary_key=True)
-    candidato_id: Mapped[int] = mapped_column(ForeignKey("candidatos.id"))
+    candidato_id: Mapped[int] = mapped_column(ForeignKey("candidatos.id"), index=True)
     tipo: Mapped[str] = mapped_column(String(20))
     observacao: Mapped[str] = mapped_column(Text, default="")
-    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuarios.id"))
+    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuarios.id"), index=True)
     criado_em: Mapped[datetime] = mapped_column(DateTime, default=agora)
     concluido_em: Mapped[datetime | None] = mapped_column(DateTime)
 
