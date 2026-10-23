@@ -152,7 +152,9 @@
     marketing: '#8E6BBF', lideranca: '#C0504D', ti: '#2F9C9C', inclusao: '#F2C14E', outros: '#8A8F99' };
   const corGrupo = c => COR_GRUPO[c] || escolha(c || '?', ['#B47C4C', '#5DA35E', '#D9534F', '#7E8CE0', '#C9A15B', '#3E8E9E']);
   // o que muda a cada quadro sem redesenhar o cenário (telas, TV): atualizado pelo app a cada quadro
-  const VIVO = { estacoes: {}, tv: null, atlas: false, t: 0 };
+  const VIVO = { estacoes: {}, tv: null, atlas: false, bolo: false, t: 0, periodo: 'dia' };
+  // manhã e tarde com sol; fim de tarde dourado; à noite céu estrelado e o escritório só com as luzes quentes
+  const periodoDe = h => (h >= 19 || h < 6 ? 'noite' : h >= 17 ? 'tarde' : 'dia');
 
   // ------------------------------------------------------------------ estações, locais e rotas
   const ESTACOES = [];   // 12 estações: 3 ilhas × 2 fileiras × 2 mesas
@@ -196,6 +198,14 @@
     leitura0: [7.8, 13.05], leitura1: [9.4, 13.05],
   };
   for (const [n, txt, f, s, item] of LOCAIS_DESCANSO) no(n, ...POS_DESCANSO[n], { txt, f, sentado: !!s, item });
+  // lugares dos momentos da equipe: papo no bebedouro, alongamento em grupo e aniversário na mesa de reunião
+  no('papoAgua', 17.85, 1.4, { f: 'w', item: 'copo' });
+  [[20.5, 6.9], [21.7, 6.9], [22.9, 6.9], [21.1, 8.1], [22.3, 8.1]].forEach(([x, y], i) => no('alonga' + i, x, y, { f: 's' }));
+  [[12.6, 13.15, 's'], [12.6, 14.85, 'n'], [11.75, 14.0, 'e'], [13.45, 14.0, 'w']].forEach(([x, y, f], i) => no('reuniao' + i, x, y, { f, sentado: true }));
+  // cantinhos do Café, o gato do escritório: tapete do sofá, sol da janela, canto de leitura, copa, pufes, recepção, sala do Atlas, arquivo
+  const CANTOS_GATO = [[16.3, 12.95, 'dorme'], [2.9, 7.3, 'dorme'], [8.6, 13.75, 'senta'], [20.4, 1.5, 'senta'], [21.9, 14.3, 'dorme'],
+    [1.75, 12.3, 'senta'], [2.3, 3.7, 'dorme'], [11.9, 3.3, 'senta'], [10.9, 9.9, 'senta'], [19.6, 9.4, 'dorme']];
+  CANTOS_GATO.forEach(([x, y, pose], i) => no('gato' + i, x, y, { pose }));
 
   // ------------------------------------------------------------------ obstáculos e rotas (A* numa grade de 25 cm)
   const GR = 0.25, GW = LARG / GR, GH = PROF / GR, BLOQ = new Uint8Array(GW * GH);
@@ -497,6 +507,144 @@
     }
   }
 
+  // ------------------------------------------------------------------ pequenos confortos do escritório
+  const NOTA = [[1, 0], [1, 1], [1, 2], [0, 3], [1, 3], [0, 2]]; // colcheia de 2 × 4 pixels
+  function nota(x, y, cor, alfa) { for (const [dx, dy] of NOTA) ponto(x + dx, y + dy, cor, alfa); ponto(x + 2, y, cor, alfa); ponto(x + 2, y + 1, cor, alfa * 0.6); }
+  function varal(pts) { // fio com lâmpadas coloridas que piscam devagar (mais vivas à noite)
+    const cores = ['#FFD36E', '#FF8C6B', '#8FE3B0', '#7EC3EB', '#F5A3C7'], noite = VIVO.periodo !== 'dia';
+    for (let i = 0; i < pts.length - 1; i++) { const a = Pa(...pts[i]), b = Pa(...pts[i + 1]); linha(Math.round(a[0]), Math.round(a[1]), Math.round(b[0]), Math.round(b[1]), '#3A2A20'); }
+    for (let i = 1; i < pts.length - 1; i += 2) {
+      const [px, py] = Pa(...pts[i]).map(Math.round), cor = cores[i % cores.length];
+      const brilho = 0.55 + 0.45 * Math.sin(VIVO.t * 1.6 + i * 1.9);
+      if (noite) { ponto(px - 1, py + 1, cor, 0.3 * brilho); ponto(px + 2, py + 1, cor, 0.3 * brilho); ponto(px, py + 3, cor, 0.3 * brilho); ponto(px + 1, py - 1, cor, 0.2 * brilho); }
+      ret(px, py + 1, 2, 2, brilho > 0.35 ? cor : tom(cor, 0.55)); ponto(px, py, '#3A2A20');
+    }
+  }
+  function curva(eixo, a0, a1, c, zTopo, queda, passo = 0.18, vao = 1.6) { // pontos de um varal preso de tanto em tanto
+    const pts = [];
+    for (let a = a0; a <= a1 + 1e-6; a += passo) {
+      const u = ((a - a0) % vao) / vao, z = zTopo - queda * Math.sin(Math.PI * u);
+      pts.push(eixo === 'x' ? [a, c, z] : [c, a, z]);
+    }
+    return pts;
+  }
+  function aconchego() {
+    // varais de luzinhas no alto das paredes
+    const fundo = curva('x', 6.2, 23.8, 0.03, 2.5, 0.1), lateral = curva('y', 8.7, 15.9, 0.03, 2.5, 0.1);
+    item([6.2, 0, 23.8, 0.06], 2.36, 2.56, () => varal(fundo), { anim: true });
+    item([0, 8.7, 0.06, 15.9], 2.36, 2.56, () => varal(lateral), { anim: true });
+
+    // aquário na sala de espera: móvel de madeira, água, areia, plantinhas, peixes nadando e bolhas
+    item([2.0, 15.45, 2.9, 15.9], 0, 0.62, () => {
+      caixa(2.0, 15.45, 2.9, 15.9, 0, 0.6, COR.movelEsc);
+      painel('x', 15.901, 2.08, 2.42, 0.08, 0.52, tom(COR.movelEsc, 1.15)); painel('x', 15.901, 2.48, 2.82, 0.08, 0.52, tom(COR.movelEsc, 1.15));
+      caixa(1.98, 15.43, 2.92, 15.92, 0.6, 0.62, '#4A3022', { brilho: false });
+    }, { sombra: true });
+    obst(2.0, 15.45, 2.9, 15.9);
+    item([2.04, 15.5, 2.86, 15.86], 0.62, 1.12, t => {
+      caixa(2.04, 15.5, 2.86, 15.86, 0.62, 1.08, '#5FB3D9', { topo: '#8FD3F0', contorno: '#2E6E8E' });
+      painel('x', 15.861, 2.05, 2.85, 0.62, 0.68, '#E3C98F'); painel('y', 2.861, 15.51, 15.85, 0.62, 0.68, '#D2B57A');
+      for (const [u, h, cor] of [[2.15, 0.22, COR.folha1], [2.2, 0.16, COR.folha2], [2.72, 0.26, COR.folha1], [2.77, 0.14, COR.folha3]])
+        painel('x', 15.862, u, u + 0.03, 0.66, 0.66 + h + Math.sin(Math.max(0, t) * 1.5 + u * 9) * 0.015, cor);
+      const tt = Math.max(0, t);
+      [['#F28C38', 0.6, 0.0], ['#F2C14E', 0.45, 2.1], ['#4F81BD', 0.75, 4.0]].forEach(([cor, vel, fase], k) => {
+        const ida = Math.sin(tt * vel * 0.5 + fase), fx = 2.42 + ida * 0.3, fz = 0.76 + k * 0.08 + Math.sin(tt * 1.3 + fase) * 0.02;
+        const dir = Math.cos(tt * vel * 0.5 + fase) >= 0 ? 1 : -1;
+        painel('x', 15.863, fx - 0.05, fx + 0.05, fz, fz + 0.045, cor);
+        painel('x', 15.863, dir > 0 ? fx - 0.09 : fx + 0.05, dir > 0 ? fx - 0.05 : fx + 0.09, fz - 0.01, fz + 0.055, tom(cor, 0.8));
+        painel('x', 15.864, dir > 0 ? fx + 0.025 : fx - 0.04, dir > 0 ? fx + 0.04 : fx - 0.025, fz + 0.022, fz + 0.035, '#1B1420');
+      });
+      for (let k = 0; k < 3; k++) { const f = (tt * 0.4 + k / 3) % 1; painel('x', 15.864, 2.7 + Math.sin(f * 9) * 0.015, 2.725 + Math.sin(f * 9) * 0.015, 0.7 + f * 0.33, 0.725 + f * 0.33, '#E6F7FF', 0.8 * (1 - f)); }
+      caixa(2.03, 15.49, 2.87, 15.87, 1.08, 1.12, '#2B2F3D', { brilho: false });
+    }, { anim: true });
+
+    // rádio na bancada da copa, com notas musicais subindo
+    item([20.55, 0.12, 21.05, 0.42], 0.93, 1.75, t => {
+      caixa(20.58, 0.15, 21.02, 0.4, 0.93, 1.15, '#B5523B', { topo: '#C96A50' });
+      painel('x', 0.401, 20.62, 20.82, 0.97, 1.11, '#3A2A20');
+      for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) painel('x', 0.402, 20.645 + i * 0.06, 20.67 + i * 0.06, 0.995 + j * 0.04, 1.015 + j * 0.04, '#6B4A3A');
+      painel('x', 0.401, 20.86, 20.98, 1.04, 1.1, '#F5E6B8'); painel('x', 0.402, 20.9, 20.92, 1.04, 1.1, '#C0504D');
+      const [ax, ay] = Pa(20.95, 0.2, 1.15), [bx, by] = Pa(21.08, 0.2, 1.5); linha(Math.round(ax), Math.round(ay), Math.round(bx), Math.round(by), '#8A8F99');
+      if (t < 0) { for (let k = 0; k < 3; k++) { const [nx, ny] = Pa(20.8 + k * 0.1, 0.28, 1.2 + k * 0.15); nota(Math.round(nx), Math.round(ny), '#F5B544', 1); } return; }
+      for (let k = 0; k < 3; k++) {
+        const f = (t * 0.3 + k / 3) % 1, [nx, ny] = Pa(20.8 + Math.sin(f * 5 + k) * 0.12, 0.28, 1.2 + f * 0.5);
+        nota(Math.round(nx), Math.round(ny), ['#F5B544', '#7EC3EB', '#E678AA'][k], Math.sin(f * Math.PI) * 0.9);
+      }
+    }, { anim: true });
+
+    // recepção: as suculentas e o pote de balas da Bia
+    item([2.36, 9.66, 2.64, 9.94], 1.06, 1.32, () => {
+      caixa(2.38, 9.68, 2.62, 9.92, 1.06, 1.16, '#E9DCC0', { topo: '#6B4A3A' });
+      for (const [dx, dy, r, cor] of [[-0.05, -0.04, 3, '#7FB77E'], [0.05, 0.03, 3, '#5DA37A'], [0, 0, 2, '#A8D5A0'], [0.04, -0.05, 2, '#E8A0B4']]) {
+        const [cx, cy] = Pa(2.5 + dx, 9.8 + dy, 1.2); disco(Math.round(cx), Math.round(cy), r, r - 1, cor); ponto(Math.round(cx), Math.round(cy) - 1, tom(cor, 1.25));
+      }
+    });
+    item([2.38, 10.08, 2.62, 10.32], 1.06, 1.36, () => {
+      cilindro(2.5, 10.2, 0.11, 1.06, 1.28, '#DDEFF5', { topo: '#EAF6FA', contorno: '#9DB8C4' });
+      const cores = ['#E5534B', '#F2C14E', '#9BBB59', '#E678AA', '#7EC3EB', '#F28C38'];
+      for (let k = 0; k < 16; k++) { const [cx, cy] = Pa(2.42 + ruido(k, 1) * 0.16, 10.12 + ruido(2, k) * 0.16, 1.08 + ruido(k, 5) * 0.14); ret(Math.round(cx), Math.round(cy), 2, 1, cores[k % cores.length]); }
+      cilindro(2.5, 10.2, 0.08, 1.28, 1.33, '#E5534B');
+    });
+
+    // sala do Atlas: o bonsai de jabuticaba (entre os papéis e o monitor)
+    item([3.4, 2.62, 3.68, 2.86], 0.78, 1.1, () => {
+      const bx = 3.54, by = 2.74;
+      caixa(bx - 0.12, by - 0.08, bx + 0.12, by + 0.08, 0.78, 0.84, '#3E5C76', { topo: '#6B4A3A' });
+      const [tx, ty] = Pa(bx, by, 0.84).map(Math.round), [ux, uy] = Pa(bx - 0.03, by, 0.98).map(Math.round);
+      linha(tx, ty, ux, uy, '#5A3B2E'); linha(tx + 1, ty, ux + 1, uy, '#6E4A35');
+      for (const [dx, dz, r] of [[-0.06, 0.98, 3], [0.06, 1.0, 3], [0, 1.04, 3]]) { const [cx, cy] = Pa(bx + dx, by, dz).map(Math.round); disco(cx, cy, r, r - 1, COR.folha3); disco(cx - 1, cy - 1, r - 1, r - 2, COR.folha1); }
+      for (let k = 0; k < 4; k++) { const [cx, cy] = Pa(bx - 0.06 + k * 0.04, by, 0.97 + (k % 2) * 0.04).map(Math.round); ponto(cx, cy, '#3B1F4A'); }
+    });
+
+    // copa: fruteira na mesa de lanche
+    item([21.62, 2.72, 21.98, 3.08], 0.78, 0.98, () => {
+      cilindro(21.8, 2.9, 0.17, 0.78, 0.84, '#E9E4DA', { topo: '#CFC6B4' });
+      for (const [dx, dy, dz, cor] of [[-0.06, -0.02, 0.86, '#F28C38'], [0.06, 0.02, 0.86, '#C0392B'], [0, -0.07, 0.9, '#F2C14E'], [0.02, 0.07, 0.88, '#9BBB59'], [-0.02, 0.01, 0.93, '#F28C38']]) {
+        const [cx, cy] = Pa(21.8 + dx, 2.9 + dy, dz); disco(Math.round(cx), Math.round(cy), 2, 2, cor); ponto(Math.round(cx) - 1, Math.round(cy) - 1, tom(cor, 1.3));
+      }
+    });
+
+    // abajur ao lado do sofá
+    item([14.42, 13.42, 14.7, 13.7], 0, 1.62, () => {
+      cilindro(14.56, 13.56, 0.13, 0, 0.04, '#3A3A44');
+      caixa(14.545, 13.545, 14.575, 13.575, 0.04, 1.32, '#3A3A44', { brilho: false, contorno: false });
+      cilindro(14.56, 13.56, 0.17, 1.3, 1.58, '#F6D9A0', { topo: '#FFF0C8' });
+    });
+    obst(14.42, 13.42, 14.7, 13.7);
+    // canecas e objetos pessoais em cada estação (a caneca solta vapor enquanto alguém trabalha nela)
+    const pessoais = ['foto', 'cacto', 'canetas', 'postit', 'foto', 'cacto'];
+    const canecas = ['#E5534B', '#4F81BD', '#F2C14E', '#3FB56B', '#E678AA', '#F4F1E8', '#8E6BBF', '#E07B39'];
+    ESTACOES.forEach((e, i) => {
+      const fA = e.fila === 'A', mx = fA ? e.x + 0.45 : e.x - 0.45, my = fA ? 6.47 : 7.63, cor = canecas[i % canecas.length];
+      item([mx - 0.07, my - 0.07, mx + 0.07, my + 0.07], 0.76, 1.2, t => {
+        cilindro(mx, my, 0.05, 0.76, 0.87, cor, { topo: '#4A2E1E' });
+        const [hx, hy] = Pa(mx + 0.06, my, 0.83); ponto(Math.round(hx) + 1, Math.round(hy), tom(cor, 0.7)); ponto(Math.round(hx) + 1, Math.round(hy) - 1, tom(cor, 0.7));
+        if (t >= 0 && VIVO.estacoes[i] !== 'trabalhando') return;
+        for (let k = 0; k < 3; k++) { const f = ((t < 0 ? 0.3 : t) * 0.7 + k / 3) % 1, [vx, vy] = Pa(mx, my, 0.9 + f * 0.25); ponto(Math.round(vx + Math.sin(f * 7 + k) * 1.5), Math.round(vy), '#FFFFFF', 0.5 * (1 - f)); }
+      }, { anim: true });
+      const px = fA ? e.x - 0.42 : e.x - 0.42, py = fA ? 6.86 : 7.3, tipo = pessoais[(i * 5 + 1) % pessoais.length];
+      item([px - 0.08, py - 0.08, px + 0.08, py + 0.08], 0.76, 1.05, () => {
+        if (tipo === 'foto') { // porta-retrato de pé, virado para quem senta
+          caixa(px - 0.07, py - 0.015, px + 0.07, py + 0.015, 0.76, 0.94, '#6B4A2A');
+          const foto = escolha(i, ['#7EC3EB', '#9BBB59', '#F2C14E']); // a foto fica para quem senta; quem olha a sala vê o verso nas mesas de cima
+          if (fA) painel('x', py + 0.016, px - 0.05, px + 0.05, 0.78, 0.92, tom('#6B4A2A', 0.8));
+          else { painel('x', py + 0.016, px - 0.05, px + 0.05, 0.78, 0.92, foto); painel('x', py + 0.017, px - 0.02, px + 0.03, 0.8, 0.86, '#F4D7B0'); }
+        } else if (tipo === 'cacto') {
+          cilindro(px, py, 0.045, 0.76, 0.82, '#C2703F');
+          caixa(px - 0.02, py - 0.02, px + 0.02, py + 0.02, 0.82, 0.96, '#5DA35E', { brilho: false });
+          caixa(px + 0.02, py - 0.01, px + 0.05, py + 0.01, 0.87, 0.9, '#5DA35E', { brilho: false, contorno: false });
+          const [fx, fy] = Pa(px, py, 0.97); ponto(Math.round(fx), Math.round(fy), '#E678AA');
+        } else if (tipo === 'canetas') {
+          cilindro(px, py, 0.045, 0.76, 0.86, '#3E5C76');
+          for (const [dx, cor] of [[-0.02, '#E5534B'], [0, '#2B2F3D'], [0.02, '#4F81BD']]) { const [ax, ay] = Pa(px + dx, py, 0.86), [bx, by] = Pa(px + dx * 1.6, py, 0.97); linha(Math.round(ax), Math.round(ay), Math.round(bx), Math.round(by), cor); }
+        } else {
+          caixa(px - 0.06, py - 0.06, px + 0.06, py + 0.06, 0.76, 0.79, '#FFE66D', { brilho: false });
+          caixa(px - 0.04, py - 0.07, px + 0.08, py + 0.05, 0.79, 0.8, '#FF9DBB', { brilho: false });
+        }
+      });
+    });
+  }
+
   // ------------------------------------------------------------------ montagem do cenário (depende dos dados)
   function montarItens(d) {
     ITENS = []; BLOQUEIOS.length = 0; ALVOS_ARTE = [];
@@ -617,6 +765,24 @@
       caixa(12.35, 13.8, 12.7, 14.05, 0.78, 0.8, '#F4F1E8', { brilho: false, contorno: '#B8B2A4' });
     }, { sombra: true });
     obst(12.05, 13.45, 13.15, 14.55);
+    item([12.5, 13.9, 12.85, 14.25], 0.78, 1.12, t => { // bolo de aniversário (só durante a festa)
+      if (t >= 0 && !VIVO.bolo) return;
+      cilindro(12.67, 14.07, 0.2, 0.78, 0.8, '#F4F1E8', { contorno: '#B8B2A4' });
+      cilindro(12.67, 14.07, 0.15, 0.8, 0.92, '#7B4A2A', { topo: '#F7C6D9' });
+      for (const [dx, dy, cor] of [[-0.06, -0.03, '#7EC3EB'], [0.05, 0.02, '#F2C14E'], [0, 0.07, '#E678AA']]) {
+        caixa(12.67 + dx - 0.01, 14.07 + dy - 0.01, 12.67 + dx + 0.01, 14.07 + dy + 0.01, 0.92, 1.0, cor, { brilho: false, contorno: false });
+        const [fx, fy] = Pa(12.67 + dx, 14.07 + dy, 1.03 + (Math.floor(Math.max(0, t) * 8 + dx * 50) % 2) * 0.012);
+        ponto(Math.round(fx), Math.round(fy), '#FFB23E'); ponto(Math.round(fx), Math.round(fy) - 1, '#FFF1A8');
+      }
+    }, { anim: true });
+    item([12.1, 13.5, 13.1, 14.5], 0.78, 0.79, t => { // confete na mesa
+      if (t >= 0 && !VIVO.bolo) return;
+      const cores = ['#E678AA', '#7EC3EB', '#F2C14E', '#9BBB59', '#E07B39'];
+      for (let k = 0; k < 14; k++) {
+        const [cx, cy] = Pa(12.15 + ruido(k, 3) * 0.9, 13.55 + ruido(4, k) * 0.9, 0.785);
+        ponto(Math.round(cx), Math.round(cy), cores[k % cores.length]);
+      }
+    }, { anim: true });
     cadeiraEscritorio(12.6, 13.15, 's', '#4B5068'); cadeiraEscritorio(12.6, 14.85, 'n', '#4B5068');
     cadeiraEscritorio(11.75, 14.0, 'e', '#4B5068'); cadeiraEscritorio(13.45, 14.0, 'w', '#4B5068');
 
@@ -634,7 +800,12 @@
     item([14.9, 13.4, 17.7, 14.1], 0, 0.42, () => caixa(15.1, 13.4, 17.5, 14.1, 0, 0.42, SOFA), { sombra: true });
     item([14.9, 14.0, 17.7, 14.3], 0, 0.9, () => caixa(14.9, 14.0, 17.7, 14.3, 0, 0.9, tom(SOFA, 0.92)));
     item([14.9, 13.4, 15.1, 14.0], 0, 0.62, () => caixa(14.9, 13.4, 15.1, 14.0, 0, 0.62, tom(SOFA, 0.95)));
-    item([17.5, 13.4, 17.7, 14.0], 0, 0.62, () => caixa(17.5, 13.4, 17.7, 14.0, 0, 0.62, tom(SOFA, 0.95)));
+    item([17.5, 13.4, 17.7, 14.0], 0, 0.66, () => {
+      caixa(17.5, 13.4, 17.7, 14.0, 0, 0.62, tom(SOFA, 0.95));
+      caixa(17.48, 13.48, 17.72, 13.9, 0.62, 0.66, '#E9DCC0', { brilho: false }); // manta dobrada no braço, caindo pelo lado
+      for (let k = 0; k < 4; k++) painel('y', 17.721, 13.5 + k * 0.1, 13.55 + k * 0.1, 0.22, 0.66, k % 2 ? '#C0504D' : '#E9DCC0');
+      painel('y', 17.722, 13.5, 13.9, 0.4, 0.44, '#8E2F2C');
+    });
     obst(14.9, 13.95, 17.7, 14.3); obst(14.9, 13.4, 15.1, 14.3); obst(17.5, 13.4, 17.7, 14.3);
     item([19.6, 11.6, 22.4, 13.0], 0, 0.95, () => {
       for (const [x, y] of [[19.8, 11.75], [22.15, 11.75], [19.8, 12.8], [22.15, 12.8]]) caixa(x, y, x + 0.07, y + 0.07, 0, 0.72, '#30343F', { brilho: false });
@@ -652,6 +823,8 @@
       }, { sombra: true });
     }
     planta(23.5, 10.4, 1.1); planta(23.5, 15.5, 1.2, 1); planta(14.0, 15.5, 0.95);
+
+    aconchego();
 
     // pessoas não atravessam móveis (folga de 10 cm); só calculado uma vez
     if (!BLOQ.preenchido) { for (const b of BLOQUEIOS) bloquear(...b); BLOQ.preenchido = true; }
@@ -690,18 +863,38 @@
     const janela = (eixo, a0, a1) => {
       const z0 = 0.9, z1 = 2.2, f = '#C99A6B';
       painel(eixo, 0.003, a0 - 0.08, a1 + 0.08, z0 - 0.08, z1 + 0.08, f);
-      painel(eixo, 0.004, a0, a1, z0, z1, '#8FC3E3');
-      painel(eixo, 0.005, a0, a1, z0 + (z1 - z0) * 0.55, z1, '#B5DCF2');
-      painel(eixo, 0.006, a0 + (a1 - a0) * 0.62, a1, z0 + 0.15, z0 + 0.45, '#D8EEF9');
+      const [c0, c1, c2] = { dia: ['#8FC3E3', '#B5DCF2', '#D8EEF9'], tarde: ['#E58A55', '#F4B26E', '#FFE0A6'], noite: ['#141C38', '#1E2A50', '#2C3B68'] }[per];
+      painel(eixo, 0.004, a0, a1, z0, z1, c0);
+      painel(eixo, 0.005, a0, a1, z0 + (z1 - z0) * 0.55, z1, c1);
+      if (per !== 'noite') painel(eixo, 0.006, a0 + (a1 - a0) * 0.62, a1, z0 + 0.15, z0 + 0.45, c2); // nuvem
+      else {
+        for (let k = 0; k < Math.round((a1 - a0) * 6); k++) { // estrelas e a lua
+          const u = a0 + 0.05 + ruido(k, a0) * (a1 - a0 - 0.1), z = z0 + 0.1 + ruido(a0, k) * (z1 - z0 - 0.2);
+          painel(eixo, 0.006, u, u + 0.03, z, z + 0.03, ruido(k, k) > 0.7 ? '#FFF1B8' : '#DCE6FF');
+        }
+        const m = a0 + (a1 - a0) * 0.72, mz = z1 - 0.3;
+        painel(eixo, 0.006, m - 0.07, m + 0.07, mz - 0.1, mz + 0.1, '#F4EBC8'); painel(eixo, 0.0065, m - 0.11, m - 0.03, mz - 0.05, mz + 0.05, '#F4EBC8');
+        painel(eixo, 0.007, m + 0.01, m + 0.08, mz - 0.04, mz + 0.08, c1);
+      }
       painel(eixo, 0.007, (a0 + a1) / 2 - 0.03, (a0 + a1) / 2 + 0.03, z0, z1, f);
       painel(eixo, 0.007, a0, a1, (z0 + z1) / 2 - 0.03, (z0 + z1) / 2 + 0.03, f);
-      const sol = '#FFE6A6';
+      const [sol, forte, fraco] = { dia: ['#FFE6A6', 0.16, 0.07], tarde: ['#FFB36B', 0.22, 0.09], noite: ['#9FB4FF', 0.05, 0.025] }[per];
       const chao = eixo === 'y' ? [[1.64, a0 + 0.57], [4.0, a0 + 1.4], [4.0, a1 + 1.4], [1.64, a1 + 0.57]] : [[a0 + 0.57, 1.64], [a0 + 1.4, 4.0], [a1 + 1.4, 4.0], [a1 + 0.57, 1.64]];
-      poli(chao.map(([x, y]) => Pa(x, y)), sol, 0.16);
+      poli(chao.map(([x, y]) => Pa(x, y)), sol, forte);
       const jan = eixo === 'y' ? [Pa(0, a0, z1), Pa(0, a1, z1), Pa(0, a1, z0), Pa(0, a0, z0)] : [Pa(a0, 0, z1), Pa(a1, 0, z1), Pa(a1, 0, z0), Pa(a0, 0, z0)];
       const todos = [...jan, ...chao.map(([x, y]) => Pa(x, y))];
-      poli(envoltoria(todos), sol, 0.07);
+      poli(envoltoria(todos), sol, fraco);
+      // cortinas de linho dos dois lados, presas com laço, e o varão
+      if (a1 - a0 > 1.5) {
+        const pano = '#C8743F';
+        for (const [c0c, c1c] of [[a0 - 0.42, a0 - 0.02], [a1 + 0.02, a1 + 0.42]]) {
+          for (let u = c0c, k = 0; u < c1c - 0.01; u += 0.1, k++) painel(eixo, 0.008, u, Math.min(c1c, u + 0.1), 0.72, 2.32, k % 2 ? tom(pano, 0.86) : pano);
+          painel(eixo, 0.009, c0c, c1c, 1.28, 1.34, '#E9C46A');
+        }
+        painel(eixo, 0.009, a0 - 0.5, a1 + 0.5, 2.33, 2.37, '#5A3B2E');
+      }
     };
+    const per = VIVO.periodo;
     janela('y', 6.0, 8.2); janela('x', 12.4, 14.8); janela('x', 4.9, 5.75);
 
     // porta de entrada (parede esquerda)
@@ -714,6 +907,7 @@
     painel('y', 0.004, 9.45, 10.55, 1.13, 1.87, '#9FD3F0');
     painel('y', 0.005, 9.45, 10.55, 1.13, 1.4, '#5DA35E'); painel('y', 0.006, 9.75, 10.4, 1.13, 1.52, '#4A8F52');
     painel('y', 0.006, 9.6, 9.75, 1.62, 1.75, '#FFE08A');
+    decorarParedes();
 
     // quadro de vagas: um cartão por vaga, colorido pela situação, com barra de progresso
     painel('x', 0.003, 6.95, 11.65, 0.9, 2.2, '#8A8F99');
@@ -758,8 +952,76 @@
     // sombras de contato dos móveis
     for (const it of ITENS) if (it.sombra) { const [x0, y0, x1, y1] = it.box; sombrear([Pa(x0 + 0.06, y0 + 0.06), Pa(x1 + 0.1, y0 + 0.06), Pa(x1 + 0.1, y1 + 0.1), Pa(x0 + 0.06, y1 + 0.1)], 0.82); }
     // luz das luminárias sobre as mesas
-    ILHAS.forEach(x0 => { brilhoChao(x0 + 0.4, 6.7, 0.9, '#FFD98A', 0.1); brilhoChao(x0 + 2.4, 7.4, 0.9, '#FFD98A', 0.1); });
-    brilhoChao(4.2, 3.2, 1.0, '#FFE2A6', 0.09); brilhoChao(10.4, 13.0, 1.3, '#FFE2A6', 0.12);
+    const luz = per === 'noite' ? 2.3 : per === 'tarde' ? 1.4 : 1;
+    ILHAS.forEach(x0 => { brilhoChao(x0 + 0.4, 6.7, 0.9, '#FFD98A', 0.1 * luz); brilhoChao(x0 + 2.4, 7.4, 0.9, '#FFD98A', 0.1 * luz); });
+    brilhoChao(4.2, 3.2, 1.0, '#FFE2A6', 0.09 * luz); brilhoChao(10.4, 13.0, 1.3, '#FFE2A6', 0.12 * luz);
+    brilhoChao(14.6, 13.3, 1.1, '#FFD08A', 0.08 * luz); brilhoChao(2.45, 15.2, 0.6, '#8FD3F0', 0.07 * luz); // abajur do sofá e aquário
+  }
+  // ------------------------------------------------------------------ aconchego nas paredes (planas: fazem parte do fundo)
+  function moldura(eixo, a0, a1, z0, z1, cor = '#6B4A2A') { painel(eixo, 0.003, a0 - 0.05, a1 + 0.05, z0 - 0.05, z1 + 0.05, cor); }
+  function decorarParedes() {
+    // sala do Atlas: diplomas e um pôster de xadrez
+    for (const [y0, z0] of [[2.6, 1.55], [2.6, 1.05]]) {
+      moldura('y', y0, y0 + 0.5, z0, z0 + 0.36); painel('y', 0.004, y0, y0 + 0.5, z0, z0 + 0.36, '#F4EFE0');
+      painel('y', 0.005, y0 + 0.08, y0 + 0.42, z0 + 0.24, z0 + 0.27, '#8A7A5A'); painel('y', 0.005, y0 + 0.12, y0 + 0.38, z0 + 0.16, z0 + 0.18, '#B7A98A');
+      painel('y', 0.005, y0 + 0.36, y0 + 0.44, z0 + 0.03, z0 + 0.11, '#C0504D');
+    }
+    moldura('y', 3.45, 4.35, 1.15, 2.05, '#2B2F3D');
+    for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) painel('y', 0.004, 3.5 + i * 0.133, 3.633 + i * 0.133, 1.2 + j * 0.133, 1.333 + j * 0.133, (i + j) % 2 ? '#3A3F57' : '#E9E3D3');
+    painel('y', 0.005, 3.83, 3.93, 1.6, 1.8, '#1B1420'); painel('y', 0.005, 3.8, 3.96, 1.6, 1.64, '#1B1420'); // rei
+    // recepção: mural de cortiça com fotos da equipe
+    moldura('y', 11.0, 12.7, 1.3, 2.05); painel('y', 0.004, 11.0, 12.7, 1.3, 2.05, '#C49563');
+    const fotos = ['#7EC3EB', '#F2C14E', '#9BBB59', '#E678AA', '#E07B39', '#8E6BBF', '#4F81BD'];
+    fotos.forEach((cor, i) => {
+      const y = 11.08 + (i % 4) * 0.4 + (i > 3 ? 0.2 : 0), z = i > 3 ? 1.38 : 1.7;
+      painel('y', 0.005, y, y + 0.3, z, z + 0.3, '#FBF8F0'); painel('y', 0.006, y + 0.04, y + 0.26, z + 0.08, z + 0.26, cor);
+      painel('y', 0.0065, y + 0.1, y + 0.18, z + 0.12, z + 0.2, tom(cor, 0.7)); painel('y', 0.007, y + 0.13, y + 0.16, z + 0.27, z + 0.31, '#D9534F');
+    });
+    // ganchos de casacos ao lado da porta: casaco, guarda-chuva e uma ecobag
+    painel('y', 0.003, 14.85, 15.85, 1.55, 1.62, '#5A3B2E');
+    for (const y of [15.0, 15.35, 15.7]) painel('y', 0.004, y, y + 0.04, 1.5, 1.58, '#C9CED6');
+    painel('y', 0.005, 14.88, 15.18, 0.95, 1.55, '#3E6E8E'); painel('y', 0.006, 14.98, 15.08, 1.3, 1.55, '#2E5470');
+    painel('y', 0.005, 15.32, 15.4, 0.7, 1.52, '#C0504D'); painel('y', 0.005, 15.28, 15.44, 0.66, 0.72, '#8E2F2C');
+    painel('y', 0.005, 15.58, 15.84, 1.05, 1.5, '#E9DCC0'); painel('y', 0.006, 15.64, 15.78, 1.2, 1.3, '#9BBB59');
+    // fundo: quadro abstrato acima da planta, e uma planta pendente sobre o bebedouro
+    moldura('x', 6.15, 6.85, 1.3, 2.05, '#E9E3D3');
+    painel('x', 0.004, 6.15, 6.85, 1.3, 2.05, '#F6EFE0');
+    painel('x', 0.005, 6.22, 6.55, 1.62, 1.98, '#E07B39'); painel('x', 0.005, 6.45, 6.78, 1.38, 1.7, '#2F6E6A'); painel('x', 0.006, 6.3, 6.42, 1.4, 1.55, '#F2C14E');
+    painel('x', 0.003, 16.9, 17.5, 2.2, 2.24, '#5A3B2E'); painel('x', 0.004, 17.18, 17.22, 2.0, 2.22, '#5A3B2E');
+    painel('x', 0.005, 16.92, 17.48, 1.74, 2.02, '#B95A2E'); painel('x', 0.006, 16.92, 17.48, 1.97, 2.02, '#8E4322');
+    for (let k = 0; k < 10; k++) { // folhas que caem do vaso
+      const u = 16.88 + k * 0.065, comp = 0.12 + ruido(k, 9) * 0.38;
+      painel('x', 0.007, u, u + 0.05, 1.82 - comp, 2.06, k % 2 ? COR.folha1 : COR.folha2);
+      painel('x', 0.008, u - 0.015, u + 0.065, 1.82 - comp, 1.87 - comp, COR.folha3);
+    }
+    for (let k = 0; k < 6; k++) { const u = 16.95 + k * 0.1; painel('x', 0.009, u, u + 0.08, 2.0, 2.12, k % 2 ? COR.folha2 : COR.folha1); }
+  }
+  // fim de tarde: o escritório fica dourado; à noite, azulado, com poças de luz quente nas luminárias e luzinhas
+  const LUZES = () => [
+    ...ILHAS.flatMap(x0 => [[x0 + 0.17, 6.41, 1.15, 1.6], [x0 + 2.63, 7.59, 1.15, 1.6]]),
+    [4.39, 2.82, 1.15, 1.7], [10.42, 12.62, 1.5, 2.4], [14.56, 13.56, 1.45, 2.2], [14.62, 2.3, 1.4, 1.4], [2.45, 15.7, 0.9, 1.2, '#8FD3F0'],
+    [16.3, 11.4, 0.6, VIVO.tv ? 1.8 : 0, '#9FC8FF'],
+  ];
+  function luzDaNoite(ctx) {
+    const noite = VIVO.periodo === 'noite', p = (x, y, z) => { const [a, b] = Pa(x, y, z); return [DX + a * S, DY + b * S]; };
+    ctx.save();
+    ctx.beginPath();
+    [p(-0.22, PROF, ALT_PAREDE), p(-0.22, -0.22, ALT_PAREDE), p(LARG, -0.22, ALT_PAREDE), p(LARG, -0.22, -0.3), p(LARG, PROF, -0.3), p(-0.22, PROF, -0.3)]
+      .forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.closePath();
+    ctx.fillStyle = noite ? 'rgba(22,26,70,0.34)' : 'rgba(255,150,70,0.07)';
+    ctx.fill();
+    if (noite) {
+      ctx.globalCompositeOperation = 'lighter';
+      for (const [x, y, z, r, cor = '#FFC979'] of LUZES()) {
+        if (!r) continue;
+        const [cx, cy] = p(x, y, z * 0.35), raio = r * K * S;
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, raio);
+        g.addColorStop(0, cor + '48'); g.addColorStop(0.5, cor + '1E'); g.addColorStop(1, cor + '00');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(cx, cy, raio, raio * 0.7, 0, 0, 7); ctx.fill();
+      }
+    }
+    ctx.restore();
   }
   function envoltoria(pts) { // casco convexo (feixes de luz)
     const p = pts.map(([x, y]) => [x, y]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -818,6 +1080,27 @@
       for (const j of antes[i]) if (!feitos[j] && --grau[j] === 0) prontos.push(j);
     }
     ITENS = saida;
+  }
+
+  // ------------------------------------------------------------------ o gato (13 × 10, pés em (6, 9))
+  const GATO_COR = { k: '#1B1420', C: '#9A6440', c: '#6E4229', b: '#EAD7B7', o: '#1B1420', p: '#E89BA0', g: '#7FB77E' };
+  const GATO = {
+    senta: ['.........k.k.', '........kCkCk', '........kCCCk', '..k.....kgCgk', '.kCk....kbpbk', '.kCk...kCCbk.', '..kCk.kCCCbk.', '...kCkCCcCbk.', '....kkCCCCCk.', '.....kkbkkbk.'],
+    anda0: ['..........k.k', '.........kCkC', 'kk.......kCCC', '.kCk.....kgCg', '..kCkkkkkCbpb', '...kCCcCCcbk.', '...kCCCCCCCk.', '...kCk.kk.kCk', '...kk......kk', '.............'],
+    anda1: ['..........k.k', '.........kCkC', '.kk......kCCC', 'kCk......kgCg', '.kCkkkkkkCbpb', '..kCCcCCcCbk.', '..kCCCCCCCCk.', '...kkCk.kCk..', '....kk...kk..', '.............'],
+    dorme: ['.............', '.............', '.............', '....kkkkkk...', '..kkCCcCCCkk.', '.kCcCCCcCCCCk', 'kCCCCCCCCkCCk', 'kbCCCCCCkbbCk', '.kkkkkkkkkkk.', '.............'],
+  };
+  function desenharGato(x, y, g, alfaSombra = 0.22) {
+    const [sx, sy] = Pa(x, y).map(Math.round), m = GATO[g.pose === 'anda' ? 'anda' + (g.quadro % 2) : g.pose] || GATO.senta;
+    disco(sx, sy, 5, 2, '#000000', alfaSombra);
+    const espelho = g.dir === 'w' || g.dir === 'n', ox = sx - 6, oy = sy - 9;
+    for (let j = 0; j < m.length; j++) for (let i = 0; i < 13; i++) {
+      let ch = m[j][espelho ? 12 - i : i];
+      if (ch === '.' || !ch) continue;
+      if (ch === 'g' && (g.pose === 'dorme' || g.piscando)) ch = 'C';
+      ponto(ox + i, oy + j, GATO_COR[ch]);
+    }
+    if (g.pose === 'senta' && Math.floor(VIVO.t * 2) % 6 === 0) ponto(ox + (espelho ? 11 : 1), oy + 3, GATO_COR.C); // rabo balançando
   }
 
   // ------------------------------------------------------------------ pessoas (sprites 24 × 40, pés em (12, 38))
@@ -1027,7 +1310,7 @@
   }
 
   const Cena = {
-    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota, corGrupo,
+    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota, corGrupo, CANTOS_GATO: CANTOS_GATO.length,
     medir(w, h, dpr, zoom = 1) {
       const ajuste = Math.min((w - 24) / AW, (h - 24) / AH);
       // tela estreita (celular em pé): ajusta pela altura e deixa arrastar para os lados
@@ -1043,8 +1326,9 @@
     projetar: (x, y, z = 0) => { const [a, b] = Pa(x, y, z); return [DX + a * S, DY + b * S]; },
     atualizarFundo(d) {
       const agora = new Date();
-      VIVO.estacoes = d.estacoes || {}; VIVO.tv = d.tv || null; // telas e TV mudam sem redesenhar o cenário
-      const ass = JSON.stringify([d.fila_triagem, d.fila_analise, agora.getHours(), agora.getMinutes(),
+      VIVO.estacoes = d.estacoes || {}; VIVO.tv = d.tv || null; VIVO.bolo = !!d.bolo; // mudam sem redesenhar o cenário
+      VIVO.periodo = d.periodo || periodoDe(agora.getHours());
+      const ass = JSON.stringify([VIVO.periodo, d.fila_triagem, d.fila_analise, agora.getHours(), agora.getMinutes(),
         d.banco && d.banco.grupos.map(g => [g.codigo, g.total]),
         (d.vagas || []).map(v => [v.status, v.sem_responsavel, v.pendentes > 0, v.recebidos, v.analisados]), d.quadro && [d.quadro.vagas_abertas, d.quadro.vagas_em_processamento, d.quadro.pendencias]]);
       if (ass === assinatura) return;
@@ -1069,6 +1353,10 @@
         const [ax, ay] = Pa(p.x, p.y), ox = Math.round(ax) - (espelho ? SW - 1 - PX : PX), oy = Math.round(ay) - PY;
         return { p, spr, espelho, ox, oy, box: [p.x - 0.12, p.y - 0.12, p.x + 0.12, p.y + 0.12], z0: 0, z1: 1.7, tela: [ox, oy, ox + SW - 1, oy + SH - 1], prof: p.x + p.y };
       });
+      if (extra.gato) {
+        const g = extra.gato, [sx, sy] = Pa(g.x, g.y);
+        dyn.push({ gato: g, box: [g.x - 0.15, g.y - 0.1, g.x + 0.15, g.y + 0.1], z0: 0, z1: 0.4, tela: [sx - 7, sy - 10, sx + 7, sy + 2], prof: g.x + g.y });
+      }
       if (extra.bolinha) {
         const [bx, by, bz] = extra.bolinha, [sx, sy] = Pa(bx, by, bz);
         dyn.push({ bola: [Math.round(sx), Math.round(sy)], sombraBola: Pa(bx, by, 0.78), box: [bx - 0.03, by - 0.03, bx + 0.03, by + 0.03], z0: 0.78, z1: 1.5, tela: [sx - 2, sy - 2, sx + 2, sy + 2], prof: bx + by });
@@ -1092,6 +1380,7 @@
       const porPos = new Map();
       for (const e of dyn) { if (!porPos.has(e.pos)) porPos.set(e.pos, []); porPos.get(e.pos).push(e); }
       const desenhaDyn = e => {
+        if (e.gato) { alvo(frame, AW, AH); desenharGato(e.gato.x, e.gato.y, e.gato); return; }
         if (e.bola) {
           alvo(frame, AW, AH); disco(Math.round(e.sombraBola[0]), Math.round(e.sombraBola[1]), 2, 1, '#000000', 0.3);
           ret(e.bola[0] - 1, e.bola[1] - 1, 2, 2, '#FFF6D6'); ponto(e.bola[0], e.bola[1], '#E7B400');
@@ -1119,6 +1408,8 @@
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(arte, 0, 0, AW, AH, DX, DY, AW * S, AH * S);
       alvosTela = ALVOS_ARTE.map(a => ({ tipo: a.tipo, pts: a.pts.map(([x, y]) => [DX + x * S, DY + y * S]) }));
+      if (extra.gato) { const [gx, gy] = Pa(extra.gato.x, extra.gato.y, 0.45); extra.gato.tela = [DX + gx * S, DY + gy * S]; }
+      if (VIVO.periodo !== 'dia') luzDaNoite(ctx);
       return dyn.filter(e => e.p).map(e => {
         const [fx, fy] = Pa(e.p.x, e.p.y);
         return { id: e.p.id, sx: DX + fx * S, sy: DY + fy * S, hx: DX + fx * S, hy: DY + (fy - (PY - 4)) * S,

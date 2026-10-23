@@ -11,6 +11,8 @@
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const hora = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
   const pick = a => (a && a.length ? a[Math.floor(Math.random() * a.length)] : '');
+  // ?periodo=noite (ou tarde, dia) mostra o escritório naquele horário; sem isso, segue a hora do computador
+  const PERIODO = ['dia', 'tarde', 'noite'].find(p => p === new URLSearchParams(location.search).get('periodo')) || null;
   const espera = ms => new Promise(r => setTimeout(r, ms));
   const { ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS } = Cena;
   const COMPAT = { ALTA: ['#2E9E5B', 'Alta compatibilidade'], MEDIA: ['#F08A24', 'Compatibilidade média'], BAIXA: ['#8A8F99', 'Baixa compatibilidade'] };
@@ -39,7 +41,7 @@
   };
   const PAPEIS = { recrutador: 'Recrutador', supervisor: 'Supervisor', admin: 'Administrador' };
   const FINALIDADES = { triagem: 'Triagem', analise: 'Análises', consulta: 'Consultas entre colegas', revisao: 'Revisões com ajuda',
-    chat: 'Chat individual', equipe: 'Canal da equipe', encaminhamento: 'Encaminhamento pelo Atlas', sugestao_vaga: 'Sugestão de vaga', teste: 'Teste de conexão' };
+    chat: 'Chat individual', equipe: 'Canal da equipe', encaminhamento: 'Encaminhamento pelo Atlas', sugestao_vaga: 'Sugestão de vaga', momentos: 'Momentos da equipe', teste: 'Teste de conexão' };
   let MARCA = { nome: '', subtitulo: 'Escritório de Recrutamento', empresa: '' };
 
   let EU = null, D = null, P = null, SEL = null, HOVER = null, CATEGORIAS = [], ESPECIALIDADES = [];
@@ -214,12 +216,37 @@
       case 'consulta_respondida': visitar(ev.agente_id, d.destino_id, 'levando a resposta para '); break;
       case 'pensamento': balao(ev.agente_id, 'pensamento', ev.mensagem); break;
       case 'conversa': { // resposta a uma fala que ainda não apareceu: espera a vez
+        if (d.momento) { momento(ev, d.momento); break; }
         const dest = VIS[d.destino_id], antes = dest && dest.baloes.find(b => b.tipo === 'fala' && b.para === ev.agente_id && !b.t0);
         balao(ev.agente_id, 'fala', ev.mensagem, d.destino_id, 0, antes);
         break;
       }
     }
   }
+  // momentos da equipe (pingue-pongue, café, aniversário...): o servidor decide quem vai aonde; aqui cada um
+  // caminha até o lugar, fica lá o tempo do momento e as falas aparecem em ordem, quando todos já chegaram
+  const MOMENTOS = new Map(), ICONE_MOMENTO = { pingue: '🏓', cafe: '☕', bebedouro: '💧', videogame: '🎮', leitura: '📖',
+    alongamento: '🧘', aniversario: '🎂', ronda: '👋' };
+  function momento(ev, m) {
+    let mo = MOMENTOS.get(m.id);
+    if (!mo) {
+      const agora = performance.now();
+      for (const [k, x] of MOMENTOS) if (agora > x.fim) MOMENTOS.delete(k);
+      mo = { ultimo: null, fim: agora + (m.duracao + 60) * 1000 };
+      MOMENTOS.set(m.id, mo);
+      const tomados = new Set(Object.values(m.lugares || {}).flat());
+      for (const o of Object.values(VIS)) if (tomados.has(o.descanso)) o.descanso = null; // quem descansava ali procura outro canto
+      for (const [id, lugar] of Object.entries(m.lugares || {})) {
+        const v = VIS[id]; if (!v) continue;
+        const nos = (Array.isArray(lugar) ? lugar : [lugar]).filter(n => NOS[n]);
+        v.viagens = v.viagens.filter(x => !x.momento);
+        for (const no of nos) v.viagens.push({ no, espera: m.duracao / nos.length, rotulo: m.rotulo, momento: m.id, tipo: m.tipo,
+          item: (m.itens || {})[no], acao: m.acao });
+      }
+    }
+    mo.ultimo = balao(ev.agente_id, 'fala', ev.mensagem, ev.dados.destino_id, 0, mo.ultimo, 45000) || mo.ultimo;
+  }
+  const emMomento = v => { const g = v.viagens[0]; return g && g.momento && !v.rota.length && v.no === g.no ? g : null; };
   function chegar(v) { v.rotulo = 'chegando para trabalhar'; v.viagens.push({ no: 'sV', espera: 3, rotulo: 'apresentando-se ao Atlas' }); }
   function visitar(de, para, rotulo) {
     const v = VIS[de], alvo = D.agentes.find(a => a.id === para);
@@ -234,31 +261,34 @@
   }
 
   // ================================================================ balões (pensamento = nuvem, fala = balão)
-  function balao(id, tipo, texto, para, atraso = 0, depois = null) {
-    if (!texto) return;
+  function balao(id, tipo, texto, para, atraso = 0, depois = null, paciencia = 0) {
+    if (!texto) return null;
     const v = VIS[id];
     if (!v) { // agente que acabou de ser contratado e ainda não apareceu: guarda para quando chegar
-      (ESPERA_BALAO[id] ||= []).push([tipo, texto, para, atraso, depois]);
+      (ESPERA_BALAO[id] ||= []).push([tipo, texto, para, atraso, depois, paciencia]);
       ESPERA_BALAO[id] = ESPERA_BALAO[id].slice(-4);
-      return;
+      return null;
     }
+    const descartar = i => { const [b] = v.baloes.splice(i, 1); if (b && !b.t0) b.t0 = 1; }; // quem esperava por ele não trava
     if (tipo === 'pensamento') { // pensamentos têm menor prioridade: no máximo dois esperando
       const fila = v.baloes.filter(b => b.tipo === 'pensamento' && !b.t0);
-      if (fila.length >= 2) v.baloes.splice(v.baloes.indexOf(fila[0]), 1);
+      if (fila.length >= 2) descartar(v.baloes.indexOf(fila[0]));
     }
-    if (v.baloes.length > 5) v.baloes.splice(1, 1);
-    const agora = performance.now();
-    v.baloes.push({ tipo, texto: String(texto), para, criado: agora, naoAntes: agora + atraso, depois });
+    if (v.baloes.length > 5) { const i = v.baloes.findIndex((x, k) => k > 0 && x.tipo === 'pensamento'); descartar(i > 0 ? i : 1); }
+    const agora = performance.now(), b = { tipo, texto: String(texto), para, criado: agora, naoAntes: agora + atraso, depois, paciencia };
+    v.baloes.push(b);
+    return b;
   }
   const andandoV = v => v.rota.length > 0 || (v.viagens.length > 0 && v.no !== v.viagens[0].no);
   function processarBaloes(v, agora) {
     const b = v.baloes[0]; if (!b) return;
     if (!b.t0) {
       if (agora < b.naoAntes) return;
-      if (b.depois && (!b.depois.t0 || agora < b.depois.t0 + 1500) && agora - b.criado < 15000) return;
+      const espera = agora - b.criado, pac = b.paciencia || 0;
+      if (b.depois && (!b.depois.t0 || agora < b.depois.t0 + 1500) && espera < Math.max(15000, pac)) return;
       if (b.tipo === 'fala') { // fala quando os dois estão perto: quem fala e quem ouve já chegaram
-        if (andandoV(v) && agora - b.criado < 7000) return;
-        if (b.para && VIS[b.para] && andandoV(VIS[b.para]) && agora - b.criado < 12000) return;
+        if (andandoV(v) && espera < Math.max(7000, pac)) return;
+        if (b.para && VIS[b.para] && andandoV(VIS[b.para]) && espera < Math.max(12000, pac)) return;
       }
       b.t0 = agora;
       b.dur = Math.min(7000, 2200 + b.texto.length * 40) * (v.baloes.length > 2 ? 0.65 : 1);
@@ -299,7 +329,7 @@
     if (a.funcao === 'supervisor') return 'atlas';
     if (a.estado === 'descansando') {
       if (v.descanso) return v.descanso;
-      const ocupados = new Set(Object.entries(VIS).filter(([id]) => +id !== a.id).flatMap(([, o]) => [o.descanso, o.no]));
+      const ocupados = new Set(Object.entries(VIS).filter(([id]) => +id !== a.id).flatMap(([, o]) => [o.descanso, o.no, ...o.viagens.map(x => x.no)]));
       // se alguém já está na mesa de pingue-pongue, o próximo a descansar vira o parceiro de jogo
       for (const [x, y] of [['ping0', 'ping1'], ['ping1', 'ping0']])
         if (ocupados.has(x) && !ocupados.has(y)) { v.descanso = y; return y; }
@@ -350,6 +380,9 @@
         }
         continue;
       }
+      if ((a.estado === 'trabalhando' || a.estado === 'pendencia') && v.viagens.some(x => x.momento)) {
+        v.viagens = v.viagens.filter(x => !x.momento); v.espera = undefined; // chegou trabalho: o momento fica para depois
+      }
       const desejado = v.viagens.length ? v.viagens[0].no : alvoBase(a);
       if (v.no !== desejado) {
         const daMesa = v.no && v.no.startsWith('mesa'), vaiMesa = desejado.startsWith('mesa');
@@ -364,17 +397,54 @@
       } else if (SAINDO.has(a.id)) { SAINDO.delete(a.id); delete VIS[a.id]; } // saiu pela porta
     }
     ambiente(agora);
+    atualizarGato(dt, agora);
+  }
+
+  // ================================================================ o Café, gato do escritório
+  // passeia entre os cantinhos dele, cochila no sol e no tapete, e quem está por perto (sem trabalho) faz carinho
+  const GATO = { no: null, x: 0, y: 0, rota: [], espera: 6, pose: 'senta', dir: 'e', quadro: 0, carinho: 0 };
+  const FALAS_GATO = ['Oi, Café! Veio me visitar?', 'Café, de novo por aqui? 😺', 'Quem é o gato mais lindo deste escritório?',
+    'Psiu, Café… vem cá.', 'Olha quem chegou pra supervisionar!', 'Café, sem deitar no teclado, combinado?'];
+  function atualizarGato(dt, agora) {
+    if (!GATO.no) {
+      GATO.no = 'gato' + Math.floor(Math.random() * Cena.CANTOS_GATO); [GATO.x, GATO.y] = NOS[GATO.no];
+      GATO.pose = (INFO_LOCAL[GATO.no] || {}).pose || 'senta';
+    }
+    if (GATO.rota.length) {
+      GATO.pose = 'anda'; GATO.quadro = Math.floor(agora / 160) % 2;
+      let passo = 0.9 * dt;
+      while (passo > 0 && GATO.rota.length) {
+        const [tx, ty] = NOS[GATO.rota[0]], dx = tx - GATO.x, dy = ty - GATO.y, l = Math.hypot(dx, dy);
+        if (l > 0.001) GATO.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
+        if (l <= passo) { GATO.x = tx; GATO.y = ty; GATO.no = GATO.rota.shift(); passo -= l; } else { GATO.x += dx / l * passo; GATO.y += dy / l * passo; passo = 0; }
+      }
+      if (!GATO.rota.length) gatoChegou();
+      return;
+    }
+    if ((GATO.espera -= dt) > 0) return;
+    let i; do i = Math.floor(Math.random() * Cena.CANTOS_GATO); while ('gato' + i === GATO.no && Cena.CANTOS_GATO > 1);
+    GATO.rota = Cena.rota(GATO.no, 'gato' + i);
+  }
+  function gatoChegou() {
+    GATO.pose = (INFO_LOCAL[GATO.no] || {}).pose || 'senta'; GATO.espera = 25 + Math.random() * 45;
+    const perto = D && D.agentes.find(a => { const v = VIS[a.id]; return v && !v.rota.length && a.estado !== 'trabalhando' && Math.hypot(v.x - GATO.x, v.y - GATO.y) < 1.9; });
+    if (!perto) return;
+    GATO.pose = 'senta'; GATO.carinho = performance.now() + 5000;
+    if (Math.random() < 0.55 && !VIS[perto.id].baloes.length) balao(perto.id, 'fala', pick(FALAS_GATO));
   }
 
   function estadoVisual(a) {
     const v = VIS[a.id];
     if (v.rota.length) return 'deslocamento';
     if (v.conversa > performance.now()) return 'conversando';
+    const g = emMomento(v);
+    if (g) return g.tipo === 'ronda' ? 'conversando' : 'descansando';
     if (v.viagens.length) return 'deslocamento';
     return a.estado;
   }
   function textoStatus(a) {
-    const v = VIS[a.id], e = estadoVisual(a);
+    const v = VIS[a.id], e = estadoVisual(a), g = emMomento(v);
+    if (g) return g.rotulo;
     if (e === 'deslocamento') return v.viagens.length && !v.rota.length ? v.viagens[0].rotulo : v.rotulo;
     if (e === 'descansando') return (INFO_LOCAL[v.no] && INFO_LOCAL[v.no].txt) || 'descansando';
     if (e === 'conversando') return 'conversando com a equipe';
@@ -383,6 +453,7 @@
 
   // ================================================================ desenho
   let ZOOM = 1;
+  const ESCALA_GATO = () => Cena.escala() / 16; // pixels da arte -> pixels da tela
   function medir(foco) {
     const st = $('#palco'), w = st.clientWidth, h = st.clientHeight;
     const fx = foco ? foco[0] : w / 2, fy = foco ? foco[1] : h / 2;
@@ -438,7 +509,8 @@
       if (v.no === 'sofa1') tv = 'jogo'; // quem está no meio do sofá joga videogame
       else if (v.no && v.no.startsWith('sofa') && !tv) tv = 'tv';
     }
-    return { ...D, estacoes: est, tv };
+    const bolo = Object.values(VIS).some(v => { const g = emMomento(v); return g && g.tipo === 'aniversario'; });
+    return { ...D, estacoes: est, tv, bolo, periodo: PERIODO };
   }
 
   let ult = 0, T0 = performance.now(), posicoes = [];
@@ -482,6 +554,11 @@
       case 'raquete': if (ciclo(1.3, 0.3)) o.acao = 'raquetada'; break; // treinando sozinho (com parceiro, sincroniza abaixo)
     }
     if (/^sofa/.test(v.no || '') && !o.item) o.humor = ciclo(9, 0.8) ? 'risada' : 'calmo';
+    if (info.acao === 'alonga') { // alongamento em grupo: braços para cima, para o lado, respira
+      const f = (seg * 0.45 + fase * 0.2) % 4;
+      o.acao = f < 1.5 ? 'espreguica' : f > 2.2 && f < 3.2 ? 'acena' : ''; o.quadro = Math.floor(seg * 1.5) % 2; o.humor = 'calmo';
+      if (f < 1.5) o.olhos = 'fechado';
+    }
     // falando (balão de fala no ar): boca mexendo e gesto; pensando: mão no queixo
     const b = v.baloes[0];
     if (b && b.t0 && agora - b.t0 < b.dur) {
@@ -507,7 +584,8 @@
   function desenharAgentes(seg) {
     const agora = performance.now();
     const lista = todos().filter(a => VIS[a.id]).map(a => {
-      const v = VIS[a.id], info = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0, sentado = !andando && !!info.sentado;
+      const v = VIS[a.id], g = emMomento(v), info0 = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0;
+      const info = g && (g.item || g.acao) ? { ...info0, item: g.item || info0.item, acao: g.acao } : info0, sentado = !andando && !!info.sentado;
       const o = animar(a, v, info, andando, sentado, seg, agora);
       let dir = andando ? (v.dir || 's') : (o.dir || info.f || v.dir || 's');
       const par = !andando && !o.dir && v.conversa > agora && VIS[v.conversaCom];
@@ -520,7 +598,19 @@
     const fb = (Math.sin(seg * 3.2) + 1) / 2;
     const bolinha = jog.length === 2 ? [19.8 + fb * 2.4, 12.3, 0.84 + Math.abs(Math.sin(seg * 6.4)) * 0.4] : null;
     if (bolinha) for (const p of jog) p.acao = (p.v.no === 'ping0' ? fb < 0.14 : fb > 0.86) ? 'raquetada' : '';
-    const telas = Cena.desenhar(ctx, lista, { bolinha, t: seg }), porId = new Map(lista.map(p => [p.id, p]));
+    const telas = Cena.desenhar(ctx, lista, { bolinha, t: seg, gato: GATO }), porId = new Map(lista.map(p => [p.id, p]));
+    if (GATO.tela) { // zzz de quando o Café cochila, coraçõezinhos quando ganha carinho
+      const [gx, gy] = GATO.tela, carinho = GATO.carinho > agora;
+      if (carinho || GATO.pose === 'dorme') {
+        ctx.save(); ctx.textAlign = 'center'; ctx.font = carinho ? '700 12px system-ui' : 'italic 800 10px system-ui';
+        for (let k = 0; k < (carinho ? 2 : 3); k++) {
+          const f = (seg * 0.4 + k / (carinho ? 2 : 3)) % 1;
+          ctx.globalAlpha = Math.sin(f * Math.PI) * 0.9; ctx.fillStyle = carinho ? '#F26D8D' : '#DCE6FF';
+          ctx.fillText(carinho ? '♥' : 'z', gx + 4 + f * 8 + Math.sin(f * 6 + k) * 2, gy - 2 - f * 16);
+        }
+        ctx.restore();
+      }
+    }
     posicoes = telas.map(t => ({ ...porId.get(t.id), ...t }));
     if (HOVER && HOVER.tipo !== 'agente') { // contorno do quadro ou da bandeja sob o mouse
       const a = Cena.alvos().find(x => x.tipo === HOVER.tipo);
@@ -671,6 +761,7 @@
       if (mx >= c.x && mx <= c.x + c.w && my >= c.y && my <= c.y + c.h) return { tipo: 'agente', id: c.id };
     for (const p of [...posicoes].sort((q, r) => r.sy - q.sy))
       if (mx >= p.x0 && mx <= p.x1 && my >= p.y0 && my <= p.y1) return { tipo: 'agente', id: p.a.id };
+    if (GATO.tela && Math.abs(mx - GATO.tela[0]) < 7 * ESCALA_GATO() && my > GATO.tela[1] - 2 && my < GATO.tela[1] + 10 * ESCALA_GATO()) return { tipo: 'gato' };
     for (const a of Cena.alvos()) if (Cena.dentro([mx, my], a.pts)) return { tipo: a.tipo };
     return null;
   }
@@ -686,6 +777,7 @@
       dica.innerHTML = `<b>${esc((pf.emoji ? pf.emoji + ' ' : '') + a.nome.toUpperCase())}</b><br>Especialidade: ${esc(a.especialidade)}<br>Status: <b style="color:${cor}">${rot}</b>${t ? ' · ' + esc(t) : ''}` +
         (pf.resumo ? `<br><span class="mini">${esc(pf.resumo)}</span>` : '');
     } else if (HOVER.tipo === 'vagas') dica.innerHTML = '<b>Quadro de vagas em aberto</b><br>Usado pelos agentes. Clique para ver a análise.';
+    else if (HOVER.tipo === 'gato') dica.innerHTML = `<b>🐈 Café</b><br>O gato do escritório. ${GATO.pose === 'dorme' ? 'Tirando um cochilo.' : GATO.pose === 'anda' ? 'Dando uma volta.' : 'Observando tudo.'}<br><span class="mini">Gosta do sol da janela, do tapete do sofá e de carinho na hora do café.</span>`;
     else if (HOVER.tipo === 'quadro') dica.innerHTML = '<b>Quadro geral do supervisor</b><br>Clique para ver tarefas, equipe, contratações e pendências.';
     else if (HOVER.tipo === 'bandeja') dica.innerHTML = `<b>Recepção de currículos</b><br>${D.fila_triagem} aguardando triagem · ${D.fila_analise} aguardando os analistas`;
     else if (HOVER.tipo === 'banco') { const b = D.banco || {}; dica.innerHTML = `<b>📁 Banco de currículos</b><br>${milhar(b.total || 0)} currículo(s) guardados nas pastas, por área.<br><span class="mini">Clique para abrir o arquivo: o que a IA disse de cada um e a vaga sugerida.</span>`; }
@@ -705,6 +797,7 @@
     else if (h.tipo === 'quadro') abrir({ tipo: 'quadro' });
     else if (h.tipo === 'bandeja') { const b = D.agentes.find(a => a.funcao === 'recepcao'); if (b) abrir({ tipo: 'agente', id: b.id, aba: 'resumo' }); }
     else if (h.tipo === 'banco') abrirBanco();
+    else if (h.tipo === 'gato') { GATO.carinho = performance.now() + 4000; if (GATO.pose === 'dorme') GATO.pose = 'senta'; } // carinho de quem clica
   });
 
   // ================================================================ atividade recente
@@ -878,8 +971,13 @@
       ${gestor() ? `<p style="margin-top:14px"><button class="btn mini claro" data-a="dispensar" data-v="${d.id}">Dispensar da equipe</button> <span class="mini">libera a estação; as vagas passam para colegas da área</span></p>` : ''}`;
   }
 
+  // o que o colega achou numa segunda leitura: ✔ prova que tinha passado batido, ⚠ ponto de atenção
+  const achadosHtml = x => (x.achados || []).map(f => `<p class="mini achado ${f.tipo === 'alerta' ? 'alerta' : 'ok'}">${f.tipo === 'alerta' ? '⚠' : '✔'}
+    ${f.requisito ? `<b>${esc(f.requisito)}</b>: ` : ''}${f.trecho ? `“${esc(f.trecho)}”` : ''}${f.comentario ? ` <span>— ${esc(f.comentario)}</span>` : ''}</p>`).join('');
   function colaboracoesHtml(c) {
-    return (c.colaboracoes || []).map(x => `<div class="mini colab"><b>Consultou ${esc(x.colega)}:</b> “${esc(x.resposta)}”</div>`).join('');
+    return (c.colaboracoes || []).map(x => x.tipo === 'segunda_leitura'
+      ? `<div class="mini colab"><b>Segunda leitura de ${esc(x.colega)}:</b> ${(x.achados || []).length ? `achou ${x.achados.length} ponto(s) que tinham passado batido` : 'concordou com a análise'}${achadosHtml(x)}</div>`
+      : `<div class="mini colab"><b>Consultou ${esc(x.colega)}:</b> “${esc(x.resposta)}”</div>`).join('');
   }
 
   async function candidatosAgente(d, get) {
@@ -921,9 +1019,20 @@
   const pontos = '<span class="pontos"><i></i><i></i><i></i></span>';
   const msgHtml = (x, id) => x.autor === 'usuario' ? `<div class="msg eu">${esc(x.texto)}</div>`
     : `<div class="lin">${av(id, 26)}<div class="msg ${x.digitando ? 'digitando' : ''}">${x.digitando ? pontos + ' ' + esc(x.texto) : esc(x.texto)}</div></div>`;
+  // cumprimento do jeito de cada um, com a hora do dia e o que está fazendo agora (nada de texto de sistema)
+  const AGORA_PADRAO = { trabalhando: 'Tô no meio de uma análise, mas pode falar.', descansando: 'Tava numa pausa rapidinha.',
+    aguardando: 'Tô com a fila tranquila agora.', pendencia: 'Tô resolvendo uma pendência aqui.', disponivel: 'Tô livre, pode mandar.',
+    concluido: 'Acabei de fechar a fila!' };
+  function saudacao(a, pf) {
+    const h = new Date().getHours(), periodo = h < 12 && h >= 5 ? 'Bom dia' : h < 18 && h >= 12 ? 'Boa tarde' : 'Boa noite';
+    const estado = (a && a.estado) || 'disponivel', agora = (pf.agora || {})[estado] || AGORA_PADRAO[estado] || '';
+    const modelo = pick(pf.saudacoes) || '{periodo}! {nome} aqui. {agora}';
+    return modelo.replace('{periodo}', periodo).replace('{nome}', (a && a.nome) || '').replace('{agora}', agora)
+      .replace(/([,—-] )(Bom|Boa)\b/g, (_, p1, p2) => p1 + p2.toLowerCase()).replace(/\s+/g, ' ').trim();
+  }
   function chatAgente(d) {
     const a = D.agentes.find(x => x.id === d.id), pf = (a && a.perfil) || d.perfil || {};
-    const m = CHATS[d.id] = CHATS[d.id] || [{ autor: 'agente', texto: pf.saudacao || `Oi! Sou ${d.nome}. Respondo com base nos meus registros.` }];
+    const m = CHATS[d.id] = CHATS[d.id] || [{ autor: 'agente', texto: saudacao(a || d, pf) }];
     const sug = d.funcao === 'analista' ? ['Como está o andamento?', 'Quais candidatos são mais compatíveis?', 'Quantos currículos faltam?', 'Quem precisa de avaliação humana?', 'Pediu ajuda a algum colega?']
       : d.funcao === 'supervisor' ? ['Como está a equipe?', 'Quem você contratou?', 'Quem está mais ocupado?'] : ['Quantos currículos chegaram?', 'Quem é você?'];
     return `<div id="msgs">${m.map(x => msgHtml(x, d.id)).join('')}</div>
@@ -942,7 +1051,7 @@
   async function enviarChat(texto) {
     texto = (texto || '').trim(); if (!texto || !P || P.tipo !== 'agente') return;
     const id = P.id, m = CHATS[id], a = D.agentes.find(x => x.id === id), pf = (a && a.perfil) || {};
-    const hist = m.filter(x => !x.digitando).slice(-6);
+    const hist = m.filter(x => !x.digitando).slice(-10);
     const pensando = pick(pf.pensando) || 'pensando…';
     const resp = { autor: 'agente', texto: pensando, digitando: true };
     m.push({ autor: 'usuario', texto }, resp);
@@ -1003,7 +1112,7 @@
   }
   function itensCanal() {
     const srv = EQUIPE.servidor.map(e => ({ ts: e.ts, tipo: e.tipo, agente_id: e.agente_id, para: (e.dados || {}).destino_id,
-      de_nome: (e.dados || {}).de, para_nome: (e.dados || {}).para, texto: e.mensagem }));
+      de_nome: (e.dados || {}).de, para_nome: (e.dados || {}).para, texto: e.mensagem, momento: (e.dados || {}).momento }));
     return [...srv, ...EQUIPE.local].sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   }
   function htmlCanal() {
@@ -1014,7 +1123,7 @@
       if (x.tipo !== 'conversa' && x.tipo !== 'resposta') return `<div class="eq sis">${esc(x.texto)} <span>${hora(x.ts)}</span></div>`;
       const nome = (AGS[x.agente_id] || {}).nome || x.de_nome || '?', dest = (x.para && (AGS[x.para] || {}).nome) || x.para_nome;
       return `<div class="eq ${x.digitando ? 'digitando' : ''}">${av(x.agente_id, 30)}<div class="corpo">
-        <div class="quem"><b>${esc(nome)}</b>${dest ? ` <span class="mini">→ ${esc(dest)}</span>` : ''} <span class="mini">${hora(x.ts)}</span></div>
+        <div class="quem"><b>${esc(nome)}</b>${x.momento ? ` <span class="mini">· ${ICONE_MOMENTO[x.momento.tipo] || '💬'} ${esc(x.momento.rotulo || '')}</span>` : dest ? ` <span class="mini">→ ${esc(dest)}</span>` : ''} <span class="mini">${hora(x.ts)}</span></div>
         <div class="bal">${x.digitando ? pontos + ' ' : ''}${esc(x.texto.replace(/^💭 /, ''))}</div></div></div>`;
     }).join('');
   }
@@ -1178,7 +1287,11 @@
       : `<h1>${esc(c.nome)}</h1><p class="mini">Este arquivo não tem texto extraível (imagem ou PDF escaneado). A IA leu o arquivo original.</p>`;
     const analises = d.analises.map(a => {
       const [cc, cn_] = COMPAT[a.compatibilidade] || COMPAT.BAIXA;
-      const colab = (a.colaboracoes || []).map(x => `<div class="cartao colabc"><b>${esc(a.agente)} consultou ${esc(x.colega)}</b> <span class="mini">(${esc(x.especialidade)})</span>
+      const colab = (a.colaboracoes || []).map(x => x.tipo === 'segunda_leitura'
+        ? `<div class="cartao colabc"><b>${esc(a.agente)} pediu uma segunda leitura a ${esc(x.colega)}</b> <span class="mini">(${esc(x.especialidade)})</span>
+          <p class="mini" style="margin-top:4px"><b>Dúvida:</b> ${esc(x.pergunta)}</p><p class="mini"><b>${esc(x.colega)}:</b> ${esc(x.resposta)}</p>
+          ${achadosHtml(x) || '<p class="mini">Não achou nada diferente: concordou com a análise.</p>'}</div>`
+        : `<div class="cartao colabc"><b>${esc(a.agente)} consultou ${esc(x.colega)}</b> <span class="mini">(${esc(x.especialidade)})</span>
         <p class="mini" style="margin-top:4px"><b>Pergunta:</b> ${esc(x.pergunta)}</p><p class="mini"><b>Resposta:</b> ${esc(x.resposta)}</p>
         ${(x.evidencias || []).length ? `<p class="mini"><b>Trecho:</b> “${x.evidencias.map(esc).join('” · “')}”</p>` : ''}</div>`).join('');
       return `<div class="cartao"><div class="linha"><h3 style="font-size:16px">${a.tipo === 'segunda_opiniao' ? 'Segunda opinião de ' : 'Análise de '}${esc(a.agente)}</h3><span class="chip" style="background:${cc}">${cn_}</span></div>
@@ -1186,7 +1299,7 @@
         ${a.atendidos.length ? `<div class="sec">Evidências no currículo</div>${a.atendidos.map((x, i) => `<p style="margin:6px 0"><i class="num">${i + 1}</i><b>${esc(x.requisito)}</b><br><span class="mini" style="margin-left:23px">“${esc(x.evidencia)}”</span></p>`).join('')}` : ''}
         ${a.a_verificar.length ? `<div class="sec">A verificar</div><ul class="lista alerta">${a.a_verificar.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
         ${a.incompatibilidades.length ? `<div class="sec">Incompatibilidades</div><ul class="lista ruim">${a.incompatibilidades.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
-        ${colab ? `<div class="sec">Conversa com colega</div>${colab}` : ''}
+        ${colab ? `<div class="sec">${(a.colaboracoes || []).some(x => x.tipo === 'segunda_leitura') ? 'Outro olhar do time' : 'Conversa com colega'}</div>${colab}` : ''}
         <div class="sec">Justificativa</div><p>${esc(a.justificativa)}</p></div>`;
     }).join('') || '<p class="vazio">Análise ainda não concluída.</p>';
     const atual = DECISAO[d.decisao];
@@ -1599,6 +1712,8 @@
   // apoio a testes automatizados (somente leitura)
   window.__hubZoom = f => zoom(f);
   window.__hubPosicoes = () => posicoes.map(p => ({ id: p.a.id, nome: p.a.nome, x: p.hx, y: p.hy, estado: p.a.estado, andando: p.andando, dir: p.dir }));
+  window.__hubStatus = () => Object.fromEntries(todos().filter(a => VIS[a.id]).map(a => [a.id, { nome: a.nome, texto: textoStatus(a), estado: estadoVisual(a), momento: !!emMomento(VIS[a.id]), no: VIS[a.id].no }]));
+  window.__hubGato = () => ({ no: GATO.no, pose: GATO.pose, x: +GATO.x.toFixed(2), y: +GATO.y.toFixed(2), tela: GATO.tela });
   window.__hubBaloes = () => Object.entries(VIS).map(([id, v]) => ({ id: +id, baloes: v.baloes.map(b => ({ tipo: b.tipo, texto: b.texto, visivel: !!b.t0 })) }));
   addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;

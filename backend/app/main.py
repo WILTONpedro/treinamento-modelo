@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from . import acervo, config, eventos, servicos as S, uso_ia
+from . import acervo, config, eventos, momentos, servicos as S, uso_ia
 from .catalogo import CATEGORIAS_DISPONIVEIS
 from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
@@ -78,6 +78,7 @@ async def supervisao():
             if t - ultima_limpeza > 600:
                 ultima_limpeza = t
                 await asyncio.to_thread(S.limpar_conversas)
+            await asyncio.to_thread(momentos.talvez_um_momento)
         except Exception:
             log.exception("Falha na supervisão")
         await asyncio.sleep(max(0.2, config.SUPERVISAO_SEGUNDOS))
@@ -439,7 +440,7 @@ def _ctx_chat(ag_id):
 async def chat(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atual)):
     ctx = await asyncio.to_thread(_ctx_chat, ag_id)
     try:
-        resp = await asyncio.to_thread(S.ia.responder_chat, ctx, m.mensagem, m.historico[-6:])
+        resp = await asyncio.to_thread(S.ia.responder_chat, ctx, m.mensagem, m.historico[-10:])
     except Exception as e:
         log.warning("Chat falhou: %s", type(e).__name__)
         resp = "Não consegui consultar a IA agora. Tente de novo em instantes."
@@ -454,7 +455,7 @@ async def chat_stream(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atua
     def gerar():
         enviou = False
         try:
-            for parte in S.ia.responder_chat_stream(ctx, m.mensagem, m.historico[-6:]):
+            for parte in S.ia.responder_chat_stream(ctx, m.mensagem, m.historico[-10:]):
                 enviou = True
                 yield parte
         except Exception as e:

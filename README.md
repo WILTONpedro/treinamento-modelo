@@ -394,6 +394,17 @@ Quando falam, mexem a boca e gesticulam; quando pensam, põem a mão no queixo; 
 outro. Quem passa atrás de uma mesa, do sofá ou do vidro da sala do gerente aparece atrás deles. Nada de texto pintado no cenário: o nome do
 sistema só aparece se `APP_NOME` estiver definido.
 
+**Aconchego.** O escritório acompanha a hora do computador: de dia, sol pelas janelas; no fim da tarde, luz
+dourada; à noite, céu estrelado nas janelas e o escritório só com as luzes quentes das luminárias, do abajur e
+do aquário (para ver a noite a qualquer hora, abra com `?periodo=noite`; também `tarde` e `dia`). Varais de
+luzinhas piscam no alto das paredes, há cortinas de linho, um mural de fotos da equipe na recepção, ganchos com
+casacos ao lado da porta, uma planta pendente sobre o bebedouro, um aquário com peixinhos na sala de espera, um
+rádio tocando na copa (♪), o pote de balas e as suculentas da Bia, o bonsai de jabuticaba do Atlas, uma manta no
+sofá, uma fruteira na copa e, em cada mesa, uma caneca (que solta vapor enquanto alguém trabalha) e um objeto
+pessoal (porta-retrato, cacto, porta-canetas, post-its). E tem o **Café**, o gato do escritório: passeia entre
+os cantinhos dele, cochila no sol da janela e no tapete (zzz) e, quando para perto de alguém que não está
+trabalhando, ganha carinho (♥) — às vezes com um "Oi, Café!". Clique nele para fazer carinho também.
+
 Clique num personagem, no quadro de vagas, no quadro do gerente, na bandeja da recepção ou no arquivo para abrir
 o painel. Para ver melhor, **segure o botão direito e arraste** (o esquerdo também arrasta, fora dos
 personagens); para aproximar, os botões de zoom ou Ctrl + roda do mouse. Os painéis abrem na hora: mostram o que
@@ -431,11 +442,30 @@ Cada listagem, abertura, sugestão e encaminhamento fica na auditoria (LGPD). A 
 
 ## A equipe viva
 
-**Personalidades.** Atlas (calmo, estrategista), Bia (organizada e animada), Sofia (meticulosa, vai aos fatos)
-e Flávio (prático, do chão de fábrica) têm perfis próprios em `app/personalidade.py`: tom, bordões,
-pensamentos típicos e papo de descanso. Quem o Atlas contrata recebe um de oito arquétipos (escolhido pelo
-nome), então cada novo colega fala do seu jeito. Com Gemini, a personalidade entra no prompt da análise, do
-chat e do canal da equipe; na demonstração, ela aparece nas frases montadas a partir dos registros.
+**Personalidades.** Atlas (calmo, estrategista, joga xadrez e cuida de um bonsai), Bia (organizada e animada,
+playlists, suculentas e balas), Sofia (meticulosa, planilhas, cerâmica e chá) e Flávio (prático, futebol,
+churrasco e fita isolante) têm perfis próprios em `app/personalidade.py`: história, jeito de escrever,
+expressões, gostos, manias, pensamentos típicos e papo de descanso. Quem o Atlas contrata recebe um de oito
+arquétipos (escolhido pelo nome), então cada novo colega fala do seu jeito. Com Gemini, a personalidade entra no
+prompt da análise, do chat e do canal da equipe; na demonstração, aparece nas frases montadas a partir dos
+registros.
+
+**Conversar com eles.** O chat é de colega para colega, não de sistema: cada um cumprimenta do seu jeito, de
+acordo com a hora e com o que está fazendo ("Opa, boa tarde! Tô redistribuindo umas coisas, mas fala comigo"),
+varia as respostas, pode puxar assunto, comentar o dia, brincar de leve e falar do fim de semana a partir da sua
+história. Sobre trabalho, só usa os registros reais (nunca inventa candidatos nem números). Se perguntarem, diz
+com honestidade que é um agente de IA do escritório. A conversa leva as últimas 10 mensagens e o que o time
+conversou há pouco.
+
+**Momentos da equipe.** De tempos em tempos (`MOMENTOS_MINUTOS`), quem está livre — sem tarefa, sem fila e sem
+pendência — faz algo junto: uma partida de **pingue-pongue** (com placar, provocação e revanche), **café** na
+copa, papo no **bebedouro**, **videogame** a dois no sofá, **clube do livro**, **alongamento** em grupo, o
+**aniversário** de alguém na mesa de reunião (com bolo, velinhas e confete) e a **ronda do Atlas**, que passa nas
+mesas de quem está trabalhando. O servidor decide quem vai aonde, então todas as telas veem a mesma cena: cada um
+caminha até o lugar, as falas aparecem em ordem quando todos chegaram e o papo vai também para o canal da
+equipe (com 🏓, ☕, 🎂…). Com Gemini, a IA escreve o diálogo com a história e o jeito de cada um (até
+`MOMENTOS_IA_POR_DIA` vezes por dia, centavos); fora isso, roteiros com as frases de cada personalidade. Se
+chegar trabalho no meio, a pessoa larga a raquete e volta para a mesa.
 
 **Balões.** Nuvem = pensamento; balão = fala. Os de trabalho vêm de eventos reais: o que a leitura do currículo
 encontrou ("✔ Excel intermediário: está no currículo"), a dúvida levada ao colega, a resposta, as boas-vindas a
@@ -453,6 +483,13 @@ dúvida (termo técnico, certificação, perfil de outra área). Então:
 A conversa fica registrada na análise ("Conversa com colega") e no canal da equipe. Se não houver ninguém da
 área, o Atlas anota a necessidade e o ponto vai para "A verificar". Quem indicou não é consultado de volta
 sobre o mesmo candidato (evita pingue-pongue).
+
+**Segunda leitura.** Quando a análise fica em dúvida (compatibilidade média, avaliação humana ou requisito sem
+prova), o analista pode pedir a um colega — de preferência da mesma área e o menos ocupado — que releia o
+currículo com olhos frescos (`SEGUNDA_LEITURA`, com chance `SEGUNDA_LEITURA_CHANCE`). O colega procura o que
+passou batido: uma prova escrita de outro jeito ("controle de planilhas" para "Excel avançado") ou um alerta
+(a prova vem só de curso, não de experiência). O analista revisa a análise com esses achados, que aparecem na
+ficha do currículo em "Outro olhar do time" (✔ evidência, ⚠ alerta).
 
 **O Atlas contrata e dispensa.** A cada rodada de supervisão (`SUPERVISAO_SEGUNDOS`), ele:
 
@@ -511,6 +548,9 @@ Todas as variáveis estão comentadas em `backend/.env.example`. As principais:
 | `INTERVALO_CONTRATACAO` | `600` s (`30` na demo) | espera entre contratações da mesma área |
 | `DEMANDA_PARA_CONTRATAR` | `2` | pedidos de ajuda sem especialista (7 dias) que levam a contratar |
 | `COLABORACAO` | `true` | consultas entre colegas |
+| `SEGUNDA_LEITURA`, `SEGUNDA_LEITURA_CHANCE` | `true`, `0.4` (`0.6` na demo) | colega relê o currículo quando a análise fica em dúvida |
+| `MOMENTOS_MINUTOS` | `4` (`1.5` na demo) | intervalo médio entre os momentos da equipe (0 desliga) |
+| `MOMENTOS_IA_POR_DIA` | `30` | quantas vezes por dia a IA escreve o papo dos momentos |
 | `ENCAMINHAMENTO_AUTOMATICO` | `true` | Atlas encaminha currículos sem pasta |
 | `REPROCESSAR_APOS_MIN` | `10` | espera antes da nova tentativa automática |
 | `BOLETIM_MINUTOS` | `60` | boletim do Atlas (0 desliga) |

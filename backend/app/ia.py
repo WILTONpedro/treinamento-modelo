@@ -531,8 +531,11 @@ def _segunda_leitura_demo(colega, vaga, texto, preliminar, rotulo):
     """Relê com outro olhar: procura sinônimos para o que ficou 'a verificar' e checa se alguma prova é só curso."""
     linhas = _linhas(texto)
     achados, reforco = [], None
+    da_vaga = {_sem_acento(r).strip() for r in vaga.get("requisitos") or []}
     for item in preliminar.get("a_verificar", []):
         req = item.split(":")[0].strip()
+        if _sem_acento(req) not in da_vaga:  # só requisitos da vaga (não anotações como "ponto para alguém de...")
+            continue
         termos = [t for tk in _tokens(req) for t in [tk] + _SINONIMOS.get(tk, [])]
         linha = next((l for l in linhas[1:] if any(t in _sem_acento(l) for t in termos)), None)
         if linha:
@@ -808,10 +811,12 @@ def _persona(p: dict | None) -> str:
 COMO_CONVERSAR = """
 Como conversar:
 - Você é um colega de trabalho trocando mensagens, não um sistema. Escreva do seu jeito, natural, com variação: em
-  geral 1 a 3 frases; mais só se pedirem detalhes. Pode usar contrações do português falado se for o seu jeito.
+  geral 1 a 3 frases curtas, num parágrafo só; mais só se pedirem detalhes. Pode usar contrações do português falado
+  se for o seu jeito. Suas expressões: no máximo uma por mensagem, nem sempre, e nunca para abrir a mensagem.
 - Não comece toda mensagem do mesmo jeito, não repita a pergunta, não faça relatório nem liste tudo o que sabe.
   Números e nomes só quando ajudam. Sem markdown e sem marcadores.
-- Pode puxar assunto, devolver uma pergunta, comentar como está o seu dia (veja AGORA e CONVERSAS RECENTES), dar
+- Pode puxar assunto, comentar como está o seu dia (veja AGORA e CONVERSAS RECENTES), às vezes devolver uma pergunta
+  (não termine toda mensagem com pergunta; varie), dar
   opinião com cuidado, brincar de leve e citar colegas pelo nome. Papo informal (fim de semana, café, hobbies)
   pode, a partir da sua história.
 - Sobre trabalho, use SOMENTE os dados do CONTEXTO: nunca invente candidatos, números ou registros. Se não souber,
@@ -1023,6 +1028,23 @@ def conversa_equipe(ctx: dict, pergunta: str, historico: list[dict]) -> list[dic
                 saida.append({"agente_id": a["id"], "texto": str(f["texto"])[:600]})
         return saida or [{"agente_id": _atlas(equipe)["id"], "texto": "Não temos esse registro agora."}]
     return _equipe_demo(ctx, pergunta)
+
+
+def momento_conversa(situacao: str, pessoas: list[dict], fatos: dict) -> list[dict]:
+    """Papo de um momento de descanso (pingue-pongue, café...): [{agente, texto}], 3 a 6 falas curtas."""
+    sistema = (f"Você escreve um diálogo curto entre colegas da equipe de recrutamento {config.DA_EMPRESA} (agentes de IA "
+               "com personalidade própria) num momento de pausa no escritório. Escreva de 3 a 6 falas, alternando entre "
+               "as pessoas, como gente de verdade conversando: cada um do SEU jeito (veja PESSOAS: história, jeito de "
+               "escrever, gostos e manias), com piadas leves, provocações amigáveis e assuntos do dia a dia. "
+               "As falas acompanham a situação (ex.: placar no pingue-pongue, o café, a fase do jogo). Cada fala com até "
+               "20 palavras, sem markdown, sem aspas. O jeito de cada um aparece no vocabulário e no humor, não em "
+               "bordões. Não diga o horário exato. NÃO cite candidatos, "
+               "currículos específicos nem números de trabalho; vagas só de passagem, pelo título. Não comente "
+               "características protegidas. Use os nomes exatamente como em PESSOAS.")
+    r = _gemini_json("momentos", sistema, [f"SITUAÇÃO: {situacao}\nAGORA: {_js(fatos)}\nPESSOAS:\n{_js(pessoas)}"],
+                     ConversaSchema, temperatura=0.95, max_saida=700)
+    return [{"agente": str(f.get("agente", "")), "texto": str(f.get("texto", "")).strip()[:220]}
+            for f in r.get("falas", [])[:6] if f.get("texto")]
 
 
 def _atlas(equipe):

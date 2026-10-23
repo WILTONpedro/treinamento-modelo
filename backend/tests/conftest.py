@@ -15,6 +15,8 @@ os.environ.update({
     "SEGREDO_JWT": "segredo-de-teste-com-tamanho-suficiente", "SEGUNDOS_CONCLUIDO": "1",
     # cada teste liga a contratação automática quando precisa dela
     "CONTRATACAO_AUTOMATICA": "false", "SUPERVISAO_SEGUNDOS": "0.2", "BOLETIM_MINUTOS": "0",
+    "MOMENTOS_MINUTOS": "0",  # os testes de momentos chamam na hora certa
+    "SEGUNDA_LEITURA_CHANCE": "0",  # sem sorteio: o teste da segunda leitura liga quando precisa
 })
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

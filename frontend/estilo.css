@@ -109,6 +109,7 @@ select.sel,input.sel{border:1px solid var(--b);border-radius:8px;padding:5px 8px
 .cartao.perfil{background:linear-gradient(180deg,rgba(245,181,68,.08),rgba(245,181,68,.02));border-color:rgba(245,181,68,.3)}
 .colab{margin-top:4px;padding:5px 8px;background:rgba(160,123,224,.12);border-radius:8px;color:#D9C9FF}
 .cartao.colabc{background:rgba(160,123,224,.1);border-color:rgba(160,123,224,.35)}
+.achado{margin:5px 0 0;padding-left:2px}.achado.ok{color:#9BE3B4}.achado.alerta{color:#F5C77E}.achado span{color:#B9B3CC}
 .rostos{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}.rostos canvas{border-radius:50%;box-shadow:0 0 0 2px var(--sup);image-rendering:pixelated}
 .sugs{flex:none;padding:8px 12px 0;background:var(--sup);border-top:1px solid var(--b);max-height:76px;overflow:auto}
 .eq{display:flex;gap:8px;margin:10px 0;align-items:flex-start}
