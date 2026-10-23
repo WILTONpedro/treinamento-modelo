@@ -5,6 +5,8 @@
    é só ambientação, tirado da personalidade de cada agente. */
 'use strict';
 (function () {
+  // versão da tela que esta janela carregou (vem no endereço do app.js); ver conferirVersao
+  const VERSAO_PAGINA = (() => { try { return new URL(document.currentScript.src).searchParams.get('v') || ''; } catch (_) { return ''; } })();
   const $ = s => document.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const hora = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -114,7 +116,7 @@
     $('#usuario').innerHTML = `<span class="selo pausa oculto" id="selo-pausa" title="">IA pausada</span>
       <span class="selo ${demo ? 'demo' : 'ia'}" title="${demo ? 'Análises por regras locais, sem enviar dados a serviços externos' : 'Análises feitas pelo Gemini'}">${demo ? 'Modo demonstração' : 'IA: Gemini'}</span>
       <button class="icone" id="sino" title="Atividade recente" aria-label="Atividade recente">${ICONE.sino}<span class="cont oculto" id="sino-cont"></span></button>
-      <span class="quem">${esc(EU.nome)}<small>${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>` + (MARCA.local ? '' : `
+      <span class="quem" title="${MARCA.versao ? 'Versão ' + esc(MARCA.versao) + (MARCA.versao_data ? ' de ' + esc(MARCA.versao_data) : '') : ''}">${esc(EU.nome)}<small>${esc(PAPEIS[EU.papel] || EU.papel)}</small></span>` + (MARCA.local ? '' : `
       <button class="icone" id="trocar-senha" title="Trocar senha" aria-label="Trocar senha">${ICONE.chave}</button>
       <button class="icone" id="sair" title="Sair" aria-label="Sair">${ICONE.sair}</button>`);
     if (!MARCA.local) {  // no computador do recrutador (ACESSO=local) não há login, senha nem saída
@@ -153,8 +155,14 @@
   let carregando = null;
   async function carregar() {
     if (carregando) return carregando;
-    carregando = api('GET', '/api/escritorio').then(d => { D = d; sincronizar(); atividade(); atualizarSelos(); }).catch(() => {}).finally(() => (carregando = null));
+    carregando = api('GET', '/api/escritorio').then(d => { D = d; conferirVersao(d.versao); sincronizar(); atividade(); atualizarSelos(); }).catch(() => {}).finally(() => (carregando = null));
     return carregando;
+  }
+  // o programa foi atualizado com esta janela aberta: recarrega para mostrar a tela nova (uma vez por versão)
+  function conferirVersao(v) {
+    if (!v || !VERSAO_PAGINA || v === VERSAO_PAGINA) return;
+    try { if (sessionStorage.getItem('hub.recarregou') === v) return; sessionStorage.setItem('hub.recarregou', v); } catch (_) { /* sem armazenamento: recarrega mesmo assim */ }
+    location.reload();
   }
   let tRec = 0;
   const recarregarLogo = () => { clearTimeout(tRec); tRec = setTimeout(carregar, 250); };
@@ -1467,7 +1475,7 @@
     const abas = [['ia', 'IA e custos'], ...(EU.papel === 'admin' ? [['usuarios', 'Usuários'], ['lgpd', 'Privacidade (LGPD)']] : [])];
     if (!abas.some(([k]) => k === aba)) aba = 'ia';
     const m = $('#modal');
-    m.innerHTML = `<div class="caixa larga"><div class="linha"><h3 style="margin:0">Administração</h3><button class="x" data-fechar aria-label="Fechar">×</button></div>
+    m.innerHTML = `<div class="caixa larga"><div class="linha"><h3 style="margin:0">Administração ${MARCA.versao ? `<span class="mini" style="font-weight:600">· versão ${esc(MARCA.versao)}${MARCA.versao_data ? ' de ' + esc(MARCA.versao_data) : ''}</span>` : ''}</h3><button class="x" data-fechar aria-label="Fechar">×</button></div>
       <div class="tabs">${abas.map(([k, n]) => `<button data-aba="${k}" class="${k === aba ? 'on' : ''}">${n}</button>`).join('')}</div><div id="adm"></div></div>`;
     m.style.display = 'flex';
     m.querySelector('[data-fechar]').onclick = () => (m.style.display = 'none');

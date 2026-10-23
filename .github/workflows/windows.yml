@@ -91,6 +91,12 @@ jobs:
           Write-Host "Recrutador deste computador (sem login): $($eu.nome) <$($eu.email)>"
           $pagina = Invoke-WebRequest "http://127.0.0.1:8765/" -UseBasicParsing
           if ($pagina.StatusCode -ne 200) { throw "a página do escritório não abriu" }
+          # a tela instalada é a desta versão (e o navegador não reaproveita a de uma versão anterior)
+          $m = [regex]::Match($pagina.Content, 'app\.js\?v=([0-9a-f]+)')
+          if (-not $m.Success) { throw "a página não traz a versão nos arquivos" }
+          $js = Invoke-WebRequest "http://127.0.0.1:8765/app.js?v=$($m.Groups[1].Value)" -UseBasicParsing
+          if ($js.Content -notmatch 'abrirBanco') { throw "o programa instalado está com a tela antiga" }
+          if ($js.Headers['Cache-Control'] -ne 'no-cache') { throw "a tela pode ficar guardada no navegador" }
           curl.exe -s -f -H "X-Hub: 1" -F "arquivos=@backend/demo/02_joao_pereira.txt;type=text/plain" http://127.0.0.1:8765/api/curriculos
           if ($LASTEXITCODE -ne 0) { throw "o envio de currículo falhou" }
           Start-Sleep -Seconds 8

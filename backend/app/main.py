@@ -1,14 +1,15 @@
 """API do escritório de recrutamento multiagente."""
 import asyncio
+import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
@@ -27,6 +28,23 @@ from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferi
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hub")
 FRONT = (config.RECURSOS if config.CONGELADO else config.BASE.parent) / "frontend"
+ARQUIVOS_DA_TELA = ("index.html", "app.js", "cena.js", "estilo.css")
+
+
+def _versao_da_tela() -> tuple[str, str]:
+    """Impressão digital dos arquivos da tela: muda a cada atualização do programa. Vai no endereço de app.js,
+    cena.js e estilo.css (o navegador nunca usa os antigos guardados) e no /api/marca e /api/escritorio: uma
+    janela que ficou aberta durante a atualização percebe a diferença e se recarrega sozinha."""
+    h, quando = hashlib.sha1(), 0.0
+    for nome in ARQUIVOS_DA_TELA:
+        arq = FRONT / nome
+        if arq.exists():
+            h.update(arq.read_bytes())
+            quando = max(quando, arq.stat().st_mtime)
+    return h.hexdigest()[:10], (datetime.fromtimestamp(quando).strftime("%d/%m/%Y %H:%M") if quando else "")
+
+
+VERSAO, VERSAO_DATA = _versao_da_tela()
 
 
 # =========================================================================== trabalhador em segundo plano
@@ -222,6 +240,8 @@ async def cabecalhos_seguranca(request: Request, call_next):
                                 "img-src 'self' data: blob:; frame-src 'self'; object-src 'self'; base-uri 'none'")
     if request.url.path.startswith("/api/"):
         resp.headers.setdefault("Cache-Control", "no-store")
+    else:  # a tela: o navegador sempre confere com o programa antes de usar o que guardou
+        resp.headers.setdefault("Cache-Control", "no-cache")
     return resp
 
 
@@ -305,7 +325,7 @@ def saude(db: Session = Depends(obter_db)):
 def marca():
     """Identidade configurável (APP_NOME etc.) — pública, para a tela de login."""
     return {"nome": config.APP_NOME, "subtitulo": config.APP_SUBTITULO, "empresa": config.EMPRESA_NOME,
-            "local": config.LOCAL}
+            "local": config.LOCAL, "versao": VERSAO, "versao_data": VERSAO_DATA}
 
 
 # =========================================================================== entrada de currículos
@@ -360,7 +380,7 @@ async def enviar_curriculos(request: Request, arquivos: list[UploadFile] = File(
 # =========================================================================== escritório
 @app.get("/api/escritorio")
 def escritorio(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
-    return S.escritorio(db) | {"usuario": _usuario_json(u)}
+    return S.escritorio(db) | {"usuario": _usuario_json(u), "versao": VERSAO}
 
 
 @app.get("/api/eventos/stream")
@@ -894,5 +914,18 @@ def auditoria(limite: int = 200, u: Usuario = Depends(exigir("admin")), db: Sess
 
 
 # =========================================================================== front-end
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def pagina():
+    """A página com a versão nos endereços dos arquivos (e sem ficar guardada no navegador)."""
+    arq = FRONT / "index.html"
+    if not arq.exists():
+        raise HTTPException(404, "Tela não encontrada.")
+    html = arq.read_text(encoding="utf-8")
+    for nome in ARQUIVOS_DA_TELA[1:]:
+        html = html.replace(f'"{nome}"', f'"{nome}?v={VERSAO}"')
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+
+
 if FRONT.exists():
     app.mount("/", StaticFiles(directory=FRONT, html=True), name="front")
