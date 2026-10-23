@@ -40,6 +40,7 @@ jobs:
 
       - name: Instala sem perguntas e abre o escritório
         shell: pwsh
+        timeout-minutes: 10  # um aviso esperando clique num instalador silencioso trava para sempre
         run: |
           $cfg = Join-Path $env:RUNNER_TEMP "escritorio.env"
           # configuração de teste: banco local (SQLite) e IA de demonstração, nada sai da máquina

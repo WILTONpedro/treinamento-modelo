@@ -146,13 +146,13 @@ begin
     begin
       if not JaConfigurado then
       begin
-        MsgBox('Escolha o arquivo .escritorio: sem ele o escritório não sabe a qual empresa se ligar.', mbError, MB_OK);
+        SuppressibleMsgBox('Escolha o arquivo .escritorio: sem ele o escritório não sabe a qual empresa se ligar.', mbError, MB_OK, IDOK);
         Result := False;
       end;
     end
     else if not FileExists(PaginaConfig.Values[0]) then
     begin
-      MsgBox('Não encontrei esse arquivo. Confira o caminho.', mbError, MB_OK);
+      SuppressibleMsgBox('Não encontrei esse arquivo. Confira o caminho.', mbError, MB_OK, IDOK);
       Result := False;
     end;
     Ativado := False;
@@ -161,7 +161,7 @@ begin
   begin
     if Trim(PaginaCodigo.Values[0]) = '' then
     begin
-      MsgBox('Digite o código de ativação.', mbError, MB_OK);
+      SuppressibleMsgBox('Digite o código de ativação.', mbError, MB_OK, IDOK);
       Result := False;
       exit;
     end;
@@ -169,7 +169,7 @@ begin
     Ativado := Saida = 0;
     if not Ativado then
     begin
-      MsgBox(ErroDaAtivacao(Saida), mbError, MB_OK);
+      SuppressibleMsgBox(ErroDaAtivacao(Saida), mbError, MB_OK, IDOK);
       Result := False;
     end;
   end;
@@ -203,6 +203,6 @@ begin
     { a configuração legível escolhida agora passa a valer no lugar de uma lacrada antiga }
     DeleteFile(PastaConfig + '\escritorio.cfg');
     if not FileCopy(PaginaConfig.Values[0], ConfigDestino, False) then
-      MsgBox('Não consegui copiar a configuração para ' + ConfigDestino + '.', mbError, MB_OK);
+      SuppressibleMsgBox('Não consegui copiar a configuração para ' + ConfigDestino + '.', mbError, MB_OK, IDOK);
   end;
 end;
