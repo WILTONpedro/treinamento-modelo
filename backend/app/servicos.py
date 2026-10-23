@@ -613,6 +613,11 @@ def executar_analise(tarefa_id: int):
                 t.status, t.concluida_em = "concluida", agora()
                 _liberar(db, ag)
                 return
+        if config.COLABORACAO and config.SEGUNDA_LEITURA and _quer_segunda_leitura(resultado):
+            if _pedir_segunda_leitura(db, c, ag, resultado, modelo, inicio):
+                t.status, t.concluida_em = "concluida", agora()
+                _liberar(db, ag)
+                return
         _finalizar_analise(db, c, ag, resultado, modelo, inicio)
         t.status, t.concluida_em = "concluida", agora()
         _liberar(db, ag)
@@ -667,6 +672,38 @@ def _pedir_ajuda(db, c: Candidatura, ag: Agente, resultado: dict, modelo: str, i
     return True
 
 
+def _quer_segunda_leitura(r: dict) -> bool:
+    """Com dúvida na análise (média, avaliação humana ou requisito sem prova), às vezes vale um segundo olhar."""
+    duvida = r.get("avaliacao_humana") or r.get("compatibilidade") == "MEDIA" or (
+        r.get("a_verificar") and r.get("compatibilidade") != "BAIXA")
+    import random
+    return bool(duvida) and random.random() < config.SEGUNDA_LEITURA_CHANCE
+
+
+def _pedir_segunda_leitura(db, c: Candidatura, ag: Agente, resultado: dict, modelo: str, inicio: float) -> bool:
+    """O analista pede a um colega (de preferência da mesma área, o menos ocupado) que releia o currículo."""
+    colegas = [a for a in analistas_ativos(db) if a.id != ag.id]
+    if not colegas:
+        return False
+    mesma_area = [a for a in colegas if a.especialidade_id == ag.especialidade_id]
+    colega = min(mesma_area or colegas, key=lambda a: (carga(db, a), a.id))
+    pontos_lista = [x.split(":")[0].strip() for x in resultado.get("a_verificar", [])][:2] or ["a compatibilidade"]
+    pontos = " e ".join(f"“{_curto_txt(p)}”" for p in pontos_lista)
+    nome = rotulo(c)
+    db.add(Tarefa(tipo="CONSULTA", candidatura_id=c.id, agente_id=colega.id, motivo=f"segunda leitura: {pontos}"[:200],
+                  dados={"solicitante_id": ag.id, "pergunta": f"Segunda leitura do currículo: veja se passou batido algo em {pontos}.",
+                         "preliminar": resultado, "modelo": modelo, "inicio": inicio, "tipo": "segunda_leitura"}))
+    eventos.registrar(db, "consulta_pedida", f"{ag.nome} pediu uma segunda leitura a {colega.nome} (currículo de {nome}, “{c.vaga.titulo}”)",
+                      ag.id, destino_id=colega.id, candidatura_id=c.id, candidato_id=c.candidato_id, segunda_leitura=True)
+    _dizer(db, ag, falar(perfil(ag), "pedir_segunda", colega=colega.nome, pontos=pontos), para=colega, candidato_id=c.candidato_id)
+    return True
+
+
+def _curto_txt(s, n=40):
+    s = (s or "").strip()
+    return s if len(s) <= n else s[:n - 1].rstrip() + "…"
+
+
 def executar_consulta(tarefa_id: int):
     """O colega lê o currículo e responde. Depois o solicitante revisa a análise (tarefa REVISAO)."""
     with sessao() as db:
@@ -679,12 +716,14 @@ def executar_consulta(tarefa_id: int):
             t.status = "cancelada"
             return
         nome = rotulo(c)
-        _ocupar(colega, t, f"ajudando {sol.nome} com o currículo de {nome}")
+        segunda = d.get("tipo") == "segunda_leitura"
+        _ocupar(colega, t, f"{'relendo' if segunda else 'ajudando ' + sol.nome + ' com'} o currículo de {nome}"
+                           + (f" para {sol.nome}" if segunda else ""))
         args = (_agente_dict(db, colega), _agente_dict(db, sol), _vaga_dict(c.vaga), *_leitura(c.curriculo),
                 d.get("pergunta", ""), d.get("preliminar", {}), nome)
         colega_id, cand_id = colega.id, c.candidato_id
     try:
-        resp, _ = ia.consultar(*args, ao_pensar=lambda p: pensar(colega_id, p, candidato_id=cand_id))
+        resp, _ = ia.consultar(*args, ao_pensar=lambda p: pensar(colega_id, p, candidato_id=cand_id), segunda=segunda)
         falha = None
     except ia.IAIndisponivel:
         _devolver_a_fila(tarefa_id)
@@ -707,10 +746,17 @@ def executar_consulta(tarefa_id: int):
                     "pergunta": d.get("pergunta", ""), "resposta_ok": bool(resp),
                     "resposta": (resp or {}).get("resposta") or "não consegui ler o currículo agora.",
                     "evidencias": (resp or {}).get("evidencias", [])[:3], "parecer": (resp or {}).get("parecer", "neutro"),
-                    "reforca_requisito": (resp or {}).get("reforca_requisito", "")}
+                    "reforca_requisito": (resp or {}).get("reforca_requisito", ""),
+                    "tipo": d.get("tipo") or "consulta", "achados": (resp or {}).get("achados", [])}
         if resp:
-            eventos.registrar(db, "consulta_respondida", f"{colega.nome} ajudou {sol.nome} com o currículo de {nome}",
-                              colega.id, destino_id=sol.id, candidatura_id=c.id, candidato_id=c.candidato_id)
+            if consulta["tipo"] == "segunda_leitura":
+                n = len(consulta["achados"])
+                msg = (f"{colega.nome} fez a segunda leitura do currículo de {nome} para {sol.nome}: "
+                       + (f"viu {n} ponto(s) que tinham passado batido" if n else "concorda com a análise"))
+            else:
+                msg = f"{colega.nome} ajudou {sol.nome} com o currículo de {nome}"
+            eventos.registrar(db, "consulta_respondida", msg, colega.id, destino_id=sol.id, candidatura_id=c.id,
+                              candidato_id=c.candidato_id, segunda_leitura=consulta["tipo"] == "segunda_leitura")
             _dizer(db, colega, falar(perfil(colega), "ajudar", colega=sol.nome, resposta=maiuscula(consulta["resposta"])),
                    para=sol, candidato_id=c.candidato_id)
             _indicar(db, c, colega, sol, resp.get("indicar_vaga") or "")
@@ -1189,7 +1235,8 @@ def _analise_json(a: Analise, c: Candidatura) -> dict:
             "competencias": r.get("competencias", []), "atendidos": r.get("requisitos_atendidos", []),
             "a_verificar": r.get("a_verificar", []), "incompatibilidades": r.get("incompatibilidades", []),
             "justificativa": r.get("justificativa", ""),
-            "colaboracoes": [{k: x.get(k) for k in ("colega", "especialidade", "pergunta", "resposta", "evidencias", "parecer")}
+            "colaboracoes": [{k: x.get(k) for k in ("colega", "especialidade", "pergunta", "resposta", "evidencias", "parecer",
+                                                    "tipo", "achados")}
                              for x in r.get("colaboracoes", [])],
             "analisado_em": iso(a.criado_em), "modelo": a.modelo}
 

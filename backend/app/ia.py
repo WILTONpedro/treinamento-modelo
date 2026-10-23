@@ -66,12 +66,21 @@ class AnaliseSchema(BaseModel):
     ajuda_pergunta: str
 
 
+class Achado(BaseModel):
+    tipo: str  # evidencia (algo que passou batido e ajuda) | alerta (algo que passou batido e preocupa)
+    requisito: str
+    trecho: str
+    comentario: str
+
+
 class ConsultaSchema(BaseModel):
     resposta: str
     evidencias: list[str]
     parecer: str  # reforca | enfraquece | neutro
     indicar_vaga: str  # título exato de uma vaga sua que combina melhor, ou ""
     pensamentos: list[str]
+    achados: list[Achado]  # só na segunda leitura
+    reforca_requisito: str  # requisito "a verificar" que ficou comprovado, ou ""
 
 
 class SugestaoVagaSchema(BaseModel):
@@ -436,13 +445,16 @@ def _analisar_demo(agente, vaga, texto, especialidades, setor, colegas, evitar, 
 
 # =========================================================================== consulta entre colegas
 def consultar(colega: dict, solicitante: dict, vaga: dict, texto: str | None, arquivo, pergunta: str,
-              preliminar: dict, rotulo: str = "o candidato", ao_pensar: Pensar = None) -> tuple[dict, str]:
-    """O colega lê o currículo e responde à dúvida; pode indicar o candidato para uma vaga dele."""
+              preliminar: dict, rotulo: str = "o candidato", ao_pensar: Pensar = None,
+              segunda: bool = False) -> tuple[dict, str]:
+    """O colega lê o currículo e responde à dúvida; pode indicar o candidato para uma vaga dele.
+    segunda=True: segunda leitura — relê tudo procurando o que passou batido na análise do colega."""
     if config.IA_MODO == "gemini":
-        r = _consultar_gemini(colega, solicitante, vaga, texto, arquivo, pergunta, preliminar, rotulo)
+        r = (_segunda_leitura_gemini if segunda else _consultar_gemini)(
+            colega, solicitante, vaga, texto, arquivo, pergunta, preliminar, rotulo)
         _emitir(r.get("pensamentos"), ao_pensar)
         return r, config.GEMINI_MODELO_AGENTES
-    r = _consultar_demo(colega, vaga, texto, preliminar, rotulo)
+    r = (_segunda_leitura_demo if segunda else _consultar_demo)(colega, vaga, texto, preliminar, rotulo)
     _ritmo(r["pensamentos"], config.DEMO_DURACAO_ANALISE / 2, ao_pensar)
     return r, "demo-heuristica"
 
@@ -466,9 +478,85 @@ def _consultar_gemini(colega, solicitante, vaga, texto, arquivo, pergunta, preli
                  "ANÁLISE PRELIMINAR DO COLEGA:\n" + _js(_resumo_preliminar(preliminar)),
                  "SUAS VAGAS:\n" + _js(colega.get("vagas", []))] + _curriculo(texto, arquivo)
     r = _gemini_json("consulta", sistema, conteudos, ConsultaSchema, temperatura=0.3, max_saida=900)
+    return _normalizar_consulta(r, preliminar)
+
+
+def _normalizar_consulta(r: dict, preliminar: dict) -> dict:
     r["parecer"] = r.get("parecer") if r.get("parecer") in ("reforca", "enfraquece", "neutro") else "neutro"
     r["pensamentos"] = [str(p)[:120] for p in (r.get("pensamentos") or [])][:2]
+    r["achados"] = [{k: str(a.get(k) or "")[:240] for k in ("tipo", "requisito", "trecho", "comentario")}
+                    for a in (r.get("achados") or []) if a.get("tipo") in ("evidencia", "alerta")][:4]
+    pendentes = [x.split(":")[0].strip() for x in preliminar.get("a_verificar", [])]
+    if r.get("reforca_requisito") not in pendentes:  # só vale requisito que estava mesmo em aberto
+        r["reforca_requisito"] = ""
     return r
+
+
+def _segunda_leitura_gemini(colega, solicitante, vaga, texto, arquivo, pergunta, preliminar, rotulo):
+    sistema = (f'Você é {colega["nome"]}, da equipe de recrutamento {config.DA_EMPRESA} '
+               f'({colega.get("especialidade") or "recrutamento"}). {_voz(colega)}\n'
+               f'Seu colega {solicitante["nome"]} analisou o currículo de "{rotulo}" para a vaga "{vaga["titulo"]}" e '
+               "pediu uma SEGUNDA LEITURA. Leia o currículo inteiro com olhos frescos e procure o que passou batido na "
+               "análise dele:\n"
+               "1. evidência no currículo para algum item de \"a_verificar\" (o requisito que ele não achou) — conta só "
+               "experiência ou formação real, citada no texto;\n"
+               "2. alertas que ele não notou: datas que não fecham, experiência menor do que parece, requisito que ele deu "
+               "como atendido mas cuja evidência é fraca (curso, interesse, 'conhecimento básico').\n"
+               "Seja honesto: se a leitura dele está certa, diga que concorda e não invente achados.\n"
+               f"{REGRAS_ETICAS}{REGRAS_FALA}"
+               '- "resposta": até 3 frases dirigidas ao colega, no seu jeito de falar (o que você viu).\n'
+               '- "achados": até 3 itens {tipo: "evidencia" ou "alerta", requisito, trecho LITERAL e curto do currículo, '
+               'comentario curto}. Vazio se você concorda com tudo.\n'
+               '- "reforca_requisito": o requisito EXATO de "a_verificar" que ficou comprovado, ou "".\n'
+               '- "evidencias": os trechos literais dos achados. "parecer": "reforca", "enfraquece" ou "neutro".\n'
+               '- "indicar_vaga": "". "pensamentos": 1 ou 2 frases curtas sobre a sua leitura.')
+    conteudos = ["VAGA:\n" + _js(vaga), "ANÁLISE DO COLEGA:\n" + _js(_resumo_preliminar(preliminar))] + _curriculo(texto, arquivo)
+    r = _gemini_json("consulta", sistema, conteudos, ConsultaSchema, temperatura=0.3, max_saida=1100)
+    r["indicar_vaga"] = ""
+    return _normalizar_consulta(r, preliminar)
+
+
+# palavras que dizem a mesma coisa num currículo: a segunda leitura (demonstração) procura por elas
+_SINONIMOS = {
+    "excel": ["planilha", "planilhas", "pacote office", "office"], "atendimento": ["cliente", "clientes", "sac", "balcao"],
+    "ensino": ["medio completo", "segundo grau", "2o grau"], "cnh": ["habilitacao", "carteira de motorista"],
+    "empilhadeira": ["nr-11", "nr 11", "nr11"], "estoque": ["almoxarifado", "inventario", "armazem", "deposito"],
+    "vendas": ["vendedor", "vendedora", "metas", "comercial"], "informatica": ["computador", "windows", "office"],
+    "rotinas": ["arquivo", "documentos", "agenda"], "administrativas": ["administrativo", "escritorio", "secretaria"],
+    "logistica": ["expedicao", "conferente", "separacao", "entregas"], "producao": ["linha", "operador", "fabrica"],
+}
+
+
+def _segunda_leitura_demo(colega, vaga, texto, preliminar, rotulo):
+    """Relê com outro olhar: procura sinônimos para o que ficou 'a verificar' e checa se alguma prova é só curso."""
+    linhas = _linhas(texto)
+    achados, reforco = [], None
+    for item in preliminar.get("a_verificar", []):
+        req = item.split(":")[0].strip()
+        termos = [t for tk in _tokens(req) for t in [tk] + _SINONIMOS.get(tk, [])]
+        linha = next((l for l in linhas[1:] if any(t in _sem_acento(l) for t in termos)), None)
+        if linha:
+            achados.append({"tipo": "evidencia", "requisito": req, "trecho": _curto(linha, 140),
+                            "comentario": "dizia de outro jeito, mas está no currículo"})
+            reforco = reforco or req
+    for at in preliminar.get("requisitos_atendidos", []):
+        ev = _sem_acento(at.get("evidencia", ""))
+        if re.search(r"\b(curso|cursando|em andamento|basico|nocoes|estudante)\b", ev):
+            achados.append({"tipo": "alerta", "requisito": at.get("requisito", ""), "trecho": _curto(at.get("evidencia", ""), 140),
+                            "comentario": "a prova vem de curso ou conhecimento básico, não de experiência"})
+    achados = achados[:3]
+    nome = colega.get("nome", "")
+    if not achados:
+        resposta = "Li tudo de novo e concordo com a sua leitura. Não achei nada que tenha passado batido."
+    else:
+        partes = [f"Achei “{_curto(a['trecho'], 60)}” para {a['requisito']}" if a["tipo"] == "evidencia"
+                  else f"Atenção em {a['requisito']}: {a['comentario']}" for a in achados[:2]]
+        resposta = ". ".join(partes) + "."
+    return {"resposta": resposta, "evidencias": [a["trecho"] for a in achados if a["tipo"] == "evidencia"][:2],
+            "parecer": "reforca" if reforco else "enfraquece" if any(a["tipo"] == "alerta" for a in achados) else "neutro",
+            "indicar_vaga": "", "reforca_requisito": reforco or "", "achados": achados,
+            "pensamentos": [f"Segunda leitura do currículo de {rotulo}, com calma…",
+                            "Achei uma coisa!" if achados else f"{nome or 'Eu'} concordo, a leitura está certa."]}
 
 
 def _resumo_preliminar(p: dict) -> dict:
@@ -525,17 +613,23 @@ def revisar(agente: dict, vaga: dict, texto: str | None, arquivo, preliminar: di
 
 def _revisar_gemini(agente, vaga, texto, arquivo, preliminar, consulta, rotulo):
     # Economia: o currículo não é reenviado; a análise preliminar já traz as evidências e o colega traz as dele.
+    segunda = consulta.get("tipo") == "segunda_leitura"
     sistema = (f'Você é {agente["nome"]}, agente de IA de recrutamento {config.DA_EMPRESA}, especialista em '
                f'{agente.get("especialidade") or "recrutamento"}. {_voz(agente)}\n'
-               f'Você fez uma análise preliminar e consultou {consulta.get("colega")} ({consulta.get("especialidade")}). '
-               "Revise a análise considerando a contribuição do colega e devolva-a completa, no mesmo formato. "
+               + (f'Você fez uma análise preliminar e {consulta.get("colega")} fez uma SEGUNDA LEITURA do currículo. '
+                  "Considere os achados dele: evidência que passou batido pode comprovar um requisito; alerta pode tirar "
+                  "a recomendação ou virar ponto a verificar. "
+                  if segunda else
+                  f'Você fez uma análise preliminar e consultou {consulta.get("colega")} ({consulta.get("especialidade")}). ')
+               + "Revise a análise considerando a contribuição do colega e devolva-a completa, no mesmo formato. "
                "Só use como evidência trechos que já estão na sua análise ou na resposta do colega.\n"
                f"{REGRAS_ETICAS}"
                f'- "pensamentos": 1 ou 2 frases curtas sobre o que mudou (ou não) com a ajuda. Candidato = "{rotulo}".\n'
                '- "pedir_ajuda" deve ser false.')
     conteudos = ["VAGA:\n" + _js(vaga),
                  "SUA ANÁLISE PRELIMINAR:\n" + _js({k: v for k, v in preliminar.items() if k != "pensamentos"}),
-                 "CONSULTA AO COLEGA:\n" + _js({k: consulta.get(k) for k in ("pergunta", "resposta", "evidencias", "parecer")})]
+                 "CONSULTA AO COLEGA:\n" + _js({k: consulta.get(k) for k in ("tipo", "pergunta", "resposta", "evidencias",
+                                                                          "parecer", "achados")})]
     r = _normalizar_analise(_gemini_json("revisao", sistema, conteudos, AnaliseSchema, max_saida=2500))
     r["pedir_ajuda"] = False
     return r
@@ -545,6 +639,7 @@ def _revisar_demo(preliminar, consulta):
     r = json.loads(json.dumps(preliminar))  # cópia
     req = (consulta or {}).get("reforca_requisito")
     colega = (consulta or {}).get("colega", "o colega")
+    alertas = [a for a in (consulta or {}).get("achados", []) if a.get("tipo") == "alerta"]
     if req and consulta.get("evidencias"):
         r["a_verificar"] = [x for x in r.get("a_verificar", []) if x.split(":")[0].strip() != req]
         r["requisitos_atendidos"] = r.get("requisitos_atendidos", []) + [{"requisito": req, "evidencia": consulta["evidencias"][0]}]
@@ -556,6 +651,12 @@ def _revisar_demo(preliminar, consulta):
         r["pensamentos"] = [f"Com a dica de {colega}, “{_curto(req, 40)}” está comprovado."]
     else:
         r["pensamentos"] = [f"Conversei com {colega}; mantenho a minha leitura."]
+    for al in alertas:  # o que o colega viu e preocupa vai para "a verificar", e a recomendação não sai de graça
+        r.setdefault("a_verificar", []).append(f'{al["requisito"]}: {al["comentario"]} (segunda leitura de {colega})')
+        r["recomendado"], r["avaliacao_humana"] = False, True
+    if alertas:
+        r["justificativa"] = (r.get("justificativa", "") + f" Na segunda leitura, {colega} viu: {alertas[0]['comentario']}.").strip()
+        r["pensamentos"] = [f"{colega} viu um ponto que eu não tinha visto. Boa!"] + r.get("pensamentos", [])[:1]
     r["pedir_ajuda"] = False
     return r
 

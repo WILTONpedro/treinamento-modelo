@@ -188,6 +188,9 @@ INTERVALO_CONTRATACAO = _int("INTERVALO_CONTRATACAO", 30 if SEED_DEMO else 600)
 DEMANDA_PARA_CONTRATAR = _int("DEMANDA_PARA_CONTRATAR", 2)
 # Analistas consultam colegas de outra especialidade quando têm dúvida sobre o currículo
 COLABORACAO = _bool("COLABORACAO", True)
+# segunda leitura: quando a análise fica com dúvida, um colega relê o currículo procurando o que passou batido
+SEGUNDA_LEITURA = _bool("SEGUNDA_LEITURA", True)
+SEGUNDA_LEITURA_CHANCE = _float("SEGUNDA_LEITURA_CHANCE", 0.6 if SEED_DEMO else 0.4)
 # Currículos sem pasta (OUTROS): o Atlas lê e encaminha sozinho quando combinam com uma vaga aberta
 ENCAMINHAMENTO_AUTOMATICO = _bool("ENCAMINHAMENTO_AUTOMATICO", True)
 # Falhas de IA: o Atlas tenta de novo sozinho depois deste tempo (até 2 vezes) antes de depender do recrutador
