@@ -1,0 +1,92 @@
+# Gera o instalador do Escritório de Recrutamento para Windows e o testa num Windows de verdade:
+# testes do sistema, programa (PyInstaller), instalador (Inno Setup), instalação silenciosa e o escritório no ar.
+# O instalador fica em "Artifacts" na página da execução (Actions).
+name: Instalador Windows
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths: ["backend/**", "frontend/**", "windows/**", ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+jobs:
+  instalador:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependências
+        run: python -m pip install -r backend/requirements-dev.txt pyinstaller==6.11.1
+
+      - name: Testes do sistema (no Windows)
+        working-directory: backend
+        run: python -m pytest -q -p no:cacheprovider
+
+      - name: Programa (PyInstaller)
+        run: pyinstaller --noconfirm windows/escritorio.spec
+
+      - name: Instalador (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc windows\escritorio.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup falhou" }
+
+      - name: Instala sem perguntas e abre o escritório
+        shell: pwsh
+        run: |
+          $cfg = Join-Path $env:RUNNER_TEMP "escritorio.env"
+          # configuração de teste: banco local (SQLite) e IA de demonstração, nada sai da máquina
+          "# Configuração de teste`nACESSO=local`nAMBIENTE=desenvolvimento`nIA_MODO=demo`nDEMO_DURACAO_ANALISE=1`nPORTA_LOCAL=8765`nSEGREDO_JWT=segredo-do-teste-de-instalacao-com-tamanho" |
+            Set-Content -Path $cfg -Encoding utf8BOM
+          $p = Start-Process -Wait -PassThru -FilePath "dist-instalador\EscritorioRecrutamento-Setup.exe" `
+                 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CONFIG=`"$cfg`""
+          if ($p.ExitCode -ne 0) { throw "instalação falhou ($($p.ExitCode))" }
+          $exe = Join-Path $env:LOCALAPPDATA "Programs\EscritorioRecrutamento\EscritorioRecrutamento.exe"
+          if (-not (Test-Path $exe)) { throw "o programa não foi instalado" }
+          if (-not (Test-Path (Join-Path $env:APPDATA "EscritorioRecrutamento\escritorio.env"))) { throw "a configuração não foi copiada" }
+          foreach ($atalho in @("Desktop", "Startup")) {
+            $pasta = [Environment]::GetFolderPath($atalho)
+            if (-not (Get-ChildItem $pasta -Filter "Escrit*rio de Recrutamento*.lnk")) { throw "faltou o atalho em $atalho" }
+          }
+
+          Start-Process -FilePath $exe -ArgumentList "--sem-janela"
+          $ok = $false
+          foreach ($i in 1..90) {
+            try { $r = Invoke-WebRequest "http://127.0.0.1:8765/api/marca" -UseBasicParsing -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch { }
+            Start-Sleep -Seconds 1
+          }
+          $log = Join-Path $env:LOCALAPPDATA "EscritorioRecrutamento\dados\escritorio.log"
+          if (-not $ok) { if (Test-Path $log) { Get-Content $log -Tail 60 }; throw "o escritório não abriu" }
+
+          $eu = Invoke-RestMethod "http://127.0.0.1:8765/auth/eu"
+          Write-Host "Recrutador deste computador (sem login): $($eu.nome) <$($eu.email)>"
+          $pagina = Invoke-WebRequest "http://127.0.0.1:8765/" -UseBasicParsing
+          if ($pagina.StatusCode -ne 200) { throw "a página do escritório não abriu" }
+          curl.exe -s -f -H "X-Hub: 1" -F "arquivos=@backend/demo/02_joao_pereira.txt;type=text/plain" http://127.0.0.1:8765/api/curriculos
+          if ($LASTEXITCODE -ne 0) { throw "o envio de currículo falhou" }
+          Start-Sleep -Seconds 8
+          $quadro = (Invoke-RestMethod "http://127.0.0.1:8765/api/escritorio").quadro
+          Write-Host "Quadro: $($quadro | ConvertTo-Json -Compress)"
+          Stop-Process -Name EscritorioRecrutamento -Force
+          Get-Content $log -Tail 25
+          if (Select-String -Path $log -Pattern "Traceback" -Quiet) { throw "erro no registro do programa" }
+
+      - name: Desinstala
+        shell: pwsh
+        run: |
+          $u = Join-Path $env:LOCALAPPDATA "Programs\EscritorioRecrutamento\unins000.exe"
+          $p = Start-Process -Wait -PassThru -FilePath $u -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          if ($p.ExitCode -ne 0) { throw "desinstalação falhou" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EscritorioRecrutamento-Setup
+          path: dist-instalador/EscritorioRecrutamento-Setup.exe
+          retention-days: 30

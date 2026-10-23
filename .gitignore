@@ -8,3 +8,6 @@ __pycache__/
 .pytest_cache/
 backups/
 escritorio.env
+dist/
+build/
+dist-instalador/

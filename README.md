@@ -50,7 +50,8 @@ backend/
   tests/              testes ponta a ponta
 frontend/             escritório (HTML + JS puro, sem dependências): cena.js desenha a pixel art
 supabase/             preparo do projeto no Supabase (configurar.sql), reforço do banco (reforco.sql) e backup.sh
-windows/              instalador para os computadores do RH (instalar.bat)
+windows/              instalador .exe para vender (escritorio.spec + escritorio.iss) e instalação pelo código (instalar.bat)
+.github/workflows/    gera e testa o instalador num Windows de verdade (GitHub Actions)
 Dockerfile, docker-compose.yml, Caddyfile   produção: app + HTTPS automático (+ PostgreSQL local opcional)
 LGPD.md               como o sistema atende a LGPD e o que validar com o jurídico
 ```
@@ -200,6 +201,31 @@ precisam do mesmo arquivo.
 Para atualizar, troque a pasta pela versão nova e rode o instalador de novo; nada se perde.
 
 **Use o plano pago do Gemini** com candidatos reais (no gratuito o Google pode usar o conteúdo enviado).
+
+## Vender para empresas (instalador .exe)
+
+Para entregar **só o aplicativo**, sem pastas de código e sem Python na máquina do cliente, há um instalador
+único, `EscritorioRecrutamento-Setup.exe`, igual para todas as empresas. O que muda de uma empresa para outra é
+só o arquivo de configuração dela (`escritorio.env`), que liga o programa ao banco daquela empresa.
+
+- **Onde baixar:** no GitHub, aba *Actions* → *Instalador Windows* → execução mais recente → *Artifacts*. Cada
+  mudança no código gera um instalador novo, depois de rodar os testes e de instalar, abrir e desinstalar o
+  programa num Windows de verdade.
+- **Para cada empresa:** um banco próprio (projeto ou schema separado no Supabase) e um `escritorio.env` próprio,
+  gerado com `python -m app.preparar --local …`. Assim os candidatos de uma empresa nunca aparecem na outra.
+- **Na instalação:** o instalador pede o `escritorio.env` e o guarda em `%APPDATA%\EscritorioRecrutamento\`
+  (os dados locais ficam em `%LOCALAPPDATA%\EscritorioRecrutamento\`). Não pede administrador. Cria o atalho na
+  área de trabalho e liga junto com o Windows. Para a TI da empresa instalar sem perguntas:
+  `EscritorioRecrutamento-Setup.exe /VERYSILENT /CONFIG="C:\caminho\escritorio.env"`.
+- **Atualizar:** rodar o instalador novo; a configuração e os dados ficam. Para desinstalar, use *Configurações →
+  Aplicativos* do Windows.
+- **Controle:** o acesso de cada empresa é a senha do banco dela. Trocar essa senha no Supabase desliga o
+  escritório daquela empresa até ela receber uma configuração nova.
+- **O código** vai compilado dentro do programa, o que desestimula a cópia mas não a impede: a proteção de verdade
+  é o contrato de licença.
+
+Para gerar o instalador num Windows, sem o GitHub: `pip install -r backend/requirements.txt pyinstaller`,
+`pyinstaller windows/escritorio.spec` e `iscc windows/escritorio.iss` (Inno Setup 6).
 
 ## Colocar em produção (servidor com login)
 

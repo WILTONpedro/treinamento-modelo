@@ -80,7 +80,8 @@ def test_preparar_gera_env_com_segredos_fortes(tmp_path):
     assert env["DATABASE_URL"].startswith("postgresql+psycopg://hub:") and env["POSTGRES_PASSWORD"] in env["DATABASE_URL"]
     assert env["DOMINIO"] == "rh.exemplo.com.br" and env["EMPRESA_NOME"] == "Exemplo SA"
     assert env["COMPOSE_PROFILES"] == "banco-local"  # PostgreSQL próprio sobe junto
-    assert stat.S_IMODE(os.stat(destino).st_mode) == 0o600
+    if os.name != "nt":  # no Windows não há permissões Unix; lá a pasta do usuário já é só dele
+        assert stat.S_IMODE(os.stat(destino).st_mode) == 0o600
     assert preparar.main(["--arquivo", str(destino)]) == 1  # não sobrescreve
 
 
@@ -111,6 +112,17 @@ def test_preparar_para_os_computadores_do_rh(tmp_path, monkeypatch):
     assert config.problemas_producao() == []
     monkeypatch.setattr(config, "ARMAZENAMENTO", "disco")
     assert any("ARMAZENAMENTO" in p for p in config.problemas_producao())
+
+
+def test_configuracao_salva_pelo_bloco_de_notas(tmp_path, monkeypatch):
+    """O escritorio.env aberto e salvo no Bloco de Notas (com BOM ou na codificação antiga) continua valendo."""
+    for nome, bruto in {"bom": "\ufeffCHAVE_TESTE_BOM=sim\n# Configuração\n".encode("utf-8"),
+                        "ansi": "# Configuração da empresa\nCHAVE_TESTE_ANSI=sim\n".encode("cp1252")}.items():
+        arq = tmp_path / f"{nome}.env"
+        arq.write_bytes(bruto)
+        monkeypatch.setattr(config, "arquivo_de_configuracao", lambda a=arq: a)
+        config._carregar_env()
+    assert os.environ.pop("CHAVE_TESTE_BOM") == "sim" and os.environ.pop("CHAVE_TESTE_ANSI") == "sim"
 
 
 def test_arquivos_cifrados_no_banco(cli, monkeypatch):

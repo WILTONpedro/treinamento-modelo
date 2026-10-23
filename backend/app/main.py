@@ -26,7 +26,7 @@ from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferi
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hub")
-FRONT = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONT = (config.RECURSOS if config.CONGELADO else config.BASE.parent) / "frontend"
 
 
 # =========================================================================== trabalhador em segundo plano
@@ -96,7 +96,7 @@ async def comandar(vez: Lideranca):
 def _lotes_demo() -> list[list[Path]]:
     """Currículos fictícios em ordem; arquivos com "_lote_" chegam juntos (como um lote de e-mails)."""
     lotes: list[list[Path]] = []
-    for arq in sorted((Path(__file__).resolve().parent.parent / "demo").glob("*.txt")):
+    for arq in sorted((config.RECURSOS / "demo").glob("*.txt")):
         if "_lote_" in arq.name and lotes and "_lote_" in lotes[-1][0].name:
             lotes[-1].append(arq)
         else:

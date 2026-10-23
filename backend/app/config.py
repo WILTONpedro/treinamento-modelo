@@ -5,18 +5,35 @@ Nada sensível fica no código: chaves, senhas e segredos vêm do ambiente.
 import os
 import secrets
 import logging
+import sys
 from pathlib import Path
 
 log = logging.getLogger("hub.config")
 
 BASE = Path(__file__).resolve().parent.parent
+# Programa instalado (.exe gerado pelo PyInstaller): não há pasta do projeto. A configuração da empresa fica em
+# %APPDATA%\EscritorioRecrutamento\escritorio.env (o instalador põe lá) e os dados em %LOCALAPPDATA%.
+CONGELADO = bool(getattr(sys, "frozen", False))
+RECURSOS = Path(getattr(sys, "_MEIPASS", BASE))  # frontend/ e demo/ empacotados junto do programa
+PASTA_CONFIG = Path(os.environ.get("APPDATA") or Path.home()) / "EscritorioRecrutamento"
+
+
+def arquivo_de_configuracao() -> Path | None:
+    opcoes = ([PASTA_CONFIG / "escritorio.env", Path(sys.executable).resolve().parent / "escritorio.env"]
+              if CONGELADO else [BASE / ".env"])
+    return next((a for a in opcoes if a.exists()), None)
 
 
 def _carregar_env():
-    arq = BASE / ".env"
-    if not arq.exists():
+    arq = arquivo_de_configuracao()
+    if not arq:
         return
-    for linha in arq.read_text(encoding="utf-8").splitlines():
+    bruto = arq.read_bytes()
+    try:  # utf-8-sig: o Bloco de Notas do Windows pode gravar com BOM; senão, a codificação antiga do Windows
+        texto = bruto.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        texto = bruto.decode("cp1252", errors="replace")
+    for linha in texto.splitlines():
         linha = linha.strip()
         if not linha or linha.startswith("#") or "=" not in linha:
             continue
@@ -46,7 +63,9 @@ def _int(nome, padrao):
         return padrao
 
 
-PASTA_DADOS = Path(os.environ.get("PASTA_DADOS", BASE / "data"))
+_DADOS_PADRAO = (Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "EscritorioRecrutamento" / "dados"
+                 if CONGELADO else BASE / "data")
+PASTA_DADOS = Path(os.environ.get("PASTA_DADOS", _DADOS_PADRAO))
 PASTA_DADOS.mkdir(parents=True, exist_ok=True)
 PASTA_ARQUIVOS = PASTA_DADOS / "arquivos"
 PASTA_ARQUIVOS.mkdir(parents=True, exist_ok=True)
