@@ -825,21 +825,26 @@
   const SAPATOS = ['#2B2B2B', '#EDEDED', '#5A3E2B', '#30405F'];
   const SW = 24, SH = 40, PX = 12, PY = 38;
   const SPRITES = new Map();
-  function sprite(ap, vista, pose, quadro, humor, objeto) {
-    const chave = [ap.pele, ap.cabelo, ap.estilo, ap.camisa, ap.oculos, ap.barba, ap.calca, ap.sapato, vista, pose, quadro, humor, objeto].join('|');
+  // o: { vista: 'frente'|'costas', pose: 'pe'|'anda'|'senta', acao, quadro, humor, objeto, olhos, boca, resp }
+  // acao: digita | acena | pensa | gesto | gole | mordida | folheia | controle | raquetada | espreguica
+  function sprite(ap, o) {
+    const chave = [ap.pele, ap.cabelo, ap.estilo, ap.camisa, ap.oculos, ap.barba, ap.calca, ap.sapato, o.vista, o.pose,
+      o.acao || '', o.quadro || 0, o.humor || '', o.objeto || '', o.olhos || '', o.boca || 0, o.resp || 0].join('|');
     let s = SPRITES.get(chave);
-    if (!s) { s = gerarSprite(ap, vista, pose, quadro, humor, objeto); SPRITES.set(chave, s); }
+    if (!s) { s = gerarSprite(ap, o); SPRITES.set(chave, s); }
     return s;
   }
-  function gerarSprite(ap, vista, pose, quadro, humor, objeto) {
+  function gerarSprite(ap, o) {
+    const { vista, pose, acao = '', quadro = 0, humor, objeto, olhos, boca, resp } = o;
     const buf = new Uint32Array(SW * SH);
     alvo(buf, SW, SH);
     const pele = ap.pele || '#EEC49C', cab = ap.cabelo || '#3B2618', est = ap.estilo || 'curto', cam = ap.camisa || '#3B6EC8';
     const calca = ap.calca || escolha((ap.cabelo || '') + cam, CALCAS), sap = ap.sapato || escolha(cam + pele, SAPATOS);
     const peleS = tom(pele, 0.84), cabS = tom(cab, 0.72), cabC = tom(cab, 1.4), camS = tom(cam, 0.76), camC = tom(cam, 1.16), calcaS = tom(calca, 0.74);
     const r = (x, y, w, h, cor) => ret(x, y, w, h, cor), p = (x, y, cor) => ponto(x, y, cor);
-    const frente = vista === 'frente', sentado = pose === 'senta' || pose === 'digita', anda = pose === 'anda';
+    const frente = vista === 'frente', sentado = pose === 'senta', anda = pose === 'anda';
     const bob = anda && (quadro === 1 || quadro === 3) ? -1 : 0;
+    const sobe = resp && !anda ? -1 : 0; // respiração: ombros e cabeça sobem 1 px; as pernas ficam
 
     // pernas e sapatos
     if (!sentado) {
@@ -852,33 +857,80 @@
       r(9, 29, 9, 3, calcaS); r(15, 31, 3, 5, calcaS); r(15, 36, 5, 2, sap);
       r(8, 30, 9, 3, calca); r(13, 32, 3, 5, calca); r(13, 37, 5, 1, sap);
     }
-    // tronco
-    const t0 = 19 + bob;
-    r(8, t0, 8, 1, cam); r(7, t0 + 1, 10, 10, cam);
-    r(15, t0 + 1, 2, 10, camS); r(7, t0 + 1, 1, 9, camC); r(7, t0 + 10, 10, 1, camS);
-    r(7, t0 + 10, 10, 1, tom(calca, 0.6)); // cinto
+    // tronco (a cintura fica no lugar; com a respiração o peito sobe)
+    const t0 = 19 + bob + sobe, cint = 29 + bob, alt = cint - t0;
+    r(8, t0, 8, 1, cam); r(7, t0 + 1, 10, alt, cam);
+    r(15, t0 + 1, 2, alt, camS); r(7, t0 + 1, 1, alt - 1, camC); r(7, cint, 10, 1, camS);
+    r(7, cint, 10, 1, tom(calca, 0.6)); // cinto
     if (frente) { r(11, t0, 2, 2, peleS); p(11, t0 + 2, peleS); } else r(10, t0, 4, 1, camS);
-    // braços
-    const digita = pose === 'digita', sobe = digita ? (quadro % 2) : 0;
-    if (digita && frente) { // antebraços sobre a mesa, para a frente
-      r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS);
-      r(14, t0 + 6 - sobe, 6, 2, cam); r(20, t0 + 6 - sobe, 2, 2, pele);
-      r(10, t0 + 7 + sobe - 1, 6, 2, camS); r(16, t0 + 6 + sobe, 2, 2, peleS);
-    } else if (objeto === 'xicara' && sentado && frente) {
+    const c0 = 6 + bob + sobe; // topo da cabeça
+
+    // braços: A = o da esquerda da tela (iluminado), B = o da direita (na sombra)
+    const bracoA = (dy = 0) => { r(5, t0 + 1 + dy, 2, 5, cam); r(5, t0 + 6 + dy, 2, 3, pele); };
+    const bracoB = (dy = 0) => { r(17, t0 + 1 + dy, 2, 5, camS); r(17, t0 + 6 + dy, 2, 3, peleS); };
+    const levaBoca = (desenhaObjeto) => { // braço B dobrado, mão (e o que segura) na boca
       r(5, t0 + 1, 2, 7, cam); r(5, t0 + 8, 2, 2, pele);
-      r(17, t0 + 1, 2, 3, camS); r(14, t0 + 4, 4, 2, camS); r(14, t0 + 6, 2, 2, peleS);
-      r(14, t0 + 2, 3, 3, '#FFFFFF'); r(14, t0 + 2, 3, 1, '#6B4128'); p(17, t0 + 3, '#D6D0C4');
-    } else if (objeto === 'livro' && sentado && frente) {
+      r(17, t0 + 1, 2, 3, camS); r(15, t0 - 1, 3, 3, camS); r(14, t0 - 3, 2, 2, peleS);
+      desenhaObjeto(13, c0 + 8);
+    };
+    const xicara = (x, y) => { r(x, y, 3, 3, '#FFFFFF'); r(x, y, 3, 1, '#6B4128'); p(x + 3, y + 1, '#D6D0C4'); };
+    const sanduiche = (x, y) => { r(x, y, 4, 1, '#E0B26A'); r(x, y + 1, 4, 1, '#5DBA5F'); r(x, y + 2, 4, 1, '#C0504D'); r(x, y + 3, 4, 1, '#D49A55'); };
+    const naFrente = frente && sentado;
+    if (acao === 'acena') { // um braço para cima, a mão balançando
+      bracoA();
+      r(17, t0 - 4, 2, 6, camS); r(17 + (quadro % 2), t0 - 7, 3, 3, peleS);
+    } else if (acao === 'espreguica') {
+      r(5, t0 - 6, 2, 7, cam); r(17, t0 - 6, 2, 7, camS); r(5, t0 - 8, 2, 2, pele); r(17, t0 - 8, 2, 2, peleS);
+    } else if (acao === 'pensa' && frente) { // mão no queixo
+      bracoB();
+      r(5, t0 + 1, 2, 4, cam); p(6, t0 + 5, cam); r(7, t0 + 3, 2, 2, cam); r(9, t0 + 1, 2, 2, cam); r(10, t0 - 1, 2, 2, cam);
+      r(11, t0 - 2, 3, 2, pele);
+    } else if (acao === 'gesto' && frente && !objeto) { // fala gesticulando
+      bracoA();
+      r(17, t0 + 1, 2, 3, camS); r(18, t0 + 3 - (quadro % 2), 3, 2, camS); r(21, t0 + 2 - (quadro % 2), 2, 2, peleS);
+    } else if (acao === 'digita' && frente) { // antebraços sobre a mesa, para a frente; as mãos alternam
+      const sa = quadro % 2, sb = (quadro + 1) % 2;
+      r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS);
+      r(14, t0 + 6 - sa, 6, 2, cam); r(20, t0 + 6 - sa, 2, 2, pele);
+      r(10, t0 + 6 + sb, 6, 2, camS); r(16, t0 + 6 + sb, 2, 2, peleS);
+    } else if (objeto === 'xicara' && naFrente) {
+      if (acao === 'gole') levaBoca(xicara);
+      else { r(5, t0 + 1, 2, 7, cam); r(5, t0 + 8, 2, 2, pele); r(17, t0 + 1, 2, 3, camS); r(14, t0 + 4, 4, 2, camS); r(14, t0 + 6, 2, 2, peleS); xicara(14, t0 + 2); }
+    } else if (objeto === 'lanche' && naFrente) {
+      if (acao === 'mordida') levaBoca((x, y) => sanduiche(x - 1, y));
+      else { r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS); r(9, t0 + 5, 3, 2, cam); r(14, t0 + 5, 3, 2, camS); sanduiche(11, t0 + 4); p(10, t0 + 6, pele); p(15, t0 + 6, peleS); }
+    } else if (objeto === 'livro' && naFrente) {
       r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS);
       r(9, t0 + 4, 8, 5, '#3E5C9A'); r(10, t0 + 4, 3, 4, '#FFFFFF'); r(13, t0 + 4, 3, 4, '#F1EEE6'); p(9, t0 + 9, pele); p(16, t0 + 9, peleS);
+      for (let k = 0; k < 3; k++) { p(10 + (k % 2), t0 + 5 + k, '#B8B2A4'); p(14, t0 + 5 + k, '#B8B2A4'); }
+      if (acao === 'folheia') { r(13, t0 + 1, 3, 3, '#FFFFFF'); p(13, t0 + 1, '#D6D0C4'); p(16, t0 + 2, '#D6D0C4'); }
+    } else if (objeto === 'controle' && frente) { // as duas mãos no controle; os botões piscam com os dedos
+      r(5, t0 + 1, 2, 4, cam); r(6, t0 + 5, 4, 2, cam); r(17, t0 + 1, 2, 4, camS); r(14, t0 + 5, 4, 2, camS);
+      r(9, t0 + 5, 7, 3, '#2B2F3D'); p(9, t0 + 5, pele); p(15, t0 + 5, peleS);
+      p(10, t0 + 6, quadro % 2 ? '#E5534B' : '#6C7480'); p(13, t0 + 6, quadro % 4 < 2 ? '#3FB56B' : '#6C7480'); p(14, t0 + 7, quadro % 3 ? '#4C8FD6' : '#6C7480');
+    } else if (objeto === 'celular' && frente) {
+      r(5, t0 + 1, 2, 4, cam); r(6, t0 + 5, 5, 2, cam); r(17, t0 + 1, 2, 3, camS); r(13, t0 + 4, 5, 2, camS);
+      r(11, t0 + 3, 3, 5, '#1E2026'); r(12, t0 + 4, 1, 3, quadro % 2 ? '#7EC3EB' : '#A9DAF5'); p(11, t0 + 6, pele); p(13, t0 + 3, peleS);
+    } else if (objeto === 'copo' && !anda) {
+      bracoA(); r(17, t0 + 1, 2, 3, camS); r(16, t0 + 3, 3, 2, camS);
+      r(acao === 'gole' ? 14 : 15, acao === 'gole' ? c0 + 9 : t0 + 1, 2, 3, '#BEE3F8'); p(acao === 'gole' ? 15 : 16, acao === 'gole' ? c0 + 9 : t0 + 1, '#7EC3EB');
+    } else if (objeto === 'pasta' && !anda && frente) { // segura uma pasta do arquivo junto ao peito
+      r(5, t0 + 1, 2, 4, cam); r(17, t0 + 1, 2, 4, camS); r(9, t0 + 4, 3, 2, cam); r(14, t0 + 4, 3, 2, camS);
+      r(10, t0 + 2, 6, 6, '#F5B544'); r(10, t0 + 2, 6, 1, '#C98A2A'); r(11, t0 + 3, 4, 1, '#FFF3D6');
     } else {
       const bal = anda ? (quadro === 1 ? 1 : quadro === 3 ? -1 : 0) : 0;
       r(5, t0 + 1 + bal, 2, 5, cam); r(5, t0 + 6 + bal, 2, 3, pele);
-      r(17, t0 + 1 - bal, 2, 5, camS); r(17, t0 + 6 - bal, 2, 3, peleS);
-      if (objeto === 'raquete' && frente) { r(18, t0 + 4, 4, 5, '#D64545'); r(19, t0 + 5, 2, 3, '#E86A5C'); r(19, t0 + 9, 2, 2, '#7A4A2A'); }
+      if (objeto === 'raquete') {
+        if (acao === 'raquetada') { // raquete para a frente e para cima, na hora da batida
+          r(17, t0 + 1, 2, 3, camS); r(18, t0 + 2, 2, 2, peleS);
+          r(19, t0 - 4, 4, 5, '#D64545'); r(20, t0 - 3, 2, 3, '#E86A5C'); r(19, t0 + 1, 2, 2, '#7A4A2A');
+        } else {
+          r(17, t0 + 1 - bal, 2, 5, camS); r(17, t0 + 6 - bal, 2, 3, peleS);
+          r(18, t0 + 4, 4, 5, '#D64545'); r(19, t0 + 5, 2, 3, '#E86A5C'); r(19, t0 + 9, 2, 2, '#7A4A2A');
+        }
+      } else { r(17, t0 + 1 - bal, 2, 5, camS); r(17, t0 + 6 - bal, 2, 3, peleS); }
     }
     // cabeça
-    const c0 = 6 + bob;
     const cabeca = (cor) => { r(8, c0, 8, 1, cor); r(7, c0 + 1, 10, 1, cor); r(6, c0 + 2, 12, 9, cor); r(7, c0 + 11, 10, 1, cor); };
     if (est === 'longo') { r(5, c0 + 3, 4, 13, cabS); if (!frente) r(15, c0 + 3, 4, 13, cabS); } // cabelo comprido atrás
     if (est === 'black') { disco(12, c0 + 5, 8.5, 7.5, cab); }
@@ -888,15 +940,17 @@
       // orelha à esquerda; olhos e boca deslocados para a direita (rosto em 3/4)
       r(8, c0 + 5, 2, 3, peleS); p(8, c0 + 6, tom(pele, 0.7));
       const olho = '#231A16', ey = c0 + 6;
-      if (humor === 'calmo') { r(11, ey + 1, 2, 1, olho); r(14, ey + 1, 2, 1, olho); }
-      else { r(12, ey, 1, 2, olho); r(15, ey, 1, 2, olho); }
+      if (olhos === 'fechado' || humor === 'calmo' || humor === 'sono') { r(11, ey + 1, 2, 1, olho); r(14, ey + 1, 2, 1, olho); }
+      else { r(12, ey, 1, 2, olho); r(15, ey, 1, 2, olho); p(12, ey, '#4A3A32'); }
       if (ap.oculos) { const k = '#1E1E26'; r(11, ey - 1, 3, 1, k); r(14, ey - 1, 3, 1, k); r(11, ey + 2, 3, 1, k); r(14, ey + 2, 3, 1, k); p(11, ey, k); p(11, ey + 1, k); p(17, ey, k); p(17, ey + 1, k); p(13, ey, k); }
       const by = c0 + 9, bc = '#7A3B2E';
-      if (humor === 'preocupado') { p(12, by + 1, bc); r(13, by, 2, 1, bc); p(15, by + 1, bc); }
-      else if (humor === 'focado') r(13, by, 2, 1, bc);
+      if (boca) { r(13, by - 1, 2, 2, '#5A2320'); p(13, by, '#C25B4E'); } // falando
+      else if (humor === 'preocupado') { p(12, by + 1, bc); r(13, by, 2, 1, bc); p(15, by + 1, bc); }
+      else if (humor === 'focado' || humor === 'sono') r(13, by, 2, 1, bc);
+      else if (humor === 'risada') { r(12, by - 1, 4, 2, '#5A2320'); r(12, by - 1, 4, 1, '#FFFFFF'); }
       else { p(12, by - 1, bc); r(13, by, 2, 1, bc); p(15, by - 1, bc); }
       if (humor === 'preocupado') { r(11, ey - 2, 2, 1, cabS); r(15, ey - 2, 2, 1, cabS); }
-      if (ap.barba) { r(9, c0 + 8, 9, 3, cabS); r(10, c0 + 11, 7, 1, cabS); r(13, by, 2, 1, tom(pele, 0.7)); }
+      if (ap.barba) { r(9, c0 + 8, 9, 3, cabS); r(10, c0 + 11, 7, 1, cabS); r(13, by, 2, 1, boca ? '#5A2320' : tom(pele, 0.7)); }
     } else {
       r(10, c0 + 10, 5, 2, peleS); // nuca
     }
@@ -926,6 +980,11 @@
       }
     } else if (!frente) { r(9, c0 + 1, 3, 1, tom(pele, 1.1)); }
     else { r(9, c0 + 1, 3, 1, tom(pele, 1.12)); }
+    if (objeto === 'fone') { // fone de ouvido: arco por cima e conchas nas orelhas
+      r(7, c0 - 1 - (est === 'black' || est === 'topete' ? 2 : 0), 10, 1, '#30343F');
+      r(6, c0 + 1, 1, 4, '#30343F'); r(17, c0 + 1, 1, 4, '#30343F');
+      r(5, c0 + 4, 3, 4, '#E5534B'); r(16, c0 + 4, 3, 4, '#E5534B'); p(5, c0 + 4, '#FF8A80');
+    }
 
     // contorno escuro em volta da silhueta
     const fora = new Uint8Array(SW * SH);
@@ -935,7 +994,7 @@
     }
     const k = pk(CONTORNO);
     for (let i = 0; i < fora.length; i++) if (fora[i]) buf[i] = k;
-    return { buf, w: SW, h: SH };
+    return { buf, w: SW, h: SH, t0 };
   }
 
   // ------------------------------------------------------------------ quadro final
@@ -997,14 +1056,16 @@
       desenharBase(d);
       construirSprites();
     },
-    // pessoas: [{ id, x, y, ap, dir, pose, quadro, humor, item, destaque }]; extra: { bolinha: [x, y, z] | null }
+    // pessoas: [{ id, x, y, ap, dir, pose, acao, quadro, humor, item, olhos, boca, resp, vapor, destaque }]
+    // extra: { t: segundos, bolinha: [x, y, z] | null }
     desenhar(ctx, pessoas, extra = {}) {
       if (!frame) return [];
       VIVO.t = extra.t || 0;
       frame.set(base);
       const dyn = pessoas.map(p => {
         const espelho = p.dir === 's' || p.dir === 'w', vista = p.dir === 's' || p.dir === 'e' ? 'frente' : 'costas';
-        const spr = sprite(p.ap || {}, vista, p.pose, p.quadro, p.humor, p.item);
+        const spr = sprite(p.ap || {}, { vista, pose: p.pose, acao: p.acao, quadro: p.quadro, humor: p.humor, objeto: p.item,
+          olhos: p.olhos, boca: p.boca, resp: p.resp });
         const [ax, ay] = Pa(p.x, p.y), ox = Math.round(ax) - (espelho ? SW - 1 - PX : PX), oy = Math.round(ay) - PY;
         return { p, spr, espelho, ox, oy, box: [p.x - 0.12, p.y - 0.12, p.x + 0.12, p.y + 0.12], z0: 0, z1: 1.7, tela: [ox, oy, ox + SW - 1, oy + SH - 1], prof: p.x + p.y };
       });
@@ -1040,6 +1101,13 @@
         marcaChao(p.x, p.y, '#000000', 0.22);
         if (p.destaque) { marcaChao(p.x, p.y, '#F5B544', 0.55, 11, 5.5); marcaChao(p.x, p.y, '#000000', 0.12, 8, 4); }
         colar(e.spr, e.ox, e.oy, e.espelho);
+        if (p.vapor) { // vapor subindo da xícara
+          alvo(frame, AW, AH);
+          for (let k = 0; k < 3; k++) {
+            const f = (VIVO.t * 0.9 + k / 3 + p.id * 0.37) % 1, sx = 15 + Math.round(Math.sin(f * 6 + k)), sy = e.spr.t0 + 1 - Math.round(f * 7);
+            ponto(e.ox + (e.espelho ? SW - 1 - sx : sx), e.oy + sy, '#FFFFFF', 0.55 * (1 - f));
+          }
+        }
       };
       for (let i = 0; i <= n; i++) {
         for (const e of porPos.get(i) || []) desenhaDyn(e);
@@ -1058,6 +1126,7 @@
       });
     },
     alvos: () => alvosTela,
+    amostra: (ap, o) => sprite(ap || {}, o), // apoio a testes automatizados: um quadro de personagem
     dentro(pt, pts) {
       let ok = false;
       for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
@@ -1067,8 +1136,8 @@
       return ok;
     },
     // retrato em pixel art para os painéis: cabeça e ombros, de frente, ampliados sem suavização
-    retrato(k, tam, ap, fundo = '#2A2540') {
-      const s = sprite(ap || {}, 'frente', 'pe', 0, 'feliz', null), c = document.createElement('canvas');
+    retrato(k, tam, ap, fundo = '#2A2540', o = {}) { // o: { humor, olhos, boca } (o rosto do chat pisca e fala)
+      const s = sprite(ap || {}, { vista: 'frente', pose: 'pe', humor: o.humor || 'feliz', olhos: o.olhos, boca: o.boca }), c = document.createElement('canvas');
       c.width = SW; c.height = SH;
       const ic = c.getContext('2d'), id = ic.createImageData(SW, SH);
       new Uint32Array(id.data.buffer).set(s.buf); ic.putImageData(id, 0, 0);

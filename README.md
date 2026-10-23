@@ -381,17 +381,48 @@ nítidas como num jogo. Planta aberta com: **recepção** (Bia, balcão com a ba
 entrada), **sala de vidro do gerente** (Atlas, mesa executiva, quadro de cortiça com as pendências), **quadro de
 vagas** na parede (um cartão por vaga, com a barra de progresso das análises), **três ilhas de trabalho** com 12
 estações (monitores de tubo que acendem quando há trabalho, luminárias), **copa** (balcão, cafeteira, geladeira,
-mesas), **canto de leitura**, **mesa de reunião** e **área de descanso** (sofá com TV, pingue-pongue, pufes).
-Janelas com feixes de sol, relógio com a hora real e plantas.
+mesas, bebedouro), **canto de leitura**, **mesa de reunião**, **área de descanso** (sofá com TV e videogame,
+pingue-pongue, pufes) e o **arquivo de currículos** (estante e gaveteiros com fichários coloridos por área e o
+balcão com as pastas, ao lado da janela do fundo). Janelas com feixes de sol, relógio com a hora real e plantas.
 
-Os personagens têm corpo inteiro com contorno, viram para os quatro lados, andam pelos corredores desviando dos
-móveis (rotas calculadas numa grade), sentam, digitam e seguram café, livro ou raquete. Quem passa atrás de uma
-mesa, do sofá ou do vidro da sala do gerente aparece atrás deles. Nada de texto pintado no cenário: o nome do
+Os personagens têm corpo inteiro com contorno, viram para os quatro lados e andam pelos corredores desviando dos
+móveis (rotas calculadas numa grade). Eles respiram, piscam e fazem o que o lugar pede: digitam no PC (a tela
+mostra as linhas sendo escritas e o cursor piscando), folheiam o livro, tomam café (com vapor) ou água, mordem o
+lanche, assistem à TV rindo de vez em quando, jogam videogame (a TV mostra o jogo), rebatem a bolinha do
+pingue-pongue na hora em que ela chega, mexem no celular, ouvem música de fone (♪) e cochilam no pufe (zzz).
+Quando falam, mexem a boca e gesticulam; quando pensam, põem a mão no queixo; quem conversa se vira para o
+outro. Quem passa atrás de uma mesa, do sofá ou do vidro da sala do gerente aparece atrás deles. Nada de texto pintado no cenário: o nome do
 sistema só aparece se `APP_NOME` estiver definido.
 
-Clique num personagem, no quadro de vagas, no quadro do gerente ou na bandeja da recepção para abrir o painel.
+Clique num personagem, no quadro de vagas, no quadro do gerente, na bandeja da recepção ou no arquivo para abrir
+o painel. Para ver melhor, **segure o botão direito e arraste** (o esquerdo também arrasta, fora dos
+personagens); para aproximar, os botões de zoom ou Ctrl + roda do mouse. Os painéis abrem na hora: mostram o que
+já foi carregado (ou um esqueleto) e se atualizam em seguida, e passar o mouse sobre um agente ou um botão já
+busca os dados.
 A **atividade em tempo real** fica no sino do topo (com contador do que chegou), e a legenda dos estados no
 botão de informação ao lado do zoom.
+
+## Banco de currículos
+
+Todo currículo que chega fica no banco (no Supabase, cifrado), com ou sem vaga. O **Banco de currículos** (botão
+no topo ou clique no arquivo do escritório) mostra:
+
+- **as pastas da triagem agrupadas pelas áreas da equipe**, com a quantidade em cada uma (as cores são as mesmas
+  dos fichários do escritório); filtros por situação: banco de talentos (sem vaga), em análise, recomendados,
+  avaliação humana, decididos, na triagem e descartados;
+- **busca** por nome, cidade, pasta ou qualquer palavra do currículo (no Supabase, busca em português: "vendedor"
+  acha "vendas");
+- em cada currículo, **o que a IA disse**: a triagem da recepção (pasta, confiança e o resumo) e o parecer de cada
+  analista (compatibilidade, requisitos atendidos, o que verificar), com o link para a análise completa e a
+  decisão;
+- **a vaga sugerida**: a melhor análise; sem análise, a vaga em que ele está na fila; sem vaga, a sugestão do
+  Atlas. Currículos "OUTROS" já vêm com a leitura do Atlas da distribuição; para os demais, o botão **✨ Pedir
+  sugestão ao Atlas** faz uma chamada à IA e guarda a resposta. Com confiança baixa, o Atlas diz que nenhuma vaga
+  combina bem e cita a mais próxima;
+- **Encaminhar** para uma vaga aberta (supervisor ou admin): vira uma candidatura e o analista da vaga analisa.
+
+Cada listagem, abertura, sugestão e encaminhamento fica na auditoria (LGPD). A API: `GET /api/banco`,
+`GET /api/banco/{id}`, `POST /api/banco/{id}/encaminhar`, `POST /api/banco/{id}/sugerir`.
 
 ## A equipe viva
 
@@ -445,8 +476,10 @@ vaga aberta. Todo o histórico aparece em "Contratações e dispensas" (painel d
 
 **Conversas**
 
-- **Chat com um agente**: resposta em streaming (aparece sendo digitada), na voz do agente, a partir dos registros
-  dele; se o assunto for de um colega, ele diz com quem falar.
+- **Chat com um agente**: resposta em streaming (aparece sendo digitada, num ritmo constante), na voz do agente, a
+  partir dos registros dele; se o assunto for de um colega, ele diz com quem falar. Ao abrir o chat, o agente se
+  vira para você e acena; enquanto pensa, aparece "?" sobre a cabeça e os pontinhos de digitação; ao responder, o
+  rosto no topo do painel fala e ele gesticula no escritório.
 - **Canal da equipe** (botão Equipe): você escreve para o time e quem tem a informação responde — o Atlas
   organiza, chama quem tem vagas, e um colega pode complementar o outro. O mesmo canal mostra, em tempo real, o
   que os agentes dizem entre si (pedidos de ajuda, contratações, boletins). O que você escreve não é armazenado.

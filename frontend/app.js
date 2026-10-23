@@ -33,6 +33,7 @@
     sair: svg('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'),
     balao: svg('<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>'),
     info: svg('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>'),
+    arquivo: svg('<path d="M21 8v13H3V8"/><rect x="1" y="3" width="22" height="5"/><path d="M10 12h4"/>'),
   };
   const PAPEIS = { recrutador: 'Recrutador', supervisor: 'Supervisor', admin: 'Administrador' };
   const FINALIDADES = { triagem: 'Triagem', analise: 'Análises', consulta: 'Consultas entre colegas', revisao: 'Revisões com ajuda',
@@ -132,14 +133,20 @@
   }
 
   function montarFerramentas() {
-    const b = [['equipe', 'Equipe', 'equipe'], ['vagas', 'Vagas', 'vagas'], ['quadro', 'Quadro geral', 'quadro']];
+    const b = [['equipe', 'Equipe', 'equipe'], ['vagas', 'Vagas', 'vagas'], ['quadro', 'Quadro geral', 'quadro'], ['banco', 'Banco de currículos', 'arquivo']];
     if (EU.papel !== 'recrutador') b.push(['nova-vaga', 'Nova vaga', 'mais'], ['enviar', 'Enviar currículos', 'enviar'], ['ativar', 'Contratar agente', 'contratar'], ['admin', 'Administração', 'engrenagem']);
     $('#ferramentas').innerHTML = b.map(([id, t, ic]) => `<button class="btn" data-f="${id}" title="${t}">${ICONE[ic]}<span>${t}</span></button>`).join('');
     $('#ferramentas').onclick = e => {
       const f = e.target.closest('[data-f]'); if (!f) return;
       ({ equipe: () => abrir({ tipo: 'equipe' }), vagas: () => abrir({ tipo: 'vagas', filtro: 'todas' }), quadro: () => abrir({ tipo: 'quadro' }),
-        'nova-vaga': modalVaga, enviar: modalEnviar, ativar: modalAtivar, admin: () => modalAdmin() })[f.dataset.f]();
+        banco: () => abrirBanco(), 'nova-vaga': modalVaga, enviar: modalEnviar, ativar: modalAtivar, admin: () => modalAdmin() })[f.dataset.f]();
     };
+    // passar o mouse já busca os dados: o clique abre o painel na hora
+    $('#ferramentas').addEventListener('mouseover', e => {
+      const f = e.target.closest('[data-f]'); if (!f) return;
+      ({ vagas: ['/api/vagas', '/api/quadro'], quadro: ['/api/quadro', '/api/contratacoes'], equipe: [] }[f.dataset.f] || []).forEach(preBuscar);
+      if (f.dataset.f === 'equipe' && !EQUIPE.carregado) painelEquipe().catch(() => {});
+    });
   }
 
   // ================================================================ dados
@@ -162,6 +169,7 @@
       if (ev.tipo === 'pensamento') return; // só balão: não muda números nem o feed
       D.eventos = [ev, ...(D.eventos || [])].slice(0, 25);
       atividade(ev.id); recarregarLogo();
+      if (BANCO.aberto && TIPOS_BANCO.includes(ev.tipo)) atualizarBancoLogo();
       if (EQUIPE.carregado && TIPOS_CANAL.includes(ev.tipo)) {
         EQUIPE.servidor.push(ev); EQUIPE.servidor = EQUIPE.servidor.slice(-200);
         if (P && P.tipo === 'equipe') atualizarCanal();
@@ -178,6 +186,9 @@
     switch (ev.tipo) {
       case 'curriculos_retirados': if (v) v.viagens.push({ no: livre('balcao'), espera: 1.4, rotulo: 'indo buscar currículos' }); break;
       case 'vaga_atribuida': if (v) v.viagens.push({ no: livre('quadro'), espera: 2.2, rotulo: 'consultando as vagas' }); break;
+      case 'banco_talentos': if (v) v.viagens.push({ no: 'arquivo0', espera: 3, rotulo: 'guardando currículos no arquivo' }); break;
+      case 'encaminhamento_manual': if (v) v.viagens.push({ no: 'arquivo1', espera: 2.5, rotulo: 'buscando o currículo no arquivo' }); break;
+      case 'sugestao_banco': if (v) v.viagens.push({ no: 'balcaoArq', espera: 2.5, rotulo: 'consultando o arquivo' }); break;
       case 'agente_ativado': case 'contratacao':
         SAINDO.delete(ev.agente_id);
         if (v) { v.no = 'entrada'; [v.x, v.y] = NOS.entrada; v.rota = []; v.viagens = []; chegar(v); }
@@ -243,7 +254,10 @@
       }
       b.t0 = agora;
       b.dur = Math.min(7000, 2200 + b.texto.length * 40) * (v.baloes.length > 2 ? 0.65 : 1);
-      if (b.tipo === 'fala' && b.para && VIS[b.para]) { const ate = agora + b.dur; v.conversa = ate; VIS[b.para].conversa = Math.max(VIS[b.para].conversa || 0, ate); }
+      if (b.tipo === 'fala' && b.para && VIS[b.para]) {
+        const ate = agora + b.dur; v.conversa = ate; VIS[b.para].conversa = Math.max(VIS[b.para].conversa || 0, ate);
+        v.conversaCom = b.para; VIS[b.para].conversaCom = +Object.keys(VIS).find(k => VIS[k] === v);
+      }
     }
     if (agora - b.t0 > b.dur) v.baloes.shift();
   }
@@ -391,26 +405,32 @@
     e.preventDefault(); const r = $('#palco').getBoundingClientRect();
     zoom(ZOOM * (e.deltaY < 0 ? 1.12 : 1 / 1.12), [e.clientX - r.left, e.clientY - r.top]);
   }, { passive: false });
+  // arrastar a vista: segurando o botão direito (ou o esquerdo, fora dos personagens); o menu do navegador não abre
   let arrasto = null, arrastou = false;
-  cn.addEventListener('mousedown', e => { arrasto = [e.clientX, e.clientY, $('#palco').scrollLeft, $('#palco').scrollTop]; arrastou = false; });
+  cn.addEventListener('contextmenu', e => e.preventDefault());
+  cn.addEventListener('mousedown', e => {
+    if (e.button !== 0 && e.button !== 2) return;
+    arrasto = [e.clientX, e.clientY, $('#palco').scrollLeft, $('#palco').scrollTop, e.button]; arrastou = false;
+    if (e.button === 2) { e.preventDefault(); cn.style.cursor = 'grabbing'; }
+  });
   addEventListener('mousemove', e => {
     if (!arrasto) return;
     const dx = e.clientX - arrasto[0], dy = e.clientY - arrasto[1];
-    if (Math.abs(dx) + Math.abs(dy) > 5) arrastou = true;
+    if (Math.abs(dx) + Math.abs(dy) > (arrasto[4] === 2 ? 1 : 5)) { arrastou = true; cn.style.cursor = 'grabbing'; }
     if (arrastou) { $('#palco').scrollLeft = arrasto[2] - dx; $('#palco').scrollTop = arrasto[3] - dy; }
   });
-  addEventListener('mouseup', () => { arrasto = null; });
+  addEventListener('mouseup', () => { if (arrasto) { arrasto = null; cn.style.cursor = HOVER ? 'pointer' : 'default'; } });
 
   function fundoDados() {
     const est = {};
-    let tv = false, atlas = false;
+    let tv = null;
     for (const a of D.agentes) {
       const v = VIS[a.id]; if (!v || v.rota.length) continue;
       if (v.no && v.no.startsWith('mesa')) est[+v.no.slice(4)] = a.estado;
-      if (v.no && v.no.startsWith('sofa')) tv = true;
-      if (a.funcao === 'supervisor' && a.estado === 'trabalhando') atlas = true;
+      if (v.no === 'sofa1') tv = 'jogo'; // quem está no meio do sofá joga videogame
+      else if (v.no && v.no.startsWith('sofa') && !tv) tv = 'tv';
     }
-    return { ...D, estacoes: est, tv_ligada: tv, atlas_trabalhando: atlas };
+    return { ...D, estacoes: est, tv };
   }
 
   let ult = 0, T0 = performance.now(), posicoes = [];
@@ -422,28 +442,77 @@
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
       ctx.clearRect(0, 0, LW, LH);
       desenharAgentes((t - T0) / 1000);
+      desenharRosto();
     }
     requestAnimationFrame(quadroAnim);
   }
 
   const FONTE_NOME = '700 12px system-ui,-apple-system,Segoe UI,sans-serif', FONTE_EST = '600 11px system-ui,-apple-system,Segoe UI,sans-serif';
+  // o que cada um faz neste instante: digitar, gole de café, folhear o livro, jogar, piscar, respirar, falar…
+  // (só a forma de mostrar: o estado vem da API)
+  const CHAT_VIVO = {}; // id -> { modo: 'acena' | 'pensa' | 'fala', ate } enquanto o recrutador conversa com o agente
+  function animar(a, v, info, andando, sentado, seg, agora) {
+    const fase = a.id * 1.37, e = estadoVisual(a), ciclo = (periodo, dur) => ((seg + fase) % periodo) < dur;
+    const o = { pose: andando ? 'anda' : sentado ? 'senta' : 'pe', acao: '', quadro: 0, item: andando ? null : (info.item || null),
+      olhos: '', boca: 0, resp: 0, vapor: false, humor: e === 'pendencia' ? 'preocupado' : e === 'trabalhando' ? 'focado' : 'feliz' };
+    if (andando) { o.quadro = Math.floor(seg * 7 + a.id) % 4; return o; }
+    o.resp = ((seg * 0.8 + fase) % 2.4) < 1.2 ? 1 : 0;
+    if (((seg + fase) % 4.3) < 0.14) o.olhos = 'fechado';
+    if (sentado && info.digita && a.estado === 'trabalhando') {
+      if (!ciclo(8, 1.4)) { o.acao = 'digita'; o.quadro = Math.floor(seg * 8 + a.id) % 2; } // e às vezes para e lê a tela
+    }
+    switch (o.item) {
+      case 'xicara': if (ciclo(6.5, 1.3)) o.acao = 'gole'; else o.vapor = true; break;
+      case 'copo': if (ciclo(4.5, 1.2)) o.acao = 'gole'; break;
+      case 'lanche': if (ciclo(5, 0.8)) o.acao = 'mordida'; else if (ciclo(5, 1.9)) o.boca = Math.floor(seg * 6) % 2; break;
+      case 'livro': o.humor = 'focado'; if (ciclo(7, 0.5)) o.acao = 'folheia'; break;
+      case 'controle': o.acao = 'controle'; o.quadro = Math.floor(seg * 8) % 4; o.humor = 'focado';
+        if (ciclo(11, 0.9)) { o.acao = 'espreguica'; o.humor = 'risada'; } break; // comemora
+      case 'celular': o.quadro = Math.floor(seg * 3) % 2; o.humor = ciclo(9, 0.7) ? 'risada' : 'focado'; break;
+      case 'fone': o.resp = Math.floor(seg * 2.4 + fase) % 2; o.humor = 'calmo'; break; // balança a cabeça no ritmo
+      case 'sono': o.olhos = 'fechado'; o.humor = 'sono'; o.resp = ((seg * 0.5 + fase) % 3) < 1.5 ? 1 : 0; break;
+      case 'raquete': if (ciclo(1.3, 0.3)) o.acao = 'raquetada'; break; // treinando sozinho (com parceiro, sincroniza abaixo)
+    }
+    if (/^sofa/.test(v.no || '') && !o.item) o.humor = ciclo(9, 0.8) ? 'risada' : 'calmo';
+    // falando (balão de fala no ar): boca mexendo e gesto; pensando: mão no queixo
+    const b = v.baloes[0];
+    if (b && b.t0 && agora - b.t0 < b.dur) {
+      if (b.tipo === 'fala') { o.boca = Math.floor(seg * 7) % 2; if (!o.item && o.acao !== 'digita') { o.acao = 'gesto'; o.quadro = Math.floor(seg * 2.5) % 2; } }
+      else if (!o.item && o.acao !== 'digita') o.acao = 'pensa';
+    }
+    // conversa com o recrutador (chat aberto): vira para a tela, acena, pensa e fala
+    const ch = CHAT_VIVO[a.id];
+    if (ch) {
+      o.dir = 's';
+      if (ch.modo === 'acena' && agora < ch.ate) { o.acao = 'acena'; o.quadro = Math.floor(seg * 6) % 2; o.humor = 'feliz'; }
+      else if (ch.modo === 'pensa') { o.acao = 'pensa'; o.humor = 'focado'; o.item = null; o.vapor = false; }
+      else if (ch.modo === 'fala') { o.acao = 'gesto'; o.quadro = Math.floor(seg * 2.5) % 2; o.boca = Math.floor(seg * 7) % 2; o.item = null; o.vapor = false; }
+      if (o.acao) o.olhos = '';
+    }
+    return o;
+  }
+  // de frente para quem está conversando com ele (no escritório)
+  function olharPara(v, outro) {
+    const dx = outro.x - v.x, dy = outro.y - v.y;
+    return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
+  }
   function desenharAgentes(seg) {
+    const agora = performance.now();
     const lista = todos().filter(a => VIS[a.id]).map(a => {
-      const v = VIS[a.id], info = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0, sentado = !andando && !!info.sentado, e = estadoVisual(a);
-      const digitando = sentado && info.digita && a.estado === 'trabalhando';
-      const humor = e === 'pendencia' ? 'preocupado' : e === 'trabalhando' ? 'focado'
-        : (e === 'descansando' && /sofa|pufe/.test(v.no || '')) ? 'calmo' : 'feliz';
-      return { a, v, id: a.id, x: v.x, y: v.y, ap: a.aparencia || {}, andando,
-        dir: andando ? (v.dir || 's') : (info.f || v.dir || 's'),
-        pose: andando ? 'anda' : digitando ? 'digita' : sentado ? 'senta' : 'pe',
-        quadro: andando ? Math.floor(seg * 7 + a.id) % 4 : digitando ? Math.floor(seg * 5 + a.id) % 2 : 0,
-        humor, item: andando ? null : (info.item || null), destaque: SEL === a.id || (HOVER && HOVER.id === a.id) };
+      const v = VIS[a.id], info = INFO_LOCAL[v.no] || {}, andando = v.rota.length > 0, sentado = !andando && !!info.sentado;
+      const o = animar(a, v, info, andando, sentado, seg, agora);
+      let dir = andando ? (v.dir || 's') : (o.dir || info.f || v.dir || 's');
+      const par = !andando && !o.dir && v.conversa > agora && VIS[v.conversaCom];
+      if (par && !/^(sofa|pufe|leitura)/.test(v.no || '')) dir = olharPara(v, par);
+      return { a, v, id: a.id, x: v.x, y: v.y, ap: a.aparencia || {}, andando, dir, ...o,
+        destaque: SEL === a.id || (HOVER && HOVER.id === a.id) };
     });
-    // bolinha do pingue-pongue só quando há dois jogadores de verdade na mesa
+    // pingue-pongue: com dois jogadores, a bolinha vai e volta e cada um rebate quando ela chega
     const jog = lista.filter(p => !p.andando && (p.v.no === 'ping0' || p.v.no === 'ping1'));
     const fb = (Math.sin(seg * 3.2) + 1) / 2;
     const bolinha = jog.length === 2 ? [19.8 + fb * 2.4, 12.3, 0.84 + Math.abs(Math.sin(seg * 6.4)) * 0.4] : null;
-    const telas = Cena.desenhar(ctx, lista, { bolinha }), porId = new Map(lista.map(p => [p.id, p]));
+    if (bolinha) for (const p of jog) p.acao = (p.v.no === 'ping0' ? fb < 0.14 : fb > 0.86) ? 'raquetada' : '';
+    const telas = Cena.desenhar(ctx, lista, { bolinha, t: seg }), porId = new Map(lista.map(p => [p.id, p]));
     posicoes = telas.map(t => ({ ...porId.get(t.id), ...t }));
     if (HOVER && HOVER.tipo !== 'agente') { // contorno do quadro ou da bandeja sob o mouse
       const a = Cena.alvos().find(x => x.tipo === HOVER.tipo);
@@ -456,6 +525,23 @@
         ctx.fillStyle = '#E5534B'; ctx.strokeStyle = '#1B1420'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bx, by, 7.5, 0, 7); ctx.stroke(); ctx.fill();
         ctx.fillStyle = '#fff'; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText('!', bx, by + 0.5); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      }
+      if (!p.andando && (p.item === 'sono' || p.item === 'fone')) { // zzz de quem cochila, notas de quem ouve música
+        ctx.save(); ctx.font = p.item === 'sono' ? 'italic 800 11px system-ui' : '700 13px system-ui'; ctx.textAlign = 'center';
+        for (let k = 0; k < 3; k++) {
+          const f = (seg * 0.45 + k / 3 + a.id * 0.2) % 1;
+          ctx.globalAlpha = Math.sin(f * Math.PI) * 0.9;
+          ctx.fillStyle = p.item === 'sono' ? '#DCE6FF' : ['#F5B544', '#7EC3EB', '#E678AA'][k];
+          ctx.fillText(p.item === 'sono' ? 'z' : '♪', hx + 10 + f * 10 + Math.sin(f * 7 + k) * 2, hy + 4 - f * 22);
+        }
+        ctx.restore();
+      }
+      const ch = CHAT_VIVO[a.id];
+      if (ch && (ch.modo === 'pensa' || (ch.modo === 'acena' && performance.now() < ch.ate))) { // ? enquanto pensa, ! ao cumprimentar
+        const bx = hx - 14, by = hy + 4 + Math.sin(seg * 5) * 1.5;
+        ctx.fillStyle = '#F5B544'; ctx.strokeStyle = '#1B1420'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(bx, by, 7.5, 0, 7); ctx.stroke(); ctx.fill();
+        ctx.fillStyle = '#1A1206'; ctx.font = '800 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(ch.modo === 'pensa' ? '?' : '!', bx, by + 0.5); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
       }
       if (e === 'conversando' && !(BALOES && v.baloes[0] && v.baloes[0].t0)) { // "…" de quem está conversando
         const bx = hx + 9, by = hy - 4;
@@ -594,12 +680,15 @@
     } else if (HOVER.tipo === 'vagas') dica.innerHTML = '<b>Quadro de vagas em aberto</b><br>Usado pelos agentes. Clique para ver a análise.';
     else if (HOVER.tipo === 'quadro') dica.innerHTML = '<b>Quadro geral do supervisor</b><br>Clique para ver tarefas, equipe, contratações e pendências.';
     else if (HOVER.tipo === 'bandeja') dica.innerHTML = `<b>Recepção de currículos</b><br>${D.fila_triagem} aguardando triagem · ${D.fila_analise} aguardando os analistas`;
+    else if (HOVER.tipo === 'banco') { const b = D.banco || {}; dica.innerHTML = `<b>📁 Banco de currículos</b><br>${milhar(b.total || 0)} currículo(s) guardados nas pastas, por área.<br><span class="mini">Clique para abrir o arquivo: o que a IA disse de cada um e a vaga sugerida.</span>`; }
+    if (HOVER.tipo === 'agente' && D.agentes.some(a => a.id === HOVER.id)) preBuscar(`/api/agentes/${HOVER.id}`);
     dica.style.display = 'block';
     dica.style.left = Math.min(innerWidth - 300, e.clientX + 16) + 'px'; dica.style.top = (e.clientY + 18) + 'px';
   });
   cn.addEventListener('mouseleave', () => { HOVER = null; $('#dica').style.display = 'none'; });
   cn.addEventListener('click', e => {
     if (arrastou) { arrastou = false; return; }
+    if (e.button !== 0) return;
     const r = cn.getBoundingClientRect(), h = acertar(e.clientX - r.left, e.clientY - r.top);
     if (!h) return;
     $('#dica').style.display = 'none';
@@ -607,6 +696,7 @@
     else if (h.tipo === 'vagas') abrir({ tipo: 'vagas', filtro: 'todas' });
     else if (h.tipo === 'quadro') abrir({ tipo: 'quadro' });
     else if (h.tipo === 'bandeja') { const b = D.agentes.find(a => a.funcao === 'recepcao'); if (b) abrir({ tipo: 'agente', id: b.id, aba: 'resumo' }); }
+    else if (h.tipo === 'banco') abrirBanco();
   });
 
   // ================================================================ atividade recente
@@ -637,34 +727,73 @@
   }
 
   // ================================================================ painel lateral
+  // O painel abre na hora: primeiro com o que já foi visto (ou um esqueleto) e, em seguida, com os dados novos.
+  // Passar o mouse sobre um agente ou um botão já busca os dados (pré-busca), então o clique quase sempre acerta o cache.
+  const CACHE = new Map(), SEM_CACHE = new Error('sem cache'), PRE = new Map();
+  const doCache = url => (CACHE.has(url) ? Promise.resolve(CACHE.get(url)) : Promise.reject(SEM_CACHE));
+  doCache.soCache = true;
+  async function daRede(url) { const d = await api('GET', url); CACHE.set(url, d); return d; }
+  function preBuscar(url) {
+    const t = performance.now(); if ((PRE.get(url) || -1e9) > t - 5000) return;
+    PRE.set(url, t); daRede(url).catch(() => {});
+  }
   function abrir(p) { P = p; SEL = p.tipo === 'agente' ? p.id : null; $('#cvw').style.display = 'none'; $('#painel').classList.add('aberto'); setTimeout(medir, 200); pintarPainel(); }
-  function fechar() { P = null; SEL = null; $('#painel').classList.remove('aberto'); $('#cvw').style.display = 'none'; setTimeout(medir, 200); }
+  function fechar() { P = null; SEL = null; $('#painel').classList.remove('aberto'); $('#cvw').style.display = 'none'; vidaDoChat(); setTimeout(medir, 200); }
 
+  function construirPainel(get) {
+    return P.tipo === 'agente' ? painelAgente(get) : P.tipo === 'vagas' ? painelVagas(get) : P.tipo === 'equipe' ? painelEquipe(get) : painelQuadro(get);
+  }
+  function esqueleto() {
+    const a = P.tipo === 'agente' && D.agentes.find(x => x.id === P.id);
+    const topo = a ? cabecalhoAgente({ ...a, perfil_completo: a.perfil || {} })
+      : `<div class="ph"><div style="min-width:0;flex:1"><i class="esq-l" style="width:55%;height:20px"></i><i class="esq-l" style="width:35%"></i></div><button class="x" data-a="x" aria-label="Fechar">×</button></div>`;
+    return topo + `<div id="pb">${'<div class="cartao esq"><i class="esq-l" style="width:70%"></i><i class="esq-l"></i><i class="esq-l" style="width:45%"></i></div>'.repeat(3)}</div>`;
+  }
+  let versaoPainel = 0, htmlPainel = '';
+  function aplicarPainel(html, manter) {
+    if (html === htmlPainel) return;
+    const pb = $('#pb'), rolagem = pb ? pb.scrollTop : 0;
+    const foco = document.activeElement && ['q', 'qeq'].includes(document.activeElement.id) ? document.activeElement.id : null;
+    const rascunho = foco ? $('#' + foco).value : '';
+    $('#pi').innerHTML = htmlPainel = html;
+    if (P.tipo === 'agente') desenharRosto(true);
+    desenharAvatares($('#pi'));
+    const nb = $('#pb'); if (nb) nb.scrollTop = (P.tipo === 'equipe' || P.aba === 'chat') ? 1e6 : manter ? rolagem : 0;
+    if (foco && $('#' + foco)) { $('#' + foco).value = rascunho; $('#' + foco).focus(); }
+  }
   async function pintarPainel(silencioso) {
     if (!P) return;
-    const pb = $('#pb'), rolagem = pb ? pb.scrollTop : 0, alvo = P;
-    try {
+    const alvo = P, v = ++versaoPainel;
+    vidaDoChat();
+    if (!silencioso) {
       let html;
-      if (P.tipo === 'agente') html = await painelAgente();
-      else if (P.tipo === 'vagas') html = await painelVagas();
-      else if (P.tipo === 'equipe') html = await painelEquipe();
-      else html = await painelQuadro();
-      if (alvo !== P) return;
-      const foco = document.activeElement && ['q', 'qeq'].includes(document.activeElement.id) ? document.activeElement.id : null;
-      const rascunho = foco ? $('#' + foco).value : '';
-      $('#pi').innerHTML = html;
-      if (P.tipo === 'agente') desenharRosto();
-      desenharAvatares($('#pi'));
-      const nb = $('#pb'); if (nb) nb.scrollTop = (P.tipo === 'equipe' || P.aba === 'chat') ? 1e6 : silencioso ? rolagem : 0;
-      if (foco && $('#' + foco)) { $('#' + foco).value = rascunho; $('#' + foco).focus(); }
-    } catch (e) { if (!silencioso) $('#pi').innerHTML = `<div class="ph"><h2>Erro</h2><button class="x" data-a="x">×</button></div><div id="pb"><p class="erro">${esc(e.message)}</p></div>`; }
+      try { html = await construirPainel(doCache); } catch (_) { html = esqueleto(); }
+      if (alvo !== P || v !== versaoPainel) return;
+      aplicarPainel(html, false);
+    }
+    try {
+      const html = await construirPainel(daRede);
+      if (alvo !== P || v !== versaoPainel) return;
+      aplicarPainel(html, true);
+    } catch (e) {
+      if (!silencioso && v === versaoPainel && alvo === P) aplicarPainel(`<div class="ph"><h2>Erro</h2><button class="x" data-a="x">×</button></div><div id="pb"><p class="erro">${esc(e.message)}</p></div>`, false);
+    }
   }
 
-  const rosto = (k, s, ap) => Cena.retrato(k, s, ap || {});
-  function desenharRosto() {
-    const c = $('#rosto'); if (!c) return;
+  const rosto = (k, s, ap, o) => Cena.retrato(k, s, ap || {}, undefined, o);
+  // o rosto no topo do painel pisca e mexe a boca quando o agente responde no chat
+  let rostoChave = '';
+  function desenharRosto(forcar) {
+    const c = $('#rosto'); if (!c || !P || P.tipo !== 'agente') return;
     const a = D.agentes.find(x => x.id === P.id); if (!a) return;
-    const k = c.getContext('2d'); c.width = 68 * DPR; c.height = 68 * DPR; k.scale(DPR, DPR); rosto(k, 68, a.aparencia);
+    const t = performance.now() / 1000, ch = CHAT_VIVO[a.id];
+    const o = { olhos: ((t + a.id * 1.37) % 3.8) < 0.14 ? 'fechado' : '', boca: ch && ch.modo === 'fala' ? Math.floor(t * 7) % 2 : 0,
+      humor: ch && ch.modo === 'pensa' ? 'focado' : a.estado === 'pendencia' ? 'preocupado' : 'feliz' };
+    const chave = [a.id, o.olhos, o.boca, o.humor].join('|');
+    if (!forcar && chave === rostoChave) return;
+    rostoChave = chave;
+    const k = c.getContext('2d'); c.width = 68 * DPR; c.height = 68 * DPR; k.scale(DPR, DPR); rosto(k, 68, a.aparencia, o);
+    c.classList.toggle('falando', !!(ch && (ch.modo === 'fala' || ch.modo === 'pensa')));
   }
   function desenharAvatares(raiz) {
     if (!raiz) return;
@@ -681,18 +810,22 @@
   const histHtml = h => h.length ? `<div class="hist">${h.map(e => `<p><b>${hora(e.ts)}</b>${textoEvento(e)}</p>`).join('')}</div>` : '<p class="mini">Sem atividade registrada ainda.</p>';
   const gestor = () => EU.papel !== 'recrutador';
 
-  async function painelAgente() {
-    const d = await api('GET', `/api/agentes/${P.id}`);
-    let corpo = '';
-    if (P.aba === 'resumo') corpo = await resumoAgente(d);
-    else if (P.aba === 'candidatos') corpo = await candidatosAgente(d);
-    else corpo = chatAgente(d);
+  function cabecalhoAgente(d) {
     const pf = d.perfil_completo || {};
     return `<div class="ph"><canvas id="rosto" width="68" height="68" style="width:68px;height:68px"></canvas>
       <div style="min-width:0"><h2>${esc(d.nome.toUpperCase())} <span class="emoji">${esc(pf.emoji || '')}</span></h2><small>${esc(d.funcao_rotulo)}</small><em>Especialidade: ${esc(d.especialidade)}</em>${chipEstado(d)}</div>
       <button class="x" data-a="x" aria-label="Fechar">×</button></div>
-      <div class="abas">${[['resumo', 'Resumo'], ['candidatos', 'Candidatos'], ['chat', 'Chat']].map(([i, n]) => `<button class="${P.aba === i ? 'on' : ''}" data-a="aba" data-v="${i}">${n}</button>`).join('')}</div>
-      <div id="pb">${corpo}</div>${P.aba === 'chat' ? `<div id="entrada"><input id="q" maxlength="1000" placeholder="Pergunte algo a ${esc(d.nome)}…"><button class="btn" data-a="enviar">Enviar</button></div>` : ''}`;
+      <div class="abas">${[['resumo', 'Resumo'], ['candidatos', 'Candidatos'], ['chat', 'Chat']].map(([i, n]) => `<button class="${P.aba === i ? 'on' : ''}" data-a="aba" data-v="${i}">${n}</button>`).join('')}</div>`;
+  }
+  async function painelAgente(get) {
+    // o chat não precisa esperar o servidor: nome, função e personalidade já estão no escritório
+    const a = D.agentes.find(x => x.id === P.id);
+    const d = await get(`/api/agentes/${P.id}`).catch(e => { if (P.aba === 'chat' && a) return { ...a, perfil_completo: a.perfil || {} }; throw e; });
+    let corpo = '';
+    if (P.aba === 'resumo') corpo = await resumoAgente(d, get);
+    else if (P.aba === 'candidatos') corpo = await candidatosAgente(d, get);
+    else corpo = chatAgente(d);
+    return `${cabecalhoAgente(d)}<div id="pb">${corpo}</div>${P.aba === 'chat' ? `<div id="entrada"><input id="q" maxlength="1000" placeholder="Pergunte algo a ${esc(d.nome)}…"><button class="btn" data-a="enviar">Enviar</button></div>` : ''}`;
   }
 
   function cartaoPerfil(d) {
@@ -709,10 +842,10 @@
       : '<p class="mini">Nenhuma contratação ainda.</p>';
   }
 
-  async function resumoAgente(d) {
+  async function resumoAgente(d, get) {
     const pend = d.pendencias_abertas.map(p => `<div class="cartao pend"><b>Pendência:</b> ${esc(p.descricao)}${gestor() ? ' <span class="mini">· resolva no quadro geral</span>' : ''}</div>`).join('');
     if (d.funcao === 'supervisor') {
-      const q = D.quadro, au = D.automacao || {}, [contr, ia] = await Promise.all([api('GET', '/api/contratacoes'), linhaIA()]);
+      const q = D.quadro, au = D.automacao || {}, [contr, ia] = await Promise.all([get('/api/contratacoes'), linhaIA(get)]);
       return `${cartaoPerfil(d)}<div class="sec">Visão da equipe</div><div class="g4"><div class="kpi"><b>${q.vagas_abertas}</b>Vagas abertas</div><div class="kpi"><b>${q.vagas_em_processamento}</b>Em análise</div><div class="kpi"><b>${q.tarefas_pendentes}</b>Na fila</div><div class="kpi ${q.pendencias ? 'alerta' : ''}"><b>${q.pendencias}</b>Pendências</div></div>
         <p class="mini" style="margin-top:8px">Contratação automática: <b>${au.contratacao ? 'ligada' : 'desligada (só propõe)'}</b> · reforço quando a fila passa de <b>${au.limite_fila}</b> por agente · estações ocupadas: <b>${q.agentes_ativos}/${q.estacoes}</b></p>${ia}
         <p style="margin:10px 0"><button class="btn" data-a="quadro">Abrir quadro geral</button> <button class="btn claro" data-a="equipe">💬 Canal da equipe</button></p>${pend}
@@ -741,12 +874,12 @@
     return (c.colaboracoes || []).map(x => `<div class="mini colab"><b>Consultou ${esc(x.colega)}:</b> “${esc(x.resposta)}”</div>`).join('');
   }
 
-  async function candidatosAgente(d) {
+  async function candidatosAgente(d, get) {
     if (d.funcao !== 'analista') return '<p class="vazio">Este agente não analisa currículos. Abra um analista para ver candidatos recomendados.</p>';
     if (!d.vagas_detalhe.length) return '<p class="vazio">Sem candidatos: nenhuma vaga atribuída a este agente.</p>';
     if (P.vaga === undefined) P.vaga = d.vagas_detalhe[0].id;
     P.filtro = P.filtro || 'recomendados';
-    const lista = await api('GET', `/api/agentes/${d.id}/candidatos${P.vaga ? '?vaga_id=' + P.vaga : ''}`);
+    const lista = await get(`/api/agentes/${d.id}/candidatos${P.vaga ? '?vaga_id=' + P.vaga : ''}`);
     const cont = { recomendados: lista.filter(c => c.recomendado).length, humana: lista.filter(c => c.avaliacao_humana).length, todos: lista.length };
     const vis = lista.filter(c => P.filtro === 'todos' || (P.filtro === 'recomendados' ? c.recomendado : c.avaliacao_humana));
     const cards = vis.map(c => {
@@ -770,57 +903,83 @@
   }
 
   // ---------------------------------------------------------------- chat individual (resposta em streaming)
-  const msgHtml = x => `<div class="msg ${x.autor === 'usuario' ? 'eu' : ''} ${x.digitando ? 'digitando' : ''}">${esc(x.texto)}</div>`;
+  // Quem está com o chat aberto se vira para a tela e acena; enquanto pensa, põe a mão no queixo; ao responder, fala
+  // gesticulando. A resposta aparece aos poucos, como se estivesse sendo digitada.
+  function vidaDoChat() {
+    const id = P && P.tipo === 'agente' && P.aba === 'chat' ? P.id : null;
+    for (const k of Object.keys(CHAT_VIVO)) if (+k !== id) delete CHAT_VIVO[k];
+    if (id && !CHAT_VIVO[id]) CHAT_VIVO[id] = { modo: 'acena', ate: performance.now() + 1900 };
+  }
+  const pontos = '<span class="pontos"><i></i><i></i><i></i></span>';
+  const msgHtml = (x, id) => x.autor === 'usuario' ? `<div class="msg eu">${esc(x.texto)}</div>`
+    : `<div class="lin">${av(id, 26)}<div class="msg ${x.digitando ? 'digitando' : ''}">${x.digitando ? pontos + ' ' + esc(x.texto) : esc(x.texto)}</div></div>`;
   function chatAgente(d) {
     const a = D.agentes.find(x => x.id === d.id), pf = (a && a.perfil) || d.perfil || {};
     const m = CHATS[d.id] = CHATS[d.id] || [{ autor: 'agente', texto: pf.saudacao || `Oi! Sou ${d.nome}. Respondo com base nos meus registros.` }];
     const sug = d.funcao === 'analista' ? ['Como está o andamento?', 'Quais candidatos são mais compatíveis?', 'Quantos currículos faltam?', 'Quem precisa de avaliação humana?', 'Pediu ajuda a algum colega?']
       : d.funcao === 'supervisor' ? ['Como está a equipe?', 'Quem você contratou?', 'Quem está mais ocupado?'] : ['Quantos currículos chegaram?', 'Quem é você?'];
-    return `<div id="msgs">${m.map(msgHtml).join('')}</div>
+    return `<div id="msgs">${m.map(x => msgHtml(x, d.id)).join('')}</div>
       <div style="margin-top:10px">${sug.map(s => `<span class="pilula" data-a="sug" data-v="${esc(s)}">${esc(s)}</span>`).join('')}</div>
       <p class="mini" style="margin-top:6px">${D.ia_modo === 'gemini' ? 'Respostas geradas a partir dos registros deste agente, no jeito de falar dele.' : 'Modo demonstração: respostas por regras, a partir dos registros reais.'} As conversas não são armazenadas.</p>`;
   }
-  function redesenharMsgs(id) {
+  function redesenharMsgs(id, soUltima) {
     if (!P || P.tipo !== 'agente' || P.id !== id || P.aba !== 'chat') return;
     const box = $('#msgs'); if (!box) return;
-    box.innerHTML = CHATS[id].map(msgHtml).join('');
-    const pb = $('#pb'); if (pb) pb.scrollTop = 1e6;
+    const pb = $('#pb'), noFim = !pb || pb.scrollHeight - pb.scrollTop - pb.clientHeight < 90;
+    const ult = CHATS[id][CHATS[id].length - 1], el = box.lastElementChild && box.lastElementChild.querySelector('.msg');
+    if (soUltima && el && ult && !ult.digitando) { el.classList.remove('digitando'); el.textContent = ult.texto; }
+    else { box.innerHTML = CHATS[id].map(x => msgHtml(x, id)).join(''); desenharAvatares(box); }
+    if (pb && noFim) pb.scrollTop = 1e6;
   }
   async function enviarChat(texto) {
     texto = (texto || '').trim(); if (!texto || !P || P.tipo !== 'agente') return;
     const id = P.id, m = CHATS[id], a = D.agentes.find(x => x.id === id), pf = (a && a.perfil) || {};
     const hist = m.filter(x => !x.digitando).slice(-6);
     const pensando = pick(pf.pensando) || 'pensando…';
-    const resp = { autor: 'agente', texto: '💭 ' + pensando, digitando: true };
+    const resp = { autor: 'agente', texto: pensando, digitando: true };
     m.push({ autor: 'usuario', texto }, resp);
     redesenharMsgs(id);
     balao(id, 'pensamento', pensando);
-    let txt = '';
+    const vivo = modo => { if (CHAT_VIVO[id]) CHAT_VIVO[id] = { modo, ate: performance.now() + 1500 }; };
+    vivo('pensa');
+    // a resposta chega aos pedaços; na tela ela "é digitada" num ritmo constante, alcançando o que já chegou
+    let recebido = '', mostrado = 0, fim = false;
+    const digitar = new Promise(pronto => {
+      const passo = () => {
+        if (mostrado < recebido.length) {
+          if (resp.digitando) { resp.digitando = false; vivo('fala'); redesenharMsgs(id); }
+          mostrado = Math.min(recebido.length, mostrado + Math.max(2, Math.ceil((recebido.length - mostrado) / 14)));
+          resp.texto = recebido.slice(0, mostrado); redesenharMsgs(id, true);
+        } else if (fim) { pronto(); return; }
+        setTimeout(passo, 28);
+      };
+      passo();
+    });
     try {
       const r = await fetch(`/api/agentes/${id}/chat/stream`, { method: 'POST', credentials: 'same-origin',
         headers: { 'X-Hub': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ mensagem: texto, historico: hist }) });
       if (r.status === 401) { mostrarLogin(); throw new Error('sessão expirada'); }
       if (!r.ok) throw new Error('Erro ' + r.status);
-      if (!r.body || !r.body.getReader) txt = await r.text();
+      if (!r.body || !r.body.getReader) recebido = await r.text();
       else {
         const leitor = r.body.getReader(), dec = new TextDecoder();
-        for (;;) {
-          const { value, done } = await leitor.read(); if (done) break;
-          txt += dec.decode(value, { stream: true });
-          resp.texto = txt; resp.digitando = false; redesenharMsgs(id);
-        }
-        txt += dec.decode();
+        for (;;) { const { value, done } = await leitor.read(); if (done) break; recebido += dec.decode(value, { stream: true }); }
+        recebido += dec.decode();
       }
-      resp.texto = txt.trim() || 'Não consegui formular uma resposta agora.';
-    } catch (e) { resp.texto = 'Não consegui responder agora: ' + e.message; }
-    resp.digitando = false; redesenharMsgs(id);
-    const frase = resp.texto.split(/(?<=[.!?])\s/)[0];
+      recebido = recebido.trim() || 'Não consegui formular uma resposta agora.';
+    } catch (e) { recebido = 'Não consegui responder agora: ' + e.message; }
+    fim = true;
+    await digitar;
+    resp.digitando = false; resp.texto = recebido; redesenharMsgs(id, true);
+    setTimeout(() => vivo('ouve'), 900);
+    const frase = recebido.split(/(?<=[.!?])\s/)[0];
     if (frase) balao(id, 'fala', frase.length > 140 ? frase.slice(0, 137) + '…' : frase);
   }
 
   // ---------------------------------------------------------------- canal da equipe
-  async function painelEquipe() {
+  async function painelEquipe(get) {
     if (!EQUIPE.carregado) {
+      if (get && get.soCache) throw SEM_CACHE;
       const r = await api('GET', '/api/equipe/conversas');
       EQUIPE.servidor = r.eventos; EQUIPE.carregado = true;
       for (const [id, a] of Object.entries(r.agentes)) AGS[id] = AGS[id] || a;
@@ -848,7 +1007,7 @@
       const nome = (AGS[x.agente_id] || {}).nome || x.de_nome || '?', dest = (x.para && (AGS[x.para] || {}).nome) || x.para_nome;
       return `<div class="eq ${x.digitando ? 'digitando' : ''}">${av(x.agente_id, 30)}<div class="corpo">
         <div class="quem"><b>${esc(nome)}</b>${dest ? ` <span class="mini">→ ${esc(dest)}</span>` : ''} <span class="mini">${hora(x.ts)}</span></div>
-        <div class="bal">${esc(x.texto)}</div></div></div>`;
+        <div class="bal">${x.digitando ? pontos + ' ' : ''}${esc(x.texto.replace(/^💭 /, ''))}</div></div></div>`;
     }).join('');
   }
   function atualizarCanal() {
@@ -883,8 +1042,8 @@
   }
 
   // ---------------------------------------------------------------- vagas e quadro
-  async function painelVagas() {
-    const [vagas, q] = await Promise.all([api('GET', '/api/vagas'), api('GET', '/api/quadro')]);
+  async function painelVagas(get) {
+    const [vagas, q] = await Promise.all([get('/api/vagas'), get('/api/quadro')]);
     const pendVaga = Object.fromEntries(q.pendencias.filter(p => p.tipo === 'SEM_ESPECIALISTA' && p.vaga_id).map(p => [p.vaga_id, p]));
     const f = P.filtro || 'todas';
     const filtros = [['todas', 'Todas', () => true], ['abertas', 'Abertas', v => v.status === 'aberta'], ['sem', 'Sem responsável', v => v.sem_responsavel],
@@ -905,16 +1064,16 @@
   }
 
   // linha de consumo da IA (gestores, com Gemini ligado)
-  async function linhaIA() {
+  async function linhaIA(get = daRede) {
     if (!gestor() || D.ia_modo !== 'gemini') return '';
     try {
-      const u = await api('GET', '/api/ia/uso'), h = u.hoje, lim = u.limite_diario_usd;
+      const u = await get('/api/ia/uso'), h = u.hoje, lim = u.limite_diario_usd;
       return `<p class="mini" style="margin-top:8px">🤖 IA hoje: <b>${usd(h.custo_usd)}</b>${lim > 0 ? ` de ${usd(lim)}` : ''} · ${milhar(h.chamadas)} chamada(s) · ${esc(u.modelo)}${u.pausa ? ` · <b class="ruim">pausada</b>` : ''} · <a href="#" data-a="uso-ia">detalhes</a></p>`;
-    } catch (_) { return ''; }
+    } catch (e) { if (e === SEM_CACHE) throw e; return ''; }
   }
 
-  async function painelQuadro() {
-    const [q, contr, ia] = await Promise.all([api('GET', '/api/quadro'), api('GET', '/api/contratacoes'), linhaIA()]), r = q.resumo;
+  async function painelQuadro(get) {
+    const [q, contr, ia] = await Promise.all([get('/api/quadro'), get('/api/contratacoes'), linhaIA(get)]), r = q.resumo;
     const pend = q.pendencias.map(p => {
       let acoes = '';
       if (q.pode_gerir) {
@@ -948,9 +1107,9 @@
     if (t.tagName === 'A') e.preventDefault();
     if (a === 'x') fechar();
     else if (a === 'aba') { P.aba = v; pintarPainel(); }
-    else if (a === 'vaga') { P.vaga = +v; pintarPainel(true); }
-    else if (a === 'filtro') { P.filtro = v; pintarPainel(true); }
-    else if (a === 'fvaga') { P.filtro = v; pintarPainel(true); }
+    else if (a === 'vaga') { P.vaga = +v; pintarPainel(); }
+    else if (a === 'filtro') { P.filtro = v; pintarPainel(); }
+    else if (a === 'fvaga') { P.filtro = v; pintarPainel(); }
     else if (a === 'cv') abrirCurriculo(+v);
     else if (a === 'ag') abrir({ tipo: 'agente', id: +v, aba: 'resumo' });
     else if (a === 'quadro') abrir({ tipo: 'quadro' });
@@ -1045,6 +1204,171 @@
     b.disabled = true;
     try { await api('POST', `/api/candidaturas/${b.dataset.c}/decisao`, { decisao: b.dataset.dec }); abrirCurriculo(+b.dataset.c); pintarPainel(true); }
     catch (er) { alert(er.message); b.disabled = false; }
+  });
+
+  // ================================================================ banco de currículos (o arquivo do escritório)
+  // Pastas da triagem agrupadas pelas áreas da equipe; cada currículo mostra o que a IA disse e a vaga sugerida.
+  const TIPOS_BANCO = ['curriculo_recebido', 'triagem_concluida', 'arquivo_invalido', 'banco_talentos', 'candidatura_encaminhada',
+    'analise_concluida', 'decisao_humana', 'encaminhamento_manual', 'sugestao_banco', 'encaminhamento_automatico', 'lgpd'];
+  const SIT_BANCO = [['', 'Todos'], ['talentos', 'Banco de talentos'], ['analise', 'Em análise'], ['recomendados', 'Recomendados'],
+    ['humana', 'Avaliação humana'], ['decididos', 'Decididos'], ['triagem', 'Na triagem'], ['descartados', 'Descartados']];
+  const COR_SIT = { 'banco de talentos': '#3B82C4', 'em análise': '#F08A24', recomendado: '#2E9E5B', 'avaliação humana': '#F08A24',
+    analisado: '#6B7183', 'na triagem': '#8E6BBF', 'erro na triagem': '#D64545', descartado: '#5A6070',
+    'chamado para entrevista': '#2E9E5B', 'guardado no banco de talentos': '#3B82C4', 'não seguir': '#6B7183' };
+  const BANCO = { aberto: false, grupo: '', pasta: '', situacao: '', busca: '', pagina: 1, itens: [], tem_mais: false, resumo: null, sel: null, ficha: null };
+  const pastaNome = s => (s || 'sem pasta').toLowerCase().replace(/(^|\s)\S/g, c => c.toUpperCase());
+
+  function abrirBanco(filtro = {}) {
+    // abre sempre do começo (todas as pastas, sem busca), a não ser que venha com um filtro
+    Object.assign(BANCO, { aberto: true, pagina: 1, grupo: '', pasta: '', situacao: '', busca: '', sel: null, ficha: null }, filtro);
+    $('#bancow').classList.remove('ficha');
+    const w = $('#bancow');
+    w.innerHTML = `<div class="bw"><header><span class="bt">${ICONE.arquivo}<b>Banco de currículos</b><span class="mini" id="btotal"></span></span>
+        <input id="bbusca" type="search" placeholder="Buscar por nome, cidade ou palavra do currículo (ex.: Excel, empilhadeira)" value="${esc(BANCO.busca)}">
+        <button class="x" data-bx aria-label="Fechar">×</button></header>
+      <div class="bsit" id="bsit"></div>
+      <div class="bcorpo"><nav class="bpastas" id="bpastas"></nav><section class="blista" id="blista"></section><aside class="bficha" id="bficha"></aside></div></div>`;
+    w.classList.add('aberto');
+    pintarBancoFiltros(); pintarBancoLista(true); pintarFicha();
+    carregarBanco();
+    let t = 0;
+    $('#bbusca').oninput = e => { clearTimeout(t); t = setTimeout(() => { BANCO.busca = e.target.value; BANCO.pagina = 1; carregarBanco(); }, 280); };
+  }
+  function fecharBanco() { BANCO.aberto = false; $('#bancow').classList.remove('aberto'); $('#bancow').innerHTML = ''; }
+  let tBanco = 0;
+  const atualizarBancoLogo = () => { clearTimeout(tBanco); tBanco = setTimeout(() => { carregarBanco(true); if (BANCO.sel) abrirFicha(BANCO.sel, true); }, 900); };
+
+  async function carregarBanco(silencioso) {
+    const q = new URLSearchParams();
+    for (const k of ['grupo', 'pasta', 'situacao', 'busca']) if (BANCO[k]) q.set(k, BANCO[k]);
+    const pagina = silencioso ? 1 : BANCO.pagina; q.set('pagina', pagina);
+    const chave = q.toString();
+    BANCO.pedido = chave;
+    if (!silencioso && pagina === 1) pintarBancoLista(true);
+    try {
+      const r = await api('GET', '/api/banco?' + chave);
+      if (BANCO.pedido !== chave || !BANCO.aberto) return;
+      BANCO.itens = pagina > 1 ? [...BANCO.itens, ...r.itens] : r.itens;
+      BANCO.tem_mais = r.tem_mais; BANCO.resumo = r.resumo;
+      if (!silencioso || pagina === 1) pintarBancoFiltros();
+      pintarBancoLista(false);
+    } catch (e) { if (BANCO.aberto) $('#blista').innerHTML = `<p class="erro">${esc(e.message)}</p>`; }
+  }
+  function pintarBancoFiltros() {
+    const r = BANCO.resumo;
+    if ($('#btotal')) $('#btotal').textContent = r ? ` · ${milhar(r.total)} nas pastas${r.na_triagem ? ` · ${r.na_triagem} na triagem` : ''}` : '';
+    $('#bsit').innerHTML = SIT_BANCO.map(([k, n]) => `<span class="pilula ${BANCO.situacao === k ? 'on' : ''}" data-bsit="${k}">${n}</span>`).join('');
+    if (!r) { $('#bpastas').innerHTML = '<i class="esq-l"></i><i class="esq-l" style="width:60%"></i>'.repeat(4); return; }
+    $('#bpastas').innerHTML = `<div class="bg ${!BANCO.grupo && !BANCO.pasta ? 'on' : ''}" data-bgrupo=""><i class="pasta" style="--c:#F5B544"></i><b>Todas as pastas</b><span>${milhar(r.total)}</span></div>` +
+      r.grupos.map(g => {
+        const cor = Cena.corGrupo(g.codigo), cheias = g.pastas.filter(x => x.n);
+        return `<div class="bgrupo ${g.total ? '' : 'sem-cv'}"><div class="bg ${BANCO.grupo === g.codigo && !BANCO.pasta ? 'on' : ''}" data-bgrupo="${esc(g.codigo)}">
+            <i class="pasta" style="--c:${cor}"></i><b>${esc(g.nome)}</b><span>${milhar(g.total)}</span></div>
+          ${cheias.map(x => `<div class="bp ${BANCO.pasta === x.setor ? 'on' : ''}" data-bpasta="${esc(x.setor)}" style="--c:${cor}">${esc(pastaNome(x.setor))}<span>${x.n}</span></div>`).join('')}</div>`;
+      }).join('') +
+      (r.descartados ? `<p class="mini" style="margin:10px 6px">${r.descartados} arquivo(s) descartado(s) na triagem (não eram currículos).</p>` : '');
+  }
+  function linhaSugestao(i) {
+    const v = i.vaga_sugerida, at = i.sugestao_atlas;
+    if (v && v.compatibilidade) {
+      const [cc, cn_] = COMPAT[v.compatibilidade] || COMPAT.BAIXA;
+      return `<div class="sug">💡 Vaga sugerida: <b>${esc(v.vaga)}</b> <span class="chip" style="background:${cc}">${cn_}</span>${v.analista ? ` <span class="mini">por ${esc(v.analista)}</span>` : ''}</div>`;
+    }
+    if (v) return `<div class="sug">⏳ Na vaga <b>${esc(v.vaga)}</b> <span class="mini">· aguardando a análise</span></div>`;
+    if (at && at.vaga) return `<div class="sug">💡 Atlas sugere: <b>${esc(at.vaga)}</b> <span class="mini">· ${esc(at.motivo)}</span></div>`;
+    if (i.status === 'triado') return `<div class="sug mini">Sem vaga aberta para esta pasta: o Atlas encaminha quando abrir uma.</div>`;
+    return '';
+  }
+  function pintarBancoLista(carregando) {
+    const el = $('#blista'); if (!el) return;
+    if (carregando) { el.innerHTML = '<div class="cartao esq"><i class="esq-l" style="width:60%"></i><i class="esq-l"></i></div>'.repeat(5); return; }
+    const filtro = BANCO.pasta ? pastaNome(BANCO.pasta) : BANCO.grupo ? ((BANCO.resumo.grupos.find(g => g.codigo === BANCO.grupo) || {}).nome || '') : '';
+    el.innerHTML = (filtro || BANCO.busca ? `<p class="mini" style="margin:0 2px 8px">${filtro ? `Pasta: <b>${esc(filtro)}</b>` : ''}${BANCO.busca ? ` · busca: “${esc(BANCO.busca)}”` : ''} · ${BANCO.itens.length}${BANCO.tem_mais ? '+' : ''} currículo(s)</p>` : '') +
+      (BANCO.itens.map(i => {
+        const cor = Cena.corGrupo(i.grupo), parecer = i.vaga_sugerida && i.vaga_sugerida.parecer ? i.vaga_sugerida.parecer : i.resumo_triagem;
+        return `<div class="bitem ${BANCO.sel === i.curriculo_id ? 'on' : ''}" data-bcv="${i.curriculo_id}" style="--c:${cor}">
+          <div class="linha"><b>${esc(i.nome)}</b><span class="chip" style="background:${COR_SIT[i.situacao] || '#6B7183'}">${esc(i.situacao)}</span></div>
+          <div class="mini">${esc([i.cidade && i.cidade !== 'Não informado' ? i.cidade : '', i.anos_experiencia ? i.anos_experiencia + ' ano(s) de experiência' : '', pastaNome(i.setor)].filter(Boolean).join(' · '))}</div>
+          ${linhaSugestao(i)}
+          ${parecer ? `<div class="mini parecer">“${esc(parecer.length > 170 ? parecer.slice(0, 167) + '…' : parecer)}”</div>` : ''}</div>`;
+      }).join('') || '<p class="vazio">Nenhum currículo aqui. Os que chegarem por e-mail ou pelo botão Enviar currículos aparecem nas pastas depois da triagem.</p>') +
+      (BANCO.tem_mais ? '<p style="text-align:center;margin:8px 0 14px"><button class="btn claro mini" data-bmais>Carregar mais</button></p>' : '');
+  }
+  async function abrirFicha(id, silencioso) {
+    BANCO.sel = id;
+    document.querySelectorAll('.bitem').forEach(e => e.classList.toggle('on', +e.dataset.bcv === id));
+    if (!silencioso) { BANCO.ficha = null; pintarFicha(true); $('#bancow').classList.add('ficha'); }
+    try {
+      const d = await api('GET', `/api/banco/${id}`);
+      if (BANCO.sel !== id || !BANCO.aberto) return;
+      BANCO.ficha = d; pintarFicha();
+    } catch (e) { if (BANCO.sel === id && $('#bficha')) $('#bficha').innerHTML = `<p class="erro">${esc(e.message)}</p>`; }
+  }
+  function pintarFicha(carregando) {
+    const el = $('#bficha'); if (!el) return;
+    const d = BANCO.ficha;
+    if (carregando) { el.innerHTML = '<div class="cartao esq"><i class="esq-l" style="width:50%;height:18px"></i><i class="esq-l"></i><i class="esq-l" style="width:70%"></i></div>'.repeat(2); return; }
+    if (!d) { el.innerHTML = '<p class="vazio">Escolha um currículo para ver o que a IA disse dele e a vaga sugerida.</p>'; return; }
+    const c = d.candidato, tr = d.triagem, cor = Cena.corGrupo(tr.grupo), v = d.vaga_sugerida, at = d.sugestao_atlas;
+    const analises = d.candidaturas.map(x => {
+      const dec = DECISAO[x.decisao];
+      const ans = (x.analises || []).map(a => {
+        const [cc, cn_] = COMPAT[a.compatibilidade] || COMPAT.BAIXA;
+        return `<div class="disse">${av(x.analista_id, 24)}<div><div><b>${esc(a.agente)}</b> <span class="mini">${a.tipo === 'segunda_opiniao' ? 'segunda opinião' : 'analisou'}</span> <span class="chip" style="background:${cc}">${cn_}</span>
+          ${a.recomendado ? ' <b class="ok">recomendado</b>' : a.avaliacao_humana ? ' <b class="alerta">avaliação humana</b>' : ''}</div>
+          <p>“${esc(a.justificativa)}”</p>
+          ${a.atendidos.length ? `<div class="mini ok">Atende: ${a.atendidos.map(esc).join(' · ')}</div>` : ''}
+          ${a.a_verificar.length ? `<div class="mini alerta">A verificar: ${a.a_verificar.map(esc).join(' · ')}</div>` : ''}</div></div>`;
+      }).join('') || `<p class="mini">${x.status === 'erro' ? 'A análise falhou; veja as pendências no quadro geral.' : 'Na fila do analista da vaga.'}</p>`;
+      return `<div class="cartao"><div class="linha"><b>${esc(x.vaga)}</b>${dec ? `<span class="chip" style="background:${dec[0]}">${dec[1]}</span>` : x.vaga_status !== 'aberta' ? `<span class="chip claro">vaga ${esc(x.vaga_status)}</span>` : ''}</div>
+        ${ans}${x.analises && x.analises.length ? `<p style="margin-top:6px"><a href="#" data-bcand="${x.candidatura_id}">Ver análise completa e decidir ›</a></p>` : ''}</div>`;
+    }).join('');
+    const abertas = d.vagas_abertas.slice().sort((a, b) => b.da_pasta - a.da_pasta);
+    const acoes = gestor() && d.status === 'triado' ? `<div class="cartao"><div class="sec" style="margin-top:0">Levar para uma vaga</div>
+        ${abertas.length ? `<div style="display:flex;gap:6px"><select class="sel" id="bvaga" style="flex:1">${abertas.map(x => `<option value="${x.id}">${esc(x.titulo)}${x.da_pasta ? ' (mesma pasta)' : ''}</option>`).join('')}</select>
+          <button class="btn mini" data-benc="${d.curriculo_id}">Encaminhar</button></div>
+          <p style="margin-top:8px"><button class="btn mini claro" data-bsug="${d.curriculo_id}">✨ Pedir sugestão ao Atlas</button> <span class="mini" id="bsugmsg">${D.ia_modo === 'gemini' ? 'uma chamada à IA; a resposta fica guardada' : ''}</span></p>`
+        : '<p class="mini">Não há outra vaga aberta agora. Crie uma em <b>Nova vaga</b>: o Atlas reaproveita os currículos da pasta.</p>'}</div>` : '';
+    el.innerHTML = `<div class="cartao bcab" style="--c:${cor}"><div class="linha"><h3>${esc(c.nome)}</h3><button class="x" data-bfx aria-label="Fechar ficha">×</button></div>
+        <div class="mini">${esc([c.cidade, c.email, c.telefone].filter(Boolean).join(' · '))}</div>
+        <div class="mini">Pasta <b style="color:${cor}">${esc(pastaNome(tr.setor))}</b> · recebido ${new Date(d.recebido_em).toLocaleDateString('pt-BR')} (${esc(d.origem)})${tr.anos_experiencia ? ` · ${tr.anos_experiencia} ano(s) de experiência` : ''}</div>
+        ${c.dado_sensivel ? '<div class="mini alerta" style="margin-top:4px">Contém dado pessoal sensível declarado pelo candidato: use só para a finalidade da vaga.</div>' : ''}</div>
+      <div class="cartao destaque">${v && v.compatibilidade ? `💡 <b>Vaga sugerida: ${esc(v.vaga)}</b><div class="mini">a melhor análise: ${esc((COMPAT[v.compatibilidade] || COMPAT.BAIXA)[1].toLowerCase())}${v.analista ? ', por ' + esc(v.analista) : ''}</div>`
+        : v ? `⏳ <b>Na vaga ${esc(v.vaga)}</b><div class="mini">aguardando a análise</div>`
+        : at ? `💡 <b>${at.vaga ? 'Atlas sugere: ' + esc(at.vaga) : 'Atlas: nenhuma vaga aberta combina'}</b><div class="mini">${esc(at.motivo)} · confiança ${esc((at.confianca || '').toLowerCase())}</div>`
+        : `<b>Sem vaga sugerida ainda</b><div class="mini">${d.status === 'triado' ? 'Nenhuma vaga aberta usa esta pasta. Peça uma sugestão ao Atlas ou encaminhe abaixo.' : esc(d.situacao)}</div>`}</div>
+      <div class="sec">O que a IA disse</div>
+      <div class="cartao"><div class="disse">${av(tr.por_id, 24)}<div><div><b>${esc(tr.por)}</b> <span class="mini">fez a triagem</span>${tr.confianca ? ` <span class="chip claro">confiança ${esc(tr.confianca.toLowerCase())}</span>` : ''}</div>
+        <p>“${esc(tr.resumo || 'sem resumo')}”</p></div></div></div>
+      ${analises}${acoes}
+      <p style="margin:4px 2px 10px">${d.tem_arquivo ? `<a href="/api/curriculos/${d.curriculo_id}/arquivo" target="_blank" rel="noopener">Abrir arquivo original</a>` : ''}</p>
+      ${d.texto ? `<details class="cartao"><summary>Texto do currículo</summary><pre class="btexto">${esc(d.texto)}</pre></details>` : ''}
+      <p class="mini">Cada abertura fica registrada na auditoria (LGPD).</p>`;
+    desenharAvatares(el);
+  }
+  $('#bancow').addEventListener('click', async e => {
+    const t = e.target;
+    if (t.closest('[data-bx]') || t.id === 'bancow') return fecharBanco();
+    if (t.closest('[data-bfx]')) { BANCO.sel = null; BANCO.ficha = null; $('#bancow').classList.remove('ficha'); document.querySelectorAll('.bitem.on').forEach(x => x.classList.remove('on')); return pintarFicha(); }
+    const sit = t.closest('[data-bsit]'), g = t.closest('[data-bgrupo]'), pa = t.closest('[data-bpasta]'), it = t.closest('[data-bcv]');
+    if (sit) { BANCO.situacao = sit.dataset.bsit; BANCO.pagina = 1; pintarBancoFiltros(); return carregarBanco(); }
+    if (g) { BANCO.grupo = g.dataset.bgrupo; BANCO.pasta = ''; BANCO.pagina = 1; pintarBancoFiltros(); return carregarBanco(); }
+    if (pa) { BANCO.pasta = pa.dataset.bpasta; BANCO.grupo = ''; BANCO.pagina = 1; pintarBancoFiltros(); return carregarBanco(); }
+    if (t.closest('[data-bmais]')) { BANCO.pagina++; return carregarBanco(); }
+    if (it) return abrirFicha(+it.dataset.bcv);
+    const cand = t.closest('[data-bcand]');
+    if (cand) { e.preventDefault(); return abrirCurriculo(+cand.dataset.bcand); }
+    const enc = t.closest('[data-benc]'), sug = t.closest('[data-bsug]');
+    if (enc) {
+      enc.disabled = true;
+      try { BANCO.ficha = await api('POST', `/api/banco/${enc.dataset.benc}/encaminhar`, { vaga_id: +$('#bvaga').value }); pintarFicha(); carregarBanco(true); carregar(); }
+      catch (er) { alert(er.message); enc.disabled = false; }
+    }
+    if (sug) {
+      sug.disabled = true; $('#bsugmsg').textContent = '💭 Atlas está lendo o currículo…';
+      try { BANCO.ficha = await api('POST', `/api/banco/${sug.dataset.bsug}/sugerir`); pintarFicha(); carregarBanco(true); }
+      catch (er) { $('#bsugmsg').textContent = er.message; sug.disabled = false; }
+    }
   });
 
   // ================================================================ modais
@@ -1254,5 +1578,10 @@
   window.__hubZoom = f => zoom(f);
   window.__hubPosicoes = () => posicoes.map(p => ({ id: p.a.id, nome: p.a.nome, x: p.hx, y: p.hy, estado: p.a.estado, andando: p.andando, dir: p.dir }));
   window.__hubBaloes = () => Object.entries(VIS).map(([id, v]) => ({ id: +id, baloes: v.baloes.map(b => ({ tipo: b.tipo, texto: b.texto, visivel: !!b.t0 })) }));
-  addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('#modal').dataset.travado) $('#modal').style.display = 'none'; $('#cvw').style.display = 'none'; } });
+  addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    if ($('#cvw').style.display === 'block') { $('#cvw').style.display = 'none'; return; }
+    if (!$('#modal').dataset.travado) $('#modal').style.display = 'none';
+    if (BANCO.aberto) fecharBanco();
+  });
 })();

@@ -217,12 +217,20 @@ def detalhe(db: Session, cur: Curriculo) -> dict:
 
 
 def guardar_sugestao(cur: Curriculo, sugestao: dict | None, vaga: Vaga | None):
-    """A sugestão do Atlas fica no currículo (não precisa perguntar de novo à IA); sai junto na anonimização."""
+    """A sugestão do Atlas fica no currículo (não precisa perguntar de novo à IA); sai junto na anonimização.
+    Com confiança baixa não é sugestão: fica registrado que nenhuma vaga combina bem, citando a mais próxima."""
+    conf = str((sugestao or {}).get("confianca") or "BAIXA").upper()
+    boa = bool(vaga) and conf in ("ALTA", "MEDIA")
+    if boa:
+        motivo = (sugestao or {}).get("motivo") or ""
+    elif vaga:
+        motivo = f"nenhuma vaga aberta combina bem; a mais próxima seria “{vaga.titulo}”"
+    else:
+        motivo = "nenhuma vaga aberta combina com este currículo agora"
     cur.triagem_json = {**(cur.triagem_json or {}), "sugestao_atlas": {
-        "vaga_id": vaga.id if vaga else None, "vaga": vaga.titulo if vaga else None,
-        "confianca": (sugestao or {}).get("confianca", "BAIXA"),
-        "motivo": (sugestao or {}).get("motivo") or "nenhuma vaga aberta combina com este currículo agora",
-        "em": iso(agora())}}
+        "vaga_id": vaga.id if boa else None, "vaga": vaga.titulo if boa else None,
+        "confianca": conf, "motivo": motivo, "em": iso(agora())}}
+    return boa
 
 
 def dados_para_sugestao(db: Session, cur: Curriculo) -> tuple[str, list[dict]]:
@@ -236,10 +244,10 @@ def registrar_sugestao(db: Session, cur: Curriculo, sugestao: dict | None):
     vaga = db.get(Vaga, sugestao["vaga_id"]) if sugestao and sugestao.get("vaga_id") else None
     if vaga and vaga.status != "aberta":
         vaga = None
-    guardar_sugestao(cur, sugestao, vaga)
+    boa = guardar_sugestao(cur, sugestao, vaga)
     from .servicos import atlas, primeiro_nome
     nome = primeiro_nome(cur.candidato.nome if cur.candidato else "Candidato")
-    eventos.registrar(db, "sugestao_banco", (f"Atlas sugeriu a vaga “{vaga.titulo}” para {nome}" if vaga else
-                                             f"Atlas não achou vaga aberta para {nome} por enquanto"),
-                      atlas(db).id, curriculo_id=cur.id, candidato_id=cur.candidato_id, vaga_id=vaga.id if vaga else None)
+    eventos.registrar(db, "sugestao_banco", (f"Atlas sugeriu a vaga “{vaga.titulo}” para {nome}" if boa else
+                                             f"Atlas não achou vaga aberta que combine com {nome} por enquanto"),
+                      atlas(db).id, curriculo_id=cur.id, candidato_id=cur.candidato_id, vaga_id=vaga.id if boa else None)
     return cur.triagem_json["sugestao_atlas"]
