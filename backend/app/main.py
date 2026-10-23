@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from . import config, eventos, servicos as S, uso_ia
+from . import acervo, config, eventos, servicos as S, uso_ia
 from .catalogo import CATEGORIAS_DISPONIVEIS
 from .db import Base, engine, migrar, obter_db, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
@@ -578,6 +578,86 @@ def arquivo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), 
                     headers={"Content-Disposition": f'inline; filename="{nome}"'})
 
 
+# =========================================================================== banco de currículos (arquivo do escritório)
+def _curriculo_do_banco(db, cur_id) -> Curriculo:
+    cur = db.get(Curriculo, cur_id)
+    if not cur or cur.status == "anonimizado" or (cur.candidato and cur.candidato.anonimizado_em):
+        raise HTTPException(404, "Currículo não encontrado.")
+    return cur
+
+
+@app.get("/api/banco")
+def banco(request: Request, grupo: str | None = None, pasta: str | None = None, situacao: str | None = None,
+          busca: str = "", pagina: int = 1, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+    if situacao and situacao not in acervo.SITUACOES:
+        raise HTTPException(400, "Situação inválida.")
+    auditar(db, u, "listar_banco", "curriculo", None, request, grupo=grupo, pasta=pasta, situacao=situacao,
+            busca=bool(busca.strip()))
+    return acervo.listar(db, grupo, pasta, situacao, busca, pagina)
+
+
+@app.get("/api/banco/{cur_id}")
+def banco_curriculo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+    cur = _curriculo_do_banco(db, cur_id)
+    auditar(db, u, "ver_curriculo", "curriculo", cur_id, request)
+    return acervo.detalhe(db, cur)
+
+
+class Encaminhamento(BaseModel):
+    vaga_id: int
+
+
+@app.post("/api/banco/{cur_id}/encaminhar")
+def banco_encaminhar(cur_id: int, d: Encaminhamento, request: Request, u: Usuario = Depends(exigir("supervisor")),
+                     db: Session = Depends(obter_db)):
+    """O recrutador tira um currículo do banco e o põe numa vaga aberta: o analista da vaga analisa."""
+    cur = _curriculo_do_banco(db, cur_id)
+    vaga = db.get(Vaga, d.vaga_id)
+    if not vaga or vaga.status != "aberta":
+        raise HTTPException(400, "Escolha uma vaga aberta.")
+    if cur.status != "triado":
+        raise HTTPException(400, "Este currículo ainda não passou pela triagem.")
+    if not S._encaminhar(db, cur, vaga, origem="banco"):
+        raise HTTPException(409, "Este currículo já está nessa vaga.")
+    if cur.candidato:
+        cur.candidato.ultima_atividade_em = agora()
+    nome = S.primeiro_nome(cur.candidato.nome if cur.candidato else "Candidato")
+    eventos.registrar(db, "encaminhamento_manual", f"Atlas buscou no arquivo o currículo de {nome} e o pôs na vaga "
+                      f"“{vaga.titulo}” (pedido de {u.nome})", S.atlas(db).id, curriculo_id=cur.id,
+                      candidato_id=cur.candidato_id, vaga_id=vaga.id)
+    auditar(db, u, "encaminhar_do_banco", "curriculo", cur_id, request, vaga_id=vaga.id)
+    return acervo.detalhe(db, cur)
+
+
+@app.post("/api/banco/{cur_id}/sugerir")
+async def banco_sugerir(cur_id: int, request: Request, u: Usuario = Depends(exigir("supervisor"))):
+    """O Atlas lê o currículo e diz qual vaga aberta combina (uma chamada à IA; a resposta fica guardada)."""
+    def ler():
+        with sessao() as db:
+            cur = _curriculo_do_banco(db, cur_id)
+            return acervo.dados_para_sugestao(db, cur)
+    texto, abertas = await asyncio.to_thread(ler)
+    if not abertas:
+        raise HTTPException(400, "Não há vagas abertas para sugerir.")
+    if not texto:
+        raise HTTPException(400, "Este currículo não tem texto legível para o Atlas comparar com as vagas.")
+    try:
+        sugestao = await asyncio.to_thread(S.ia.sugerir_vaga, texto, abertas)
+    except uso_ia.IAIndisponivel as e:
+        raise HTTPException(503, f"A IA está pausada: {e}")
+    except Exception as e:
+        log.warning("Sugestão do banco falhou: %s", type(e).__name__)
+        raise HTTPException(503, "Não consegui consultar a IA agora.")
+
+    def gravar():
+        with sessao() as db:
+            cur = _curriculo_do_banco(db, cur_id)
+            acervo.registrar_sugestao(db, cur, sugestao)
+            auditar(db, u, "sugerir_vaga_banco", "curriculo", cur_id, request)
+            return acervo.detalhe(db, cur)
+    return await asyncio.to_thread(gravar)
+
+
 class NovaDecisao(BaseModel):
     decisao: str
     observacao: str = Field("", max_length=1000)
@@ -601,7 +681,8 @@ def decidir(cid: int, d: NovaDecisao, request: Request, u: Usuario = Depends(usu
 # =========================================================================== vagas, quadro e pendências
 @app.get("/api/vagas")
 def vagas(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
-    return [S.vaga_json(db, v, completo=True) for v in db.scalars(select(Vaga).order_by(Vaga.id)).all()]
+    lote = S.Lote(db)
+    return [S.vaga_json(db, v, completo=True, lote=lote) for v in db.scalars(select(Vaga).order_by(Vaga.id)).all()]
 
 
 class NovaVaga(BaseModel):
@@ -658,8 +739,9 @@ def status_vaga(vid: int, d: StatusVaga, request: Request, u: Usuario = Depends(
 def quadro(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
     pend = db.scalars(select(Pendencia).where(Pendencia.status == "aberta").order_by(Pendencia.id.desc())).all()
     nomes = {a.id: a.nome for a in db.scalars(select(Agente)).all()}
-    return {"resumo": S.quadro(db),
-            "equipe": [S.agente_json(db, a) for a in db.scalars(select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all()],
+    lote = S.Lote(db)
+    return {"resumo": S.quadro(db, lote),
+            "equipe": [S.agente_json(db, a, lote) for a in lote.ativos],
             "pendencias": [{"id": p.id, "tipo": p.tipo, "descricao": p.descricao, "agente": nomes.get(p.agente_id),
                             "curriculo_id": p.curriculo_id, "candidatura_id": p.candidatura_id, "vaga_id": p.vaga_id,
                             "especialidade_id": p.especialidade_id, "criado_em": iso(p.criado_em)} for p in pend],

@@ -11,14 +11,14 @@ import logging
 import os
 import threading
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, or_
+from sqlalchemy import case, delete, func, select, or_
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from . import config, eventos, ia, triagem, uso_ia
+from . import acervo, config, eventos, ia, triagem, uso_ia
 from .catalogo import CATEGORIAS_SENSIVEIS, ESPECIALIDADES, NOMES_EXTRAS, aparencia_para
 from .db import sessao
 from .models import (Agente, Analise, Candidato, Candidatura, Configuracao, Contratacao, Curriculo, Decisao,
@@ -344,6 +344,8 @@ def executar_distribuicao(tarefa_id: int):
         nome = primeiro_nome(cur.candidato.nome if cur.candidato else "Candidato")
         if cur.setor == "OUTROS":
             vaga = db.get(Vaga, sugestao["vaga_id"]) if sugestao and sugestao.get("confianca") in ("ALTA", "MEDIA") else None
+            if abertas:  # o banco de currículos mostra o que o Atlas achou, sem perguntar de novo à IA
+                acervo.guardar_sugestao(cur, sugestao, db.get(Vaga, sugestao["vaga_id"]) if sugestao else None)
             if vaga and vaga.status == "aberta":
                 _pensar(db, sup, f"Lembra a vaga “{vaga.titulo}”. Vou encaminhar.", candidato_id=cur.candidato_id)
                 eventos.registrar(db, "encaminhamento_automatico",
@@ -1031,15 +1033,45 @@ def limpar_conversas() -> int:
 
 
 # =========================================================================== estados e leituras
-def estado_de(db, ag: Agente) -> tuple[str, str]:
+class Lote:
+    """Contagens da equipe e das vagas lidas de uma vez, em poucas consultas agrupadas, em vez de várias por
+    agente e por vaga: com o banco longe (Supabase), cada consulta é uma ida e volta pela internet."""
+
+    def __init__(self, db):
+        db.scalars(select(Especialidade)).all()  # no mapa de identidade: ag.especialidade não consulta de novo
+        self.ativos = db.scalars(select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all()
+        self.carga = dict(db.execute(select(Tarefa.agente_id, func.count()).where(
+            Tarefa.status.in_(("pendente", "executando")), Tarefa.agente_id.is_not(None)).group_by(Tarefa.agente_id)).all())
+        self.pendencias, self.pendencia = Counter(), {}
+        for ag_id, desc in db.execute(select(Pendencia.agente_id, Pendencia.descricao).where(
+                Pendencia.status == "aberta").order_by(Pendencia.id)).all():
+            self.pendencias[ag_id] += 1
+            self.pendencia.setdefault(ag_id, desc)
+        self.total_pendencias = sum(self.pendencias.values())
+        self.vagas_de, self.responsaveis = defaultdict(list), defaultdict(list)
+        por_id = {a.id: a for a in self.ativos}
+        for ag_id, vaga_id in db.execute(select(VagaAgente.agente_id, VagaAgente.vaga_id).order_by(VagaAgente.vaga_id, VagaAgente.agente_id)).all():
+            self.vagas_de[ag_id].append(vaga_id)
+            if ag_id in por_id:
+                self.responsaveis[vaga_id].append(por_id[ag_id])
+        self.contagem = {vid: (rec, int(ana or 0)) for vid, rec, ana in db.execute(
+            select(Candidatura.vaga_id, func.count(), func.sum(case((Candidatura.status == "analisada", 1), else_=0)))
+            .group_by(Candidatura.vaga_id)).all()}
+
+
+def estado_de(db, ag: Agente, lote: Lote | None = None) -> tuple[str, str]:
     if not ag.ativo:
         return "inativo", ""
     if ag.tarefa_atual_id:
         return "trabalhando", ag.atividade
-    p = db.scalar(select(Pendencia).where(Pendencia.agente_id == ag.id, Pendencia.status == "aberta"))
-    if p:
-        return "pendencia", p.descricao
-    if carga(db, ag):
+    if lote:
+        desc = lote.pendencia.get(ag.id)
+    else:
+        p = db.scalar(select(Pendencia).where(Pendencia.agente_id == ag.id, Pendencia.status == "aberta"))
+        desc = p.descricao if p else None
+    if desc is not None:
+        return "pendencia", desc
+    if (lote.carga.get(ag.id, 0) if lote else carga(db, ag)):
         if uso_ia.bloqueio() or (config.IA_MODO == "gemini" and uso_ia.pausa_do_provedor()):
             return "aguardando", "esperando a IA voltar para seguir com a fila"  # a fila não anda sem a IA
         return "trabalhando", "pegando o próximo currículo"
@@ -1047,7 +1079,8 @@ def estado_de(db, ag: Agente) -> tuple[str, str]:
     if ag.concluido_em and t - ag.concluido_em < timedelta(seconds=config.SEGUNDOS_CONCLUIDO):
         return "concluido", {"recepcao": "terminou a triagem da fila", "supervisor": "distribuiu todos os currículos"}.get(
             ag.funcao, "terminou as análises da fila")
-    tem_vagas = db.scalar(select(func.count()).select_from(VagaAgente).where(VagaAgente.agente_id == ag.id))
+    tem_vagas = (len(lote.vagas_de.get(ag.id, [])) if lote else
+                 db.scalar(select(func.count()).select_from(VagaAgente).where(VagaAgente.agente_id == ag.id)))
     if ag.funcao == "analista":
         ocioso = t - (ag.ultima_atividade_em or ag.ativado_em or t)
         if ocioso >= timedelta(seconds=config.SEGUNDOS_PARA_DESCANSO):
@@ -1058,9 +1091,9 @@ def estado_de(db, ag: Agente) -> tuple[str, str]:
     return "aguardando", "aguardando novos currículos" if ag.funcao == "recepcao" else "acompanhando a equipe"
 
 
-def agente_json(db, ag: Agente) -> dict:
-    est, ativ = estado_de(db, ag)
-    vagas = db.scalars(select(VagaAgente.vaga_id).where(VagaAgente.agente_id == ag.id)).all()
+def agente_json(db, ag: Agente, lote: Lote | None = None) -> dict:
+    est, ativ = estado_de(db, ag, lote)
+    vagas = lote.vagas_de.get(ag.id, []) if lote else db.scalars(select(VagaAgente.vaga_id).where(VagaAgente.agente_id == ag.id)).all()
     return {"id": ag.id, "nome": ag.nome, "funcao": ag.funcao,
             "funcao_rotulo": {"supervisor": "Supervisor da equipe", "recepcao": "Recepção de currículos",
                               "analista": "Analista de currículos"}[ag.funcao],
@@ -1068,24 +1101,27 @@ def agente_json(db, ag: Agente) -> dict:
             ("Supervisão e coordenação" if ag.funcao == "supervisor" else "Recebimento e triagem de currículos"),
             "especialidade_codigo": ag.especialidade.codigo if ag.especialidade else None,
             "estado": est, "atividade": ativ, "estacao": ag.estacao, "aparencia": ag.aparencia,
-            "perfil": publico(perfil(ag)), "carga": carga(db, ag),
+            "perfil": publico(perfil(ag)), "carga": lote.carga.get(ag.id, 0) if lote else carga(db, ag),
             "vagas": list(vagas),
-            "pendencias": db.scalar(select(func.count()).select_from(Pendencia).where(
+            "pendencias": lote.pendencias.get(ag.id, 0) if lote else db.scalar(select(func.count()).select_from(Pendencia).where(
                 Pendencia.agente_id == ag.id, Pendencia.status == "aberta"))}
 
 
-def _contagem_vaga(db, v: Vaga) -> dict:
+def _contagem_vaga(db, v: Vaga, lote: Lote | None = None) -> dict:
+    if lote:
+        rec, ana = lote.contagem.get(v.id, (0, 0))
+        return {"recebidos": rec, "analisados": ana, "pendentes": rec - ana}
     rec = db.scalar(select(func.count()).select_from(Candidatura).where(Candidatura.vaga_id == v.id)) or 0
     ana = db.scalar(select(func.count()).select_from(Candidatura).where(Candidatura.vaga_id == v.id,
                                                                          Candidatura.status == "analisada")) or 0
     return {"recebidos": rec, "analisados": ana, "pendentes": rec - ana}
 
 
-def vaga_json(db, v: Vaga, completo=False) -> dict:
-    resp = responsaveis(db, v)
+def vaga_json(db, v: Vaga, completo=False, lote: Lote | None = None) -> dict:
+    resp = lote.responsaveis.get(v.id, []) if lote else responsaveis(db, v)
     d = {"id": v.id, "titulo": v.titulo, "area": v.area, "local": v.local, "status": v.status,
          "setores": v.setores, "responsaveis": [{"id": a.id, "nome": a.nome} for a in resp],
-         "sem_responsavel": v.status == "aberta" and not resp, **_contagem_vaga(db, v)}
+         "sem_responsavel": v.status == "aberta" and not resp, **_contagem_vaga(db, v, lote)}
     d["situacao"] = ("sem responsável" if d["sem_responsavel"] else v.status if v.status != "aberta" else
                      "em análise" if d["pendentes"] else "aguardando currículos" if not d["recebidos"] else "em dia")
     if completo:
@@ -1093,24 +1129,29 @@ def vaga_json(db, v: Vaga, completo=False) -> dict:
     return d
 
 
-def quadro(db) -> dict:
-    vagas = db.scalars(select(Vaga)).all()
+def _soma(cond):
+    return func.coalesce(func.sum(case((cond, 1), else_=0)), 0)
+
+
+def quadro(db, lote: Lote | None = None, vagas: list[Vaga] | None = None) -> dict:
+    lote = lote or Lote(db)
+    vagas = vagas if vagas is not None else db.scalars(select(Vaga)).all()
     abertas = [v for v in vagas if v.status == "aberta"]
     hoje = agora().replace(hour=0, minute=0, second=0, microsecond=0)
-    vj = [vaga_json(db, v) for v in abertas]
+    vj = [vaga_json(db, v, lote=lote) for v in abertas]
+    recebidos, triados = db.execute(select(_soma(Curriculo.status != "anonimizado"), _soma(Curriculo.status == "triado"))).one()
+    analises, analises_hoje = db.execute(select(func.count(), _soma(Analise.criado_em >= hoje)).select_from(Analise)).one()
+    consultas, pendentes = db.execute(select(_soma((Tarefa.tipo == "CONSULTA") & (Tarefa.status == "concluida")),
+                                             _soma(Tarefa.status.in_(("pendente", "executando"))))).one()
     return {
         "vagas_abertas": len(abertas),
         "vagas_sem_responsavel": sum(1 for v in vj if v["sem_responsavel"]),
         "vagas_em_processamento": sum(1 for v in vj if v["pendentes"]),
-        "curriculos_recebidos": db.scalar(select(func.count()).select_from(Curriculo).where(Curriculo.status != "anonimizado")) or 0,
-        "curriculos_triados": db.scalar(select(func.count()).select_from(Curriculo).where(Curriculo.status == "triado")) or 0,
-        "analises_concluidas": db.scalar(select(func.count()).select_from(Analise)) or 0,
-        "analises_hoje": db.scalar(select(func.count()).select_from(Analise).where(Analise.criado_em >= hoje)) or 0,
-        "consultas_entre_colegas": db.scalar(select(func.count()).select_from(Tarefa).where(
-            Tarefa.tipo == "CONSULTA", Tarefa.status == "concluida")) or 0,
-        "tarefas_pendentes": db.scalar(select(func.count()).select_from(Tarefa).where(Tarefa.status.in_(("pendente", "executando")))) or 0,
-        "pendencias": db.scalar(select(func.count()).select_from(Pendencia).where(Pendencia.status == "aberta")) or 0,
-        "agentes_ativos": db.scalar(select(func.count()).select_from(Agente).where(Agente.ativo.is_(True), Agente.funcao == "analista")) or 0,
+        "curriculos_recebidos": int(recebidos), "curriculos_triados": int(triados),
+        "analises_concluidas": analises or 0, "analises_hoje": int(analises_hoje),
+        "consultas_entre_colegas": int(consultas), "tarefas_pendentes": int(pendentes),
+        "pendencias": lote.total_pendencias,
+        "agentes_ativos": sum(1 for a in lote.ativos if a.funcao == "analista"),
         "estacoes": MAX_ESTACOES,
     }
 
@@ -1123,15 +1164,16 @@ def _eventos_recentes(db, limite=25, agente_id=None):
 
 
 def escritorio(db) -> dict:
-    ags = db.scalars(select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all()
-    fila_triagem = db.scalar(select(func.count()).select_from(Tarefa).where(
-        Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0
-    fila_analise = db.scalar(select(func.count()).select_from(Tarefa).where(
-        Tarefa.tipo == "ANALISE", Tarefa.status == "pendente")) or 0
-    return {"agentes": [agente_json(db, a) for a in ags],
-            "fila_triagem": fila_triagem, "fila_analise": fila_analise,
-            "vagas": [vaga_json(db, v) for v in db.scalars(select(Vaga).order_by(Vaga.id)).all()],
-            "quadro": quadro(db),
+    lote = Lote(db)
+    vagas = db.scalars(select(Vaga).order_by(Vaga.id)).all()
+    fila_triagem, fila_analise = db.execute(select(
+        _soma((Tarefa.tipo == "TRIAGEM") & Tarefa.status.in_(("pendente", "executando"))),
+        _soma((Tarefa.tipo == "ANALISE") & (Tarefa.status == "pendente")))).one()
+    return {"agentes": [agente_json(db, a, lote) for a in lote.ativos],
+            "fila_triagem": int(fila_triagem), "fila_analise": int(fila_analise),
+            "vagas": [vaga_json(db, v, lote=lote) for v in vagas],
+            "quadro": quadro(db, lote, vagas),
+            "banco": acervo.resumo(db),
             "eventos": _eventos_recentes(db),
             "ia_modo": config.IA_MODO,
             "ia_pausa": (uso_ia.bloqueio() or uso_ia.pausa_do_provedor()) if config.IA_MODO == "gemini" else None,
@@ -1158,39 +1200,51 @@ def _decisao_atual(db, cand_id):
     return d.decisao if d else None
 
 
+def _decisoes_atuais(db, ids) -> dict:
+    atual = {}
+    for cid, dec in db.execute(select(Decisao.candidatura_id, Decisao.decisao).where(
+            Decisao.candidatura_id.in_(list(ids) or [-1])).order_by(Decisao.id)).all():
+        atual[cid] = dec  # a mais recente fica
+    return atual
+
+
 def candidatos_do_agente(db, ag_id: int, vaga_id: int | None = None) -> list[dict]:
-    q = select(Analise, Candidatura).join(Candidatura, Analise.candidatura_id == Candidatura.id).where(Analise.agente_id == ag_id)
+    q = (select(Analise, Candidatura).join(Candidatura, Analise.candidatura_id == Candidatura.id)
+         .where(Analise.agente_id == ag_id).options(joinedload(Candidatura.candidato), joinedload(Candidatura.vaga)))
     if vaga_id:
         q = q.where(Candidatura.vaga_id == vaga_id)
     ordem = {"ALTA": 0, "MEDIA": 1, "BAIXA": 2}
+    linhas = [(a, c) for a, c in db.execute(q).all() if not (c.candidato and c.candidato.anonimizado_em)]
+    decisoes = _decisoes_atuais(db, {c.id for _, c in linhas})
     saida = []
-    for a, c in db.execute(q).all():
-        if c.candidato and c.candidato.anonimizado_em:
-            continue
+    for a, c in linhas:
         j = _analise_json(a, c)
-        j["decisao"] = _decisao_atual(db, c.id)
+        j["decisao"] = decisoes.get(c.id)
         saida.append(j)
     saida.sort(key=lambda j: (not j["recomendado"], not j["avaliacao_humana"], ordem.get(j["compatibilidade"], 3), j["nome"]))
     return saida
 
 
-def detalhe_agente(db, ag: Agente) -> dict:
-    base = agente_json(db, ag)
-    vagas = [db.get(Vaga, i) for i in base["vagas"]]
+def detalhe_agente(db, ag: Agente, lote: Lote | None = None) -> dict:
+    lote = lote or Lote(db)
+    base = agente_json(db, ag, lote)
+    vagas = db.scalars(select(Vaga).where(Vaga.id.in_(base["vagas"] or [-1]))).all()
+    por_id = {v.id: v for v in vagas}
     vj = []
-    for v in vagas:
-        d = vaga_json(db, v, completo=True)
+    for i in base["vagas"]:
+        d = vaga_json(db, por_id[i], completo=True, lote=lote)
         d["descricao"] = (d["descricao"] or "")[:220]
         vj.append(d)
-    principais = select(func.count()).select_from(Analise).where(Analise.agente_id == ag.id)
+    analisados, segundas, recomendados = db.execute(select(
+        _soma(Analise.tipo == "principal"), _soma(Analise.tipo == "segunda_opiniao"), _soma(Analise.recomendado.is_(True)))
+        .where(Analise.agente_id == ag.id)).one()
     base["estatisticas"] = {
         "recebidos": sum(v["recebidos"] for v in vj),
-        "analisados": db.scalar(principais.where(Analise.tipo == "principal")) or 0,
-        "segundas_opinioes": db.scalar(principais.where(Analise.tipo == "segunda_opiniao")) or 0,
+        "analisados": int(analisados), "segundas_opinioes": int(segundas),
         "ajudas_dadas": db.scalar(select(func.count()).select_from(Tarefa).where(
             Tarefa.agente_id == ag.id, Tarefa.tipo == "CONSULTA", Tarefa.status == "concluida")) or 0,
-        "pendentes": carga(db, ag),
-        "recomendados": db.scalar(principais.where(Analise.recomendado.is_(True))) or 0,
+        "pendentes": lote.carga.get(ag.id, 0),
+        "recomendados": int(recomendados),
         "vagas_em_andamento": sum(1 for v in vj if v["status"] == "aberta"),
     }
     base["vagas_detalhe"] = vj
@@ -1207,8 +1261,9 @@ def contratacoes_recentes(db, limite=10) -> list[dict]:
             for c in db.scalars(select(Contratacao).order_by(Contratacao.id.desc()).limit(limite)).all()]
 
 
-def contexto_chat(db, ag: Agente) -> dict:
-    d = detalhe_agente(db, ag)
+def contexto_chat(db, ag: Agente, lote: Lote | None = None) -> dict:
+    lote = lote or Lote(db)
+    d = detalhe_agente(db, ag, lote)
     cands = candidatos_do_agente(db, ag.id)[:15]  # contexto enxuto: menos tokens por pergunta
     ctx = {
         "agente": {k: d[k] for k in ("nome", "funcao", "especialidade", "estado", "atividade")},
@@ -1224,16 +1279,15 @@ def contexto_chat(db, ag: Agente) -> dict:
         "colegas": [{"nome": a.nome, "funcao": a.funcao,
                      "especialidade": a.especialidade.nome if a.especialidade else
                      ("coordenação" if a.funcao == "supervisor" else "recepção e triagem")}
-                    for a in db.scalars(select(Agente).where(Agente.ativo.is_(True), Agente.id != ag.id)).all()],
+                    for a in lote.ativos if a.id != ag.id],
         "fila_recepcao": db.scalar(select(func.count()).select_from(Tarefa).where(
             Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0,
         "curriculos_registrados": db.scalar(select(func.count()).select_from(Curriculo)) or 0,
-        "quadro": quadro(db),
+        "quadro": quadro(db, lote),
     }
     if ag.funcao == "supervisor":
         ctx["equipe"] = [{k: x[k] for k in ("nome", "funcao", "especialidade", "estado", "atividade", "carga")}
-                         for x in (agente_json(db, a) for a in db.scalars(
-                             select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all())]
+                         for x in (agente_json(db, a, lote) for a in lote.ativos)]
         ctx["contratacoes"] = contratacoes_recentes(db, 6)
         ctx["limite_fila"] = config.LIMITE_FILA_POR_AGENTE
     return ctx
@@ -1241,13 +1295,16 @@ def contexto_chat(db, ag: Agente) -> dict:
 
 def contexto_equipe(db, por_agente: bool = False) -> dict:
     """Contexto do canal da equipe: quem é quem, como está cada um, vagas e destaques."""
-    ags = db.scalars(select(Agente).where(Agente.ativo.is_(True)).order_by(Agente.id)).all()
+    lote = Lote(db)
+    ags = lote.ativos
+    vagas = db.scalars(select(Vaga).order_by(Vaga.id)).all()
+    titulo_aberta = {v.id: v.titulo for v in vagas if v.status == "aberta"}
     equipe = []
     for a in ags:
-        j = agente_json(db, a)
+        j = agente_json(db, a, lote)
         equipe.append({"id": a.id, "nome": a.nome, "funcao": a.funcao, "especialidade": j["especialidade"],
                        "estado": j["estado"], "atividade": j["atividade"], "carga": j["carga"],
-                       "vagas": [v.titulo for v in _vagas_abertas_de(db, a)],
+                       "vagas": [titulo_aberta[i] for i in lote.vagas_de.get(a.id, []) if i in titulo_aberta],
                        "personalidade": {k: perfil(a).get(k) for k in ("resumo", "tom", "bordoes")}})
     candidatos = []
     for a in (x for x in ags if x.funcao == "analista"):
@@ -1256,17 +1313,17 @@ def contexto_equipe(db, por_agente: bool = False) -> dict:
                                "recomendado": c["recomendado"], "avaliacao_humana": c["avaliacao_humana"],
                                "decisao": c["decisao"], "analista": a.nome,
                                "consultou": [x["colega"] for x in c["colaboracoes"]]})
-    ctx = {"quadro": quadro(db), "equipe": equipe,
+    ctx = {"quadro": quadro(db, lote, vagas), "equipe": equipe,
            "vagas": [{"titulo": v["titulo"], "status": v["status"], "responsaveis": [r["nome"] for r in v["responsaveis"]],
                       "recebidos": v["recebidos"], "analisados": v["analisados"], "pendentes": v["pendentes"]}
-                     for v in (vaga_json(db, v) for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all())],
+                     for v in (vaga_json(db, v, lote=lote) for v in vagas if v.status == "aberta")],
            "candidatos": candidatos[:20],
            "conversas_recentes": [e["mensagem"] for e in conversas_equipe(db, 6)["eventos"] if e["tipo"] == "conversa"],
            "contratacoes": contratacoes_recentes(db, 5),
            "fila_recepcao": db.scalar(select(func.count()).select_from(Tarefa).where(
                Tarefa.tipo == "TRIAGEM", Tarefa.status.in_(("pendente", "executando")))) or 0}
     if por_agente:
-        ctx["agentes_ctx"] = {a.id: contexto_chat(db, a) for a in ags}
+        ctx["agentes_ctx"] = {a.id: contexto_chat(db, a, lote) for a in ags}
     return ctx
 
 

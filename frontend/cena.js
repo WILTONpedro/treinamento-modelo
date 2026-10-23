@@ -147,6 +147,12 @@
     folha1: '#3F9147', folha2: '#5DBA5F', folha3: '#2C6A33', vaso: '#B95A2E',
   };
   const LIVROS = ['#C0504D', '#4F81BD', '#9BBB59', '#F2C14E', '#8064A2', '#E07B39', '#2E8B88', '#D9D2C0'];
+  // cor das pastas de cada área da equipe (banco de currículos); áreas novas ganham uma cor estável
+  const COR_GRUPO = { operacional: '#E07B39', administrativo: '#4F81BD', comercial: '#3FB56B', promotores: '#E678AA',
+    marketing: '#8E6BBF', lideranca: '#C0504D', ti: '#2F9C9C', inclusao: '#F2C14E', outros: '#8A8F99' };
+  const corGrupo = c => COR_GRUPO[c] || escolha(c || '?', ['#B47C4C', '#5DA35E', '#D9534F', '#7E8CE0', '#C9A15B', '#3E8E9E']);
+  // o que muda a cada quadro sem redesenhar o cenário (telas, TV): atualizado pelo app a cada quadro
+  const VIVO = { estacoes: {}, tv: null, atlas: false, t: 0 };
 
   // ------------------------------------------------------------------ estações, locais e rotas
   const ESTACOES = [];   // 12 estações: 3 ilhas × 2 fileiras × 2 mesas
@@ -165,7 +171,10 @@
     no('c' + i, e.x, e.fila === 'A' ? 4.65 : 9.55, { f: e.face });
   });
   no('recepcao', 1.3, 11.1, { f: 'e', sentado: true, digita: true });
-  no('atlas', 3.0, 1.4, { f: 's', sentado: true });
+  no('atlas', 3.0, 1.4, { f: 's', sentado: true, digita: true });
+  // arquivo (banco de currículos): atrás do balcão, de frente para a sala, e diante dele
+  no('arquivo0', 13.0, 1.35, { f: 's', item: 'pasta' }); no('arquivo1', 14.2, 1.35, { f: 's', item: 'pasta' });
+  no('balcaoArq', 13.6, 3.05, { f: 'n' });
   no('sV', 3.0, 3.75, { f: 'n' });
   no('entrada', 0.55, 13.9, { f: 'e' });
   [10.4, 11.3, 12.2].forEach((y, i) => no('balcao' + i, 3.35, y, { f: 'w' }));
@@ -173,17 +182,18 @@
   // locais de descanso: [nó, o que faz, para onde olha, sentado, objeto na mão]
   const LOCAIS_DESCANSO = [
     ['ping0', 'jogando pingue-pongue', 'e', 0, 'raquete'], ['ping1', 'jogando pingue-pongue', 'w', 0, 'raquete'],
-    ['sofa0', 'assistindo TV', 'n', 1], ['sofa1', 'assistindo TV', 'n', 1], ['sofa2', 'assistindo TV', 'n', 1],
-    ['comer0', 'tomando um café', 'e', 1, 'xicara'], ['comer1', 'fazendo um lanche', 'w', 1], ['comer2', 'tomando um café', 'n', 1, 'xicara'],
-    ['comer3', 'fazendo um lanche', 'e', 1], ['comer4', 'tomando um café', 'w', 1, 'xicara'], ['comer5', 'fazendo um lanche', 'n', 1],
-    ['geladeira', 'pegando algo na geladeira', 'n', 0],
-    ['pufe0', 'descansando no pufe', 'n', 1], ['pufe1', 'descansando no pufe', 'n', 1], ['pufe2', 'descansando no pufe', 'n', 1],
+    ['sofa1', 'jogando videogame', 'n', 1, 'controle'], ['sofa0', 'assistindo TV', 'n', 1], ['sofa2', 'assistindo TV', 'n', 1],
+    ['comer0', 'tomando um café', 'e', 1, 'xicara'], ['comer1', 'fazendo um lanche', 'w', 1, 'lanche'], ['comer2', 'tomando um café', 'n', 1, 'xicara'],
+    ['comer3', 'fazendo um lanche', 'e', 1, 'lanche'], ['comer4', 'tomando um café', 'w', 1, 'xicara'], ['comer5', 'fazendo um lanche', 'n', 1, 'lanche'],
+    ['geladeira', 'pegando algo na geladeira', 'n', 0], ['bebedouro', 'tomando água', 'n', 0, 'copo'],
+    ['pufe0', 'cochilando no pufe', 's', 1, 'sono'], ['pufe1', 'ouvindo música', 's', 1, 'fone'], ['pufe2', 'mexendo no celular', 's', 1, 'celular'],
     ['leitura0', 'lendo um livro', 's', 1, 'livro'], ['leitura1', 'lendo um livro', 's', 1, 'livro'],
   ];
   const POS_DESCANSO = {
     ping0: [19.0, 12.3], ping1: [23.0, 12.3], sofa0: [15.5, 13.75], sofa1: [16.3, 13.75], sofa2: [17.1, 13.75],
     comer0: [18.2, 2.9], comer1: [19.8, 2.9], comer2: [19.0, 3.7], comer3: [21.0, 2.9], comer4: [22.6, 2.9], comer5: [21.8, 3.7],
-    geladeira: [23.1, 1.45], pufe0: [19.8, 14.95], pufe1: [21.2, 15.1], pufe2: [22.6, 14.95], leitura0: [7.8, 13.05], leitura1: [9.4, 13.05],
+    geladeira: [23.1, 1.45], bebedouro: [17.18, 1.05], pufe0: [19.8, 14.95], pufe1: [21.2, 15.1], pufe2: [22.6, 14.95],
+    leitura0: [7.8, 13.05], leitura1: [9.4, 13.05],
   };
   for (const [n, txt, f, s, item] of LOCAIS_DESCANSO) no(n, ...POS_DESCANSO[n], { txt, f, sentado: !!s, item });
 
@@ -269,7 +279,7 @@
     }, { sombra: true });
     obst(x0, y0, x1, y1);
   }
-  function crt(x, y, z, face, tela) { // monitor de tubo; face: para onde a tela aponta
+  function crt(x, y, z, face, tela, t) { // monitor de tubo; face: para onde a tela aponta; t: segundos (animação)
     const w = 0.22, p = 0.2, h = 0.4, alongX = face === 'n' || face === 's';
     const [bx0, by0, bx1, by1] = alongX ? [x - w, y - p, x + w, y + p] : [x - p, y - w, x + p, y + w];
     caixa(x - 0.12, y - 0.1, x + 0.12, y + 0.1, z, z + 0.04, tom(COR.crt, 0.8), { brilho: false });
@@ -278,12 +288,24 @@
     if (face === 's' || face === 'e') { // tela visível
       const eixo = face === 's' ? 'x' : 'y', c = face === 's' ? by1 + 0.001 : bx1 + 0.001, a0 = (face === 's' ? bx0 : by0) + 0.05, a1 = (face === 's' ? bx1 : by1) - 0.05;
       painel(eixo, c, a0, a1, z + 0.1, z + h - 0.06, corTela);
-      if (tela === 'trabalhando') for (let k = 0; k < 3; k++) {
-        const l1 = a0 + 0.04, l2 = a0 + 0.04 + (a1 - a0 - 0.08) * [0.8, 0.5, 0.65][k];
-        painel(eixo, c + 0.001, l1, l2, z + h - 0.13 - k * 0.07, z + h - 0.11 - k * 0.07, '#7CE39A');
-      } else if (tela === 'pendencia') painel(eixo, c + 0.001, (a0 + a1) / 2 - 0.02, (a0 + a1) / 2 + 0.02, z + 0.16, z + h - 0.12, '#FF8A80');
-      else if (tela === 'concluido') painel(eixo, c + 0.001, a0 + 0.08, a1 - 0.08, z + 0.2, z + 0.24, '#A8F0BE');
-      else if (tela) painel(eixo, c + 0.001, (a0 + a1) / 2 - 0.03, (a0 + a1) / 2 + 0.03, z + 0.2, z + 0.24, '#5FA8C8');
+      const vivo = t !== undefined && t >= 0, sem = x * 7.3 + y * 3.1;
+      if (tela === 'trabalhando') { // linhas sendo digitadas, uma a uma, e o cursor piscando
+        const ciclo = vivo ? Math.floor((t + sem) / 5.5) : 0, fase = vivo ? ((t + sem) % 5.5) / 1.2 : 3;
+        for (let k = 0; k < 4; k++) {
+          if (k > fase) break;
+          const cheio = 0.35 + ruido(ciclo, k) * 0.6, parte = k + 1 <= fase ? 1 : fase - k;
+          const l1 = a0 + 0.04, l2 = l1 + (a1 - a0 - 0.08) * cheio * parte, zz = z + h - 0.12 - k * 0.058;
+          painel(eixo, c + 0.001, l1, l2, zz, zz + 0.022, k === 0 ? '#B6F5C8' : '#7CE39A');
+          if (vivo && parte < 1 && Math.floor(t * 3) % 2) painel(eixo, c + 0.001, l2 + 0.01, l2 + 0.035, zz, zz + 0.03, '#E9FFF0');
+        }
+      } else if (tela === 'pendencia') {
+        if (!vivo || Math.floor(t * 2) % 2) painel(eixo, c + 0.001, (a0 + a1) / 2 - 0.02, (a0 + a1) / 2 + 0.02, z + 0.16, z + h - 0.12, '#FF8A80');
+      } else if (tela === 'concluido') painel(eixo, c + 0.001, a0 + 0.08, a1 - 0.08, z + 0.2, z + 0.24, '#A8F0BE');
+      else if (tela) { // descanso de tela: um quadradinho passeando
+        const u = vivo ? Math.abs(((t * 0.23 + sem) % 2) - 1) : 0.5, v = vivo ? Math.abs(((t * 0.31 + sem * 1.7) % 2) - 1) : 0.5;
+        const pa = a0 + 0.03 + (a1 - a0 - 0.12) * u, pz = z + 0.13 + (h - 0.3) * v;
+        painel(eixo, c + 0.001, pa, pa + 0.06, pz, pz + 0.05, '#5FA8C8');
+      }
     } else { // costas do monitor: aberturas de ventilação
       const eixo = face === 'n' ? 'x' : 'y', c = face === 'n' ? by1 + 0.001 : bx1 + 0.001, a0 = face === 'n' ? bx0 : by0;
       for (let k = 0; k < 3; k++) painel(eixo, c, a0 + 0.1, a0 + 0.34, z + 0.14 + k * 0.07, z + 0.16 + k * 0.07, tom(COR.crt, 0.62));
@@ -292,6 +314,35 @@
   function teclado(x, y, z, alongX) {
     const [x0, y0, x1, y1] = alongX ? [x - 0.2, y - 0.07, x + 0.2, y + 0.07] : [x - 0.07, y - 0.2, x + 0.07, y + 0.2];
     caixa(x0, y0, x1, y1, z, z + 0.025, '#D6CDB8', { brilho: false, contorno: '#8C8370' });
+  }
+  function tela_tv(modo, t) { // TV da área de descanso: desligada, um programa ou o videogame de quem joga
+    const c = 10.821, a0 = 15.46, a1 = 17.14, z0 = 0.65, z1 = 1.27;
+    if (!modo) { painel('x', c, a0, a1, z0, z1, '#2A2F3A'); painel('x', c + 0.001, a0 + 0.1, a0 + 0.5, z1 - 0.12, z1 - 0.06, '#3A404D'); return; }
+    if (modo === 'jogo') { // plataforma rolando, moedas e o bonequinho pulando
+      painel('x', c, a0, a1, z0, z1, '#6FB3F0');
+      painel('x', c + 0.001, a0, a1, z0, z0 + 0.12, '#5DA35E'); painel('x', c + 0.002, a0, a1, z0 + 0.1, z0 + 0.12, '#8DC97A');
+      for (let k = 0; k < 4; k++) {
+        const bx = a0 + ((k * 0.55 - t * 0.6) % 1.68 + 1.68) % 1.68;
+        if (bx < a1 - 0.18) painel('x', c + 0.002, bx, bx + 0.16, z0 + 0.24 + (k % 2) * 0.14, z0 + 0.32 + (k % 2) * 0.14, '#C0703F');
+        const mx = a0 + ((k * 0.42 + 0.2 - t * 0.6) % 1.68 + 1.68) % 1.68;
+        if (mx < a1 - 0.06 && Math.floor(t * 4 + k) % 2) painel('x', c + 0.003, mx, mx + 0.05, z0 + 0.42, z0 + 0.47, '#FFE08A');
+      }
+      const pulo = Math.abs(Math.sin(t * 3.1)) * 0.2;
+      painel('x', c + 0.003, a0 + 0.4, a0 + 0.5, z0 + 0.12 + pulo, z0 + 0.24 + pulo, '#E5534B');
+      painel('x', c + 0.004, a0 + 0.42, a0 + 0.48, z0 + 0.2 + pulo, z0 + 0.23 + pulo, '#F6D1B1');
+      painel('x', c + 0.003, a1 - 0.5, a1 - 0.08, z1 - 0.1, z1 - 0.05, '#FFFFFF');
+      return;
+    }
+    // programa: céu mudando de cor, apresentador e a faixa de notícias correndo
+    const hue = Math.floor(t / 6) % 3;
+    painel('x', c, a0, a1, z0, z1, ['#5C9BD8', '#4F7FC0', '#6A8FD0'][hue]);
+    painel('x', c + 0.001, a0, a1, z0, z0 + 0.22, '#8DC97A');
+    painel('x', c + 0.002, a0 + 0.5, a0 + 0.78, z0 + 0.22, z0 + 0.44, '#3B6EC8');
+    painel('x', c + 0.003, a0 + 0.56, a0 + 0.72, z0 + 0.44, z0 + 0.58 + (Math.floor(t * 5) % 2) * 0.01, '#E8B98F');
+    painel('x', c + 0.002, a0, a1, z0 + 0.02, z0 + 0.1, '#1E2A44');
+    const fx = a0 + ((-t * 0.35) % 1.68 + 1.68) % 1.68;
+    painel('x', c + 0.003, fx, Math.min(a1, fx + 0.6), z0 + 0.045, z0 + 0.075, '#F2F3F7');
+    painel('x', c + 0.003, a1 - 0.36, a1 - 0.08, z1 - 0.18, z1 - 0.06, '#FFE08A');
   }
   function luminaria(x, y, z, cor = '#F2C14E') {
     caixa(x - 0.07, y - 0.07, x + 0.07, y + 0.07, z, z + 0.03, '#3A3A44', { brilho: false });
@@ -347,6 +398,83 @@
     }, { sombra: true });
     obst(x0, y0, x1, y1);
   }
+  // lombadas de fichários numa face (plano y = c), agrupadas pela área e coloridas como as pastas da tela do banco
+  function lombadas(c, a0, a1, z0, z1, fila) {
+    let a = a0, n = 0;
+    for (const [cor, cheia] of fila) {
+      if (!cor) { a += 0.035; continue; } // espaço entre uma área e outra
+      const w = 0.075 + ruido(n, 3) * 0.02;
+      if (a + w > a1) break;
+      const alt = (z1 - z0) * (cheia ? 0.9 + ruido(n, 7) * 0.08 : 0.82);
+      painel('x', c, a, a + w - 0.008, z0, z0 + alt, cheia ? cor : tom(cor, 0.62));
+      painel('x', c + 0.0005, a + 0.012, a + w - 0.02, z0 + alt * 0.62, z0 + alt * 0.8, cheia ? '#F4F1E8' : tom('#F4F1E8', 0.7));
+      painel('x', c + 0.0005, a + w - 0.016, a + w - 0.008, z0, z0 + alt, tom(cor, 0.7));
+      a += w; n++;
+    }
+  }
+  // sequência de fichários a partir das quantidades reais: mais currículos na área, mais fichários dela
+  function filaFicharios(grupos) {
+    const fila = [];
+    for (const g of grupos) {
+      const cor = corGrupo(g.codigo), k = g.total ? Math.min(9, 1 + Math.ceil(Math.log2(1 + g.total) * 1.6)) : 1;
+      for (let i = 0; i < k; i++) fila.push([cor, g.total > 0]);
+      fila.push([null, false]);
+    }
+    return fila;
+  }
+  function arquivoCurriculos(banco) {
+    const grupos = (banco && banco.grupos) || [];
+    const fila = filaFicharios(grupos.length ? grupos : [{ codigo: 'outros', total: 0 }]);
+    // as prateleiras ficam cheias: a sequência das áreas continua de uma prateleira para a outra
+    const pedaco = (de, ate) => Array.from({ length: ate - de }, (_, i) => fila[(de + i) % fila.length]);
+    // estante alta, à esquerda da janela
+    item([11.72, 0, 12.36, 0.46], 0, 1.95, () => {
+      caixa(11.72, 0, 12.36, 0.46, 0, 1.95, COR.movelEsc);
+      for (let p = 0; p < 4; p++) {
+        const z0 = 0.1 + p * 0.46;
+        painel('x', 0.461, 11.77, 12.31, z0, z0 + 0.42, tom(COR.movelEsc, 0.45));
+        lombadas(0.462, 11.79, 12.3, z0, z0 + 0.38, pedaco(p * 7, p * 7 + 7));
+      }
+    }, { sombra: true });
+    obst(11.72, 0, 12.36, 0.46);
+    // gaveteiros baixos sob a janela, com fichários em duas prateleiras
+    item([12.42, 0, 15.12, 0.46], 0, 0.84, () => {
+      caixa(12.42, 0, 15.12, 0.46, 0, 0.84, COR.movel);
+      for (let p = 0; p < 2; p++) {
+        const z0 = 0.06 + p * 0.39;
+        painel('x', 0.461, 12.47, 15.07, z0, z0 + 0.35, tom(COR.movel, 0.5));
+        lombadas(0.462, 12.5, 15.05, z0, z0 + 0.32, pedaco(28 + p * 34, 28 + p * 34 + 34));
+      }
+    }, { sombra: true });
+    obst(12.42, 0, 15.12, 0.46);
+    // balcão de atendimento do arquivo
+    item([12.3, 2.05, 14.9, 2.55], 0, 1.04, () => {
+      caixa(12.35, 2.05, 14.9, 2.55, 0, 0.98, '#5C6B8A');
+      for (let x = 12.45; x < 14.8; x += 0.62) painel('x', 2.551, x, x + 0.5, 0.12, 0.86, '#52607E');
+      // placa âmbar com "linhas de texto" e as cores das áreas
+      painel('x', 2.552, 13.1, 14.1, 0.58, 0.84, '#F5B544');
+      painel('x', 2.553, 13.18, 14.02, 0.74, 0.77, '#3A2A10'); painel('x', 2.553, 13.3, 13.9, 0.66, 0.69, '#7A5A20');
+      grupos.slice(0, 9).forEach((g, i) => painel('x', 2.553, 13.12 + i * 0.106, 13.2 + i * 0.106, 0.6, 0.63, corGrupo(g.codigo)));
+      caixa(12.3, 2.0, 14.95, 2.6, 0.98, 1.04, '#C9D3E6');
+    }, { sombra: true });
+    obst(12.3, 2.05, 14.9, 2.55);
+    // pilhas de pastas sobre o balcão: uma por área com currículos (altura pela quantidade)
+    const comCv = grupos.filter(g => g.total > 0).slice(0, 7);
+    comCv.forEach((g, i) => {
+      const x = 12.5 + i * 0.34, cor = corGrupo(g.codigo), k = Math.min(7, Math.ceil(Math.log2(1 + g.total) * 1.5));
+      item([x, 2.15, x + 0.28, 2.47], 1.04, 1.04 + k * 0.028 + 0.02, () => {
+        for (let j = 0; j < k; j++) {
+          const z = 1.04 + j * 0.028, dx = (ruido(i, j) - 0.5) * 0.03;
+          caixa(x + dx, 2.17, x + 0.26 + dx, 2.45, z, z + 0.012, '#F4F1E8', { brilho: false, contorno: false });
+          caixa(x + dx, 2.17, x + 0.26 + dx, 2.45, z + 0.012, z + 0.026, cor, { brilho: false, contorno: tom(cor, 0.5) });
+        }
+      });
+    });
+    if (!comCv.length) item([13.3, 2.15, 13.9, 2.47], 1.04, 1.08, () => caixa(13.35, 2.17, 13.85, 2.45, 1.04, 1.06, '#AEB4BF', { brilho: false }));
+    item([14.45, 2.12, 14.8, 2.48], 1.04, 1.5, () => luminaria(14.62, 2.3, 1.04, '#7EC3EB'));
+    ALVOS_ARTE.push({ tipo: 'banco', pts: envoltoria([Pa(11.72, 0, 1.95), Pa(12.36, 0, 1.95), Pa(15.12, 0, 0.84), Pa(15.12, 0.46, 0),
+      Pa(14.95, 2.0, 1.1), Pa(14.95, 2.6, 0), Pa(12.3, 2.6, 0), Pa(11.72, 0.46, 0), Pa(12.3, 2.0, 1.1)]) });
+  }
   function vidro(x0, y0, x1, y1, h = 2.2) { // parede de vidro em trechos de ~1 m (cada trecho é ordenado com as pessoas)
     const horiz = x1 - x0 > y1 - y0, a = horiz ? x0 : y0, b = horiz ? x1 : y1;
     for (let s = a; s < b - 0.01; s += 1.5) {
@@ -372,7 +500,6 @@
   // ------------------------------------------------------------------ montagem do cenário (depende dos dados)
   function montarItens(d) {
     ITENS = []; BLOQUEIOS.length = 0; ALVOS_ARTE = [];
-    const est = d.estacoes || {};
 
     // ---- sala do gerente (vidro)
     vidro(0, 4.96, 3.9, 5.04); vidro(5.1, 4.96, 6.0, 5.04); vidro(5.96, 0, 6.04, 5.04);
@@ -382,8 +509,8 @@
       caixa(1.45, 2.05, 4.55, 2.95, 0.72, 0.78, tom(COR.movelEsc, 1.2));
     }, { sombra: true });
     obst(1.5, 2.1, 4.5, 2.9);
-    item([1.75, 2.2, 2.25, 2.62], 0.78, 1.2, () => crt(2.0, 2.4, 0.78, 'n', d.atlas_trabalhando ? 'trabalhando' : 'ligado'));
-    item([3.75, 2.2, 4.25, 2.62], 0.78, 1.2, () => crt(4.0, 2.4, 0.78, 'n', d.atlas_trabalhando ? 'trabalhando' : 'ligado'));
+    item([1.75, 2.2, 2.25, 2.62], 0.78, 1.2, () => crt(2.0, 2.4, 0.78, 'n', 'ligado')); // de costas para a sala
+    item([3.75, 2.2, 4.25, 2.62], 0.78, 1.2, () => crt(4.0, 2.4, 0.78, 'n', 'ligado'));
     item([2.6, 2.3, 3.4, 2.6], 0.78, 0.82, () => { caixa(2.65, 2.32, 3.0, 2.58, 0.78, 0.8, '#F4F1E8', { brilho: false }); caixa(3.05, 2.35, 3.35, 2.55, 0.78, 0.81, '#E9E3D3', { brilho: false }); });
     item([4.3, 2.75, 4.48, 2.9], 0.78, 1.25, () => luminaria(4.39, 2.82, 0.78, '#3E8E5B'));
     cadeiraEscritorio(3.0, 1.4, 's', '#5A3B2E');
@@ -393,6 +520,7 @@
 
     // ---- quadro de vagas e janela
     planta(6.6, 0.55, 1.0, 1);
+    arquivoCurriculos(d.banco);
     estante(15.2, 0, 16.8, 0.42, 1.85, 'x');
     item([17.0, 0.3, 17.36, 0.66], 0, 1.35, () => { // bebedouro
       caixa(17.0, 0.3, 17.36, 0.66, 0, 0.95, '#E8ECF0');
@@ -449,11 +577,14 @@
     ILHAS.forEach((x0, k) => {
       mesaTrabalho(x0, 6.3, x0 + 2.8, 7.1); mesaTrabalho(x0, 7.1, x0 + 2.8, 7.9);
       for (let i = k * 4; i < k * 4 + 4; i++) {
-        const e = ESTACOES[i], fA = e.fila === 'A', tela = est[i] || null;
+        const e = ESTACOES[i], fA = e.fila === 'A';
         const my = fA ? 6.86 : 7.34;
-        item([e.x - 0.22, my - 0.2, e.x + 0.22, my + 0.2], 0.76, 1.16, () => crt(e.x, my, 0.76, fA ? 'n' : 's', tela));
+        // a tela (e a folha ao lado) acompanha o estado de quem está na estação, quadro a quadro
+        item([e.x - 0.22, my - 0.2, e.x + 0.22, my + 0.2], 0.76, 1.16, t => crt(e.x, my, 0.76, fA ? 'n' : 's', VIVO.estacoes[i] || null, t), { anim: !fA });
         item([e.x - 0.2, (fA ? 6.4 : 7.66) - 0.07, e.x + 0.2, (fA ? 6.4 : 7.66) + 0.07], 0.76, 0.79, () => teclado(e.x, fA ? 6.4 : 7.66, 0.76, true));
-        if (tela === 'trabalhando') item([e.x + 0.3, my - 0.15, e.x + 0.6, my + 0.15], 0.76, 0.8, () => caixa(e.x + 0.32, my - 0.14, e.x + 0.58, my + 0.14, 0.76, 0.79, '#FFFFFF', { brilho: false, contorno: '#B8B2A4' }));
+        item([e.x + 0.3, my - 0.15, e.x + 0.6, my + 0.15], 0.76, 0.8, t => {
+          if (t < 0 || VIVO.estacoes[i] === 'trabalhando') caixa(e.x + 0.32, my - 0.14, e.x + 0.58, my + 0.14, 0.76, 0.79, '#FFFFFF', { brilho: false, contorno: '#B8B2A4' });
+        }, { anim: true });
         cadeiraEscritorio(e.x, e.y, e.face);
       }
       item([x0 + 0.08, 6.32, x0 + 0.26, 6.5], 0.76, 1.2, () => luminaria(x0 + 0.17, 6.41, 0.76));
@@ -494,9 +625,8 @@
     item([15.4, 10.68, 17.2, 10.82], 0.5, 1.32, () => {
       caixa(16.2, 10.7, 16.4, 10.8, 0.5, 0.6, '#1E2026', { brilho: false });
       caixa(15.4, 10.68, 17.2, 10.82, 0.6, 1.32, '#1E2026');
-      painel('x', 10.821, 15.46, 17.14, 0.65, 1.27, d.tv_ligada ? '#5C9BD8' : '#2A2F3A');
-      if (d.tv_ligada) { painel('x', 10.822, 15.7, 16.5, 0.7, 0.92, '#8DC97A'); painel('x', 10.822, 16.6, 16.95, 1.0, 1.2, '#FFE08A'); painel('x', 10.822, 15.55, 16.2, 1.1, 1.17, '#E8F4FF'); }
     });
+    item([15.46, 10.82, 17.14, 10.84], 0.65, 1.27, t => tela_tv(t < 0 ? 'tv' : VIVO.tv, Math.max(0, t)), { anim: true });
     obst(15.0, 10.6, 17.6, 11.0);
     item([15.5, 12.1, 17.1, 12.6], 0, 0.42, () => { caixa(15.5, 12.1, 17.1, 12.6, 0.36, 0.42, COR.movel); for (const [x, y] of [[15.55, 12.15], [17.0, 12.15], [15.55, 12.5], [17.0, 12.5]]) caixa(x, y, x + 0.05, y + 0.05, 0, 0.36, COR.movelEsc, { brilho: false }); }, { sombra: true });
     obst(15.5, 12.1, 17.1, 12.6);
@@ -646,7 +776,7 @@
   function construirSprites() {
     for (const it of ITENS) {
       alvo(rascunho, AW, AH);
-      it.f();
+      it.f(-1); // itens animados desenham aqui a versão mais completa: é ela que define o espaço e a ordem
       const [x0, y0, x1, y1] = A.sujo;
       if (x1 < x0) { it.spr = null; continue; }
       const w = x1 - x0 + 1, h = y1 - y0 + 1, buf = new Uint32Array(w * h);
@@ -838,7 +968,7 @@
   }
 
   const Cena = {
-    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota,
+    ESTADOS, INFO_LOCAL, LOCAIS_DESCANSO, NOS, ESTACOES, rota, corGrupo,
     medir(w, h, dpr, zoom = 1) {
       const ajuste = Math.min((w - 24) / AW, (h - 24) / AH);
       // tela estreita (celular em pé): ajusta pela altura e deixa arrastar para os lados
@@ -854,7 +984,9 @@
     projetar: (x, y, z = 0) => { const [a, b] = Pa(x, y, z); return [DX + a * S, DY + b * S]; },
     atualizarFundo(d) {
       const agora = new Date();
-      const ass = JSON.stringify([d.fila_triagem, d.fila_analise, d.estacoes, d.tv_ligada, d.atlas_trabalhando, agora.getHours(), agora.getMinutes(),
+      VIVO.estacoes = d.estacoes || {}; VIVO.tv = d.tv || null; // telas e TV mudam sem redesenhar o cenário
+      const ass = JSON.stringify([d.fila_triagem, d.fila_analise, agora.getHours(), agora.getMinutes(),
+        d.banco && d.banco.grupos.map(g => [g.codigo, g.total]),
         (d.vagas || []).map(v => [v.status, v.sem_responsavel, v.pendentes > 0, v.recebidos, v.analisados]), d.quadro && [d.quadro.vagas_abertas, d.quadro.vagas_em_processamento, d.quadro.pendencias]]);
       if (ass === assinatura) return;
       assinatura = ass;
@@ -868,6 +1000,7 @@
     // pessoas: [{ id, x, y, ap, dir, pose, quadro, humor, item, destaque }]; extra: { bolinha: [x, y, z] | null }
     desenhar(ctx, pessoas, extra = {}) {
       if (!frame) return [];
+      VIVO.t = extra.t || 0;
       frame.set(base);
       const dyn = pessoas.map(p => {
         const espelho = p.dir === 's' || p.dir === 'w', vista = p.dir === 's' || p.dir === 'e' ? 'frente' : 'costas';
@@ -910,7 +1043,8 @@
       };
       for (let i = 0; i <= n; i++) {
         for (const e of porPos.get(i) || []) desenhaDyn(e);
-        if (i < n && ITENS[i].spr) { const s = ITENS[i].spr; colar(s, s.ox, s.oy); }
+        if (i < n && ITENS[i].anim) { alvo(frame, AW, AH); ITENS[i].f(VIVO.t); }
+        else if (i < n && ITENS[i].spr) { const s = ITENS[i].spr; colar(s, s.ox, s.oy); }
       }
       for (const [pos, lista] of porPos) if (pos > n) lista.forEach(desenhaDyn);
       actx.putImageData(img, 0, 0);
