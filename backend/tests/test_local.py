@@ -95,6 +95,9 @@ def test_acha_o_pooler_do_projeto():
         banco._conectar_no_pooler_certo(Dialeto, None, [], {**params, "password": "errada"})
     assert banco._conectar_no_pooler_certo(Dialeto, None, [], {"host": "127.0.0.1"}) is None  # outros bancos: normal
     banco._pooler_certo.clear()
+    # a mensagem das versões novas do pooler também vale
+    assert banco._projeto_desconhecido(Exception("FATAL: (ENOTFOUND) tenant/user hub_app.ref not found"))
+    assert not banco._projeto_desconhecido(Exception("FATAL: password authentication failed for user hub_app"))
     # vários computadores: o pooler em modo transação (6543) no lugar do modo sessão (5432)
     url = "postgresql+psycopg://hub_app.ref:x@aws-0-sa-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
     assert ":6543/postgres" in config._modo_transacao(url)

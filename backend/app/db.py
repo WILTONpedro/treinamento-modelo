@@ -34,6 +34,13 @@ def _outro_pooler(host: str) -> str | None:
     return f"aws-{1 if m.group(1) == '0' else 0}-{m.group(2)}" if m else None
 
 
+def _projeto_desconhecido(e: Exception) -> bool:
+    """O pooler não conhece o projeto: "Tenant or user not found" ou, nas versões novas,
+    "(ENOTFOUND) tenant/user <usuário>.<projeto> not found"."""
+    msg = str(e).lower()
+    return "tenant or user not found" in msg or ("tenant/user" in msg and "not found" in msg)
+
+
 @event.listens_for(engine, "do_connect")
 def _conectar_no_pooler_certo(dialect, conn_rec, cargs, cparams):
     host = cparams.get("host") or ""
@@ -46,7 +53,7 @@ def _conectar_no_pooler_certo(dialect, conn_rec, cargs, cparams):
         try:
             con = dialect.loaded_dbapi.connect(*cargs, **{**cparams, "host": h})
         except Exception as e:
-            if "tenant or user not found" not in str(e).lower():
+            if not _projeto_desconhecido(e):
                 raise
             erro = e
             continue
