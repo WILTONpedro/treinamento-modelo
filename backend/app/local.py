@@ -71,9 +71,12 @@ def _registrar_em_arquivo():
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     janela = "--sem-janela" not in argv
+    if config.ERRO_CONFIGURACAO:
+        avisar(config.ERRO_CONFIGURACAO)
+        return 1
     if config.CONGELADO and not config.arquivo_de_configuracao():
-        avisar("Falta o arquivo de configuração da empresa (escritorio.env).\n\nInstale de novo e escolha o arquivo, "
-               f"ou copie-o para a pasta:\n{config.PASTA_CONFIG}")
+        avisar("Falta a configuração da empresa.\n\nInstale de novo e escolha o arquivo .escritorio que você recebeu "
+               "(o código de ativação será pedido).")
         return 1
     if not config.LOCAL:
         avisar("Este atalho é para os computadores do RH: o arquivo de configuração precisa ter ACESSO=local.")

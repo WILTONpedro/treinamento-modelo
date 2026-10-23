@@ -213,10 +213,35 @@ só o arquivo de configuração dela (`escritorio.env`), que liga o programa ao 
   programa num Windows de verdade.
 - **Para cada empresa:** um banco próprio (projeto ou schema separado no Supabase) e um `escritorio.env` próprio,
   gerado com `python -m app.preparar --local …`. Assim os candidatos de uma empresa nunca aparecem na outra.
-- **Na instalação:** o instalador pede o `escritorio.env` e o guarda em `%APPDATA%\EscritorioRecrutamento\`
-  (os dados locais ficam em `%LOCALAPPDATA%\EscritorioRecrutamento\`). Não pede administrador. Cria o atalho na
-  área de trabalho e liga junto com o Windows. Para a TI da empresa instalar sem perguntas:
-  `EscritorioRecrutamento-Setup.exe /VERYSILENT /CONFIG="C:\caminho\escritorio.env"`.
+- **Entregar sem expor a configuração:** o `escritorio.env` tem a senha do banco, a chave do Gemini e a do e-mail,
+  então ele nunca vai legível para a empresa. Lacre-o e mande o pacote e o código por canais diferentes:
+  ```bash
+  cd backend
+  python -m app.preparar --lacrar ../escritorio.env --saida ../empresa-x.escritorio
+  # mostra o código de ativação uma única vez, ex.: K7QM-2HXR-9TWD-P4NB-ZE6C
+  ```
+  O pacote `.escritorio` vai cifrado (AES-GCM, chave tirada do código). Mande o arquivo por e-mail e o código por
+  WhatsApp ou numa ligação.
+- **Na instalação:** o instalador pede o arquivo `.escritorio` e o código. Ele confere o código antes de instalar e
+  guarda a configuração em `%APPDATA%\EscritorioRecrutamento\escritorio.cfg`, cifrada pelo próprio Windows
+  (DPAPI): só aquele usuário, naquele computador, consegue lê-la, e copiá-la para outro computador não funciona.
+  Nenhum arquivo legível fica na máquina. Os dados locais ficam em `%LOCALAPPDATA%\EscritorioRecrutamento\`. O
+  instalador não pede administrador, cria o atalho na área de trabalho e liga junto com o Windows. Para a TI da
+  empresa instalar sem perguntas:
+  `EscritorioRecrutamento-Setup.exe /VERYSILENT /CONFIG="C:\caminho\empresa-x.escritorio" /CODIGO=K7QM-2HXR-9TWD-P4NB-ZE6C`.
+  Um `escritorio.env` legível continua aceito, para o seu próprio computador.
+- **Mudar a configuração de uma empresa** (ex.: ligar o e-mail): edite o `escritorio.env` dela no seu computador,
+  lacre de novo e mande o pacote e o código novos. Ela roda o instalador outra vez; os dados ficam no banco.
+- **O limite do lacre:** o programa precisa usar os segredos, então alguém com controle total do computador e
+  conhecimento técnico ainda consegue tirá-los da memória. O lacre impede o vazamento casual (abrir no Bloco de
+  Notas, repassar o arquivo, instalar em outro computador). Para o caso de um vazamento, limite o estrago:
+  - um projeto Supabase por empresa, ligado pelo papel `hub_app` (nunca `postgres`): a senha só abre os dados
+    daquela empresa;
+  - uma chave do Gemini por empresa (um projeto no Google AI Studio para cada uma), com orçamento e alerta de gasto
+    no Google Cloud, além do `IA_LIMITE_DIARIO_USD`;
+  - uma caixa de e-mail por empresa, com senha de app.
+  - Se uma configuração vazar: troque a senha do `hub_app` daquele projeto, revogue a chave do Gemini e a senha de
+    app do e-mail, gere um pacote novo e reinstale.
 - **Atualizar:** rodar o instalador novo; a configuração e os dados ficam. Para desinstalar, use *Configurações →
   Aplicativos* do Windows.
 - **Controle:** o acesso de cada empresa é a senha do banco dela. Trocar essa senha no Supabase desliga o

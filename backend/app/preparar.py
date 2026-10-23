@@ -9,6 +9,9 @@ sem ele     escreve ./.env (servidor simples, para rodar com uvicorn)
 --supabase  banco no Supabase (URL do pooler, modo sessão): dados e arquivos dos currículos ficam lá
 sem ele     com --docker, um PostgreSQL próprio no servidor; sem --docker, SQLite
 
+--lacrar escritorio.env   gera escritorio.escritorio (cifrado) e mostra o código de ativação: é o que vai para a
+                          empresa, sem nenhum arquivo legível (veja app/lacre.py)
+
 Nunca sobrescreve um .env existente (use --forcar). Mostra a senha inicial do administrador e a
 chave da API de triagem uma única vez: guarde-as num cofre de senhas.
 """
@@ -98,6 +101,24 @@ def montar(a: argparse.Namespace) -> tuple[str, dict]:
     return "\n".join(linhas) + "\n", segredos
 
 
+def lacrar(origem: Path, saida: Path | None, forcar: bool) -> int:
+    from .lacre import lacrar as _lacrar
+    if not origem.exists():
+        print(f"{origem} não existe.", file=sys.stderr)
+        return 1
+    saida = saida or origem.with_suffix(".escritorio")
+    if saida.exists() and not forcar:
+        print(f"{saida} já existe; nada foi alterado (use --forcar para gerar outro).", file=sys.stderr)
+        return 1
+    pacote, codigo = _lacrar(origem.read_bytes())
+    saida.write_bytes(pacote)
+    print(f"Pacote lacrado: {saida}")
+    print(f"  Código de ativação: {codigo}")
+    print("  Mande o arquivo por um canal (e-mail) e o código por outro (WhatsApp, ligação). O código não fica")
+    print("  guardado em lugar nenhum: anote-o agora ou gere outro pacote depois.")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Gera o .env de produção com segredos fortes.")
     ap.add_argument("--docker", action="store_true", help="escreve ../.env para o docker-compose (PostgreSQL + HTTPS)")
@@ -111,7 +132,12 @@ def main(argv=None) -> int:
     ap.add_argument("--gemini-key", default=os.environ.get("GEMINI_API_KEY", ""), help="chave do Gemini (ou defina depois)")
     ap.add_argument("--arquivo", help="caminho do arquivo a gerar (padrão: ../.env com --docker, ./.env sem)")
     ap.add_argument("--forcar", action="store_true", help="sobrescreve um arquivo existente")
+    ap.add_argument("--lacrar", metavar="ENV", help="lacra uma configuração pronta para entregar à empresa (.escritorio)")
+    ap.add_argument("--saida", help="com --lacrar: caminho do pacote (padrão: mesmo nome, extensão .escritorio)")
     a = ap.parse_args(argv)
+
+    if a.lacrar:
+        return lacrar(Path(a.lacrar), Path(a.saida) if a.saida else None, a.forcar)
 
     if a.local and a.docker:
         print("Use --local (computadores do RH) ou --docker (servidor), não os dois.", file=sys.stderr)

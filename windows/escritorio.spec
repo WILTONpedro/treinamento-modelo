@@ -34,3 +34,18 @@ exe = EXE(  # noqa: F821
     upx=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="EscritorioRecrutamento", upx=False)  # noqa: F821
+
+# Ativador.exe (um arquivo só, pequeno): o instalador o extrai para uma pasta temporária e o roda na página do
+# código de ativação, para conferir o código e guardar a configuração lacrada antes de instalar (app/lacre.py).
+b = Analysis(  # noqa: F821
+    [os.path.join(raiz, "backend", "ativador.py")],
+    pathex=[os.path.join(raiz, "backend")],
+    excludes=["tkinter", "pytest"],
+)
+EXE(  # noqa: F821
+    PYZ(b.pure), b.scripts, b.binaries, b.datas, [],  # noqa: F821
+    name="Ativador",
+    console=True,  # o instalador o roda escondido e só lê o código de saída
+    icon=os.path.join(raiz, "windows", "icone.ico"),
+    upx=False,
+)

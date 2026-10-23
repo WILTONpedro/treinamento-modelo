@@ -12,23 +12,35 @@ log = logging.getLogger("hub.config")
 
 BASE = Path(__file__).resolve().parent.parent
 # Programa instalado (.exe gerado pelo PyInstaller): não há pasta do projeto. A configuração da empresa fica em
-# %APPDATA%\EscritorioRecrutamento\escritorio.env (o instalador põe lá) e os dados em %LOCALAPPDATA%.
+# %APPDATA%\EscritorioRecrutamento (o instalador põe lá) e os dados em %LOCALAPPDATA%. Vinda de um pacote lacrado
+# (.escritorio, veja lacre.py), ela fica em escritorio.cfg, cifrada pelo Windows; escritorio.env é a forma legível.
 CONGELADO = bool(getattr(sys, "frozen", False))
 RECURSOS = Path(getattr(sys, "_MEIPASS", BASE))  # frontend/ e demo/ empacotados junto do programa
 PASTA_CONFIG = Path(os.environ.get("APPDATA") or Path.home()) / "EscritorioRecrutamento"
 
 
 def arquivo_de_configuracao() -> Path | None:
-    opcoes = ([PASTA_CONFIG / "escritorio.env", Path(sys.executable).resolve().parent / "escritorio.env"]
-              if CONGELADO else [BASE / ".env"])
+    opcoes = ([PASTA_CONFIG / "escritorio.cfg", PASTA_CONFIG / "escritorio.env",
+               Path(sys.executable).resolve().parent / "escritorio.env"] if CONGELADO else [BASE / ".env"])
     return next((a for a in opcoes if a.exists()), None)
 
 
+ERRO_CONFIGURACAO = ""  # a configuração lacrada existe mas não abriu (ex.: copiada de outro computador)
+
+
 def _carregar_env():
+    global ERRO_CONFIGURACAO
     arq = arquivo_de_configuracao()
     if not arq:
         return
     bruto = arq.read_bytes()
+    if arq.suffix == ".cfg":
+        from . import lacre
+        try:
+            bruto = lacre.desproteger(bruto)
+        except lacre.ErroLacre as e:
+            ERRO_CONFIGURACAO = str(e)
+            return
     try:  # utf-8-sig: o Bloco de Notas do Windows pode gravar com BOM; senão, a codificação antiga do Windows
         texto = bruto.decode("utf-8-sig")
     except UnicodeDecodeError:

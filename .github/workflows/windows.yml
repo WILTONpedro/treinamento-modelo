@@ -45,12 +45,33 @@ jobs:
           # configuração de teste: banco local (SQLite) e IA de demonstração, nada sai da máquina
           "# Configuração de teste`nACESSO=local`nAMBIENTE=desenvolvimento`nIA_MODO=demo`nDEMO_DURACAO_ANALISE=1`nPORTA_LOCAL=8765`nSEGREDO_JWT=segredo-do-teste-de-instalacao-com-tamanho" |
             Set-Content -Path $cfg -Encoding utf8BOM
-          $p = Start-Process -Wait -PassThru -FilePath "dist-instalador\EscritorioRecrutamento-Setup.exe" `
-                 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CONFIG=`"$cfg`""
+          # como vai para uma empresa: configuração lacrada + código de ativação
+          $pacote = Join-Path $env:RUNNER_TEMP "empresa.escritorio"
+          Push-Location backend
+          $saida = python -m app.preparar --lacrar $cfg --saida $pacote
+          $lacrou = $LASTEXITCODE
+          Pop-Location
+          if ($lacrou -ne 0) { throw "não consegui lacrar a configuração" }
+          $codigo = ([regex]::Match(($saida -join "`n"), "[A-Z0-9]{4}(-[A-Z0-9]{4}){4}")).Value
+          if (-not $codigo) { throw "o código de ativação não apareceu" }
+          $pastaCfg = Join-Path $env:APPDATA "EscritorioRecrutamento"
+          $instalador = "dist-instalador\EscritorioRecrutamento-Setup.exe"
+
+          # código errado: nada é instalado nem guardado
+          $p = Start-Process -Wait -PassThru -FilePath $instalador `
+                 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CONFIG=`"$pacote`"", "/CODIGO=AAAA-AAAA-AAAA-AAAA-AAAA"
+          if ($p.ExitCode -eq 0) { throw "instalou com o código errado" }
+          if (Test-Path (Join-Path $pastaCfg "escritorio.cfg")) { throw "guardou a configuração com o código errado" }
+
+          # código certo (minúsculo e sem traços também vale)
+          $p = Start-Process -Wait -PassThru -FilePath $instalador `
+                 -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CONFIG=`"$pacote`"", "/CODIGO=$($codigo.ToLower().Replace('-', ''))"
           if ($p.ExitCode -ne 0) { throw "instalação falhou ($($p.ExitCode))" }
           $exe = Join-Path $env:LOCALAPPDATA "Programs\EscritorioRecrutamento\EscritorioRecrutamento.exe"
           if (-not (Test-Path $exe)) { throw "o programa não foi instalado" }
-          if (-not (Test-Path (Join-Path $env:APPDATA "EscritorioRecrutamento\escritorio.env"))) { throw "a configuração não foi copiada" }
+          if (-not (Test-Path (Join-Path $pastaCfg "escritorio.cfg"))) { throw "a configuração lacrada não foi guardada" }
+          if (Test-Path (Join-Path $pastaCfg "escritorio.env")) { throw "ficou uma configuração legível no computador" }
+          if (Select-String -Path (Join-Path $pastaCfg "escritorio.cfg") -Pattern "SEGREDO_JWT" -Quiet) { throw "a configuração guardada está legível" }
           foreach ($atalho in @("Desktop", "Startup")) {
             $pasta = [Environment]::GetFolderPath($atalho)
             if (-not (Get-ChildItem $pasta -Filter "Escrit*rio de Recrutamento*.lnk")) { throw "faltou o atalho em $atalho" }
