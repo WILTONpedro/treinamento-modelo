@@ -157,7 +157,9 @@ def test_chat_em_streaming_com_personalidade(cli):
     ags = agentes(cli)
     r = cli.post(f'/api/agentes/{ags["Sofia"]["id"]}/chat/stream', headers=H, json={"mensagem": "Oi!"})
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/plain")
-    assert r.text == ags["Sofia"]["perfil"]["saudacao"]
+    # cumprimenta do jeito da Sofia, conforme a hora e o que está fazendo (varia a cada vez)
+    assert r.text and any(x in r.text for x in ("Olá", "Bom dia", "Boa tarde", "Boa noite", "Sofia"))
+    assert ", Boa " not in r.text and ", Bom " not in r.text
     r = cli.post(f'/api/agentes/{ags["Flávio"]["id"]}/chat/stream', headers=H, json={"mensagem": "Você pediu ajuda a algum colega?"})
     assert "Priscila" in r.text and "Sofia" in r.text
     r = cli.post(f'/api/agentes/{ags["Atlas"]["id"]}/chat', headers=H, json={"mensagem": "Quem você contratou?"}).json()

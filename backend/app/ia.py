@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from . import config, uso_ia
 from .catalogo import CATEGORIAS_DISPONIVEIS
-from .personalidade import bordao
+from .personalidade import PADRAO, bordao, expressao, maiuscula
 from .uso_ia import IAIndisponivel  # noqa: F401  (reexportado para quem chama)
 
 log = logging.getLogger("hub.ia")
@@ -683,19 +683,58 @@ def sugerir_setores(titulo: str, descricao: str = "") -> dict:
 
 
 # =========================================================================== chat individual
+def _persona(p: dict | None) -> str:
+    """Quem o agente é e como escreve, para a IA falar como a pessoa (sem copiar as frases)."""
+    p = p or {}
+    partes = []
+    if p.get("historia"):
+        partes.append(f"Quem você é: {p['historia']}")
+    if p.get("resumo"):
+        partes.append(f"No trabalho: {p['resumo']}.")
+    if p.get("jeito") or p.get("tom"):
+        partes.append(f"Como você escreve: {p.get('jeito') or p.get('tom')}.")
+    if p.get("expressoes"):
+        partes.append("Expressões suas (use de vez em quando, sem forçar): " + ", ".join(p["expressoes"][:6]) + ".")
+    if p.get("gostos"):
+        partes.append("Do que você gosta: " + ", ".join(p["gostos"][:5]) + ".")
+    if p.get("manias"):
+        partes.append("Manias: " + "; ".join(p["manias"][:3]) + ".")
+    if p.get("exemplos"):
+        partes.append("Exemplos do seu tom (só referência, não copie): " + " | ".join(p["exemplos"][:3]))
+    return "\n".join(partes)
+
+
+COMO_CONVERSAR = """
+Como conversar:
+- Você é um colega de trabalho trocando mensagens, não um sistema. Escreva do seu jeito, natural, com variação: em
+  geral 1 a 3 frases; mais só se pedirem detalhes. Pode usar contrações do português falado se for o seu jeito.
+- Não comece toda mensagem do mesmo jeito, não repita a pergunta, não faça relatório nem liste tudo o que sabe.
+  Números e nomes só quando ajudam. Sem markdown e sem marcadores.
+- Pode puxar assunto, devolver uma pergunta, comentar como está o seu dia (veja AGORA e CONVERSAS RECENTES), dar
+  opinião com cuidado, brincar de leve e citar colegas pelo nome. Papo informal (fim de semana, café, hobbies)
+  pode, a partir da sua história.
+- Sobre trabalho, use SOMENTE os dados do CONTEXTO: nunca invente candidatos, números ou registros. Se não souber,
+  diga do seu jeito e indique o colega certo.
+- Se perguntarem se você é uma pessoa, seja honesto: você é um agente de IA do escritório, com o seu jeito de ser.
+- Nunca decida contratações nem comente características protegidas (idade, gênero, cor/raça, religião, estado
+  civil, filhos, deficiência, aparência, origem).
+"""
+
+
 def _prompt_chat(ctx, pergunta, historico):
     ag = ctx["agente"]
-    colegas = ", ".join(f'{c["nome"]} ({c["especialidade"]})' for c in ctx.get("colegas", []))
-    sistema = (f'Você é {ag["nome"]}, agente de IA de recrutamento {config.DA_EMPRESA} ({ag.get("especialidade") or ag["funcao"]}). '
-               f'{_voz({"perfil": ctx.get("personalidade")})}\n'
-               "Responda em português, de forma curta, natural e no seu jeito de falar, usando SOMENTE os dados do CONTEXTO "
-               "(seus registros reais no sistema). Cite vaga e candidato quando fizer sentido. "
-               "Se a informação não estiver no contexto, diga com franqueza que não tem esse registro e, se for assunto "
-               f"de um colega ({colegas or 'nenhum'}), sugira falar com essa pessoa pelo nome. "
-               "Nunca decida contratações de candidatos nem comente características protegidas. Sem markdown.")
+    p = ctx.get("personalidade") or {}
+    agora = ctx.get("agora") or {}
+    sistema = (f'Você é {ag["nome"]}, da equipe de recrutamento {config.DA_EMPRESA} '
+               f'({ag.get("especialidade") or ag["funcao"]}). Você é um agente de IA com personalidade própria.\n'
+               f"{_persona(p)}\n"
+               f'AGORA: {agora.get("dia_da_semana", "")}, {agora.get("hora", "")} ({agora.get("periodo", "")}); '
+               f'você está {agora.get("estado", "")}{(" — " + agora["atividade"]) if agora.get("atividade") else ""}.\n'
+               f"{COMO_CONVERSAR}")
     conv = "\n".join(f'{"Recrutador" if m.get("autor") == "usuario" else ag["nome"]}: {m.get("texto", "")}'
-                     for m in historico[-6:])
-    prompt = f"CONTEXTO:\n{_js(ctx)}\n\nCONVERSA:\n{conv}\nRecrutador: {pergunta}"
+                     for m in historico[-10:])
+    dados = {k: v for k, v in ctx.items() if k not in ("personalidade", "agora")}
+    prompt = f"CONTEXTO (seus registros no sistema):\n{_js(dados)}\n\nCONVERSA ATÉ AQUI:\n{conv}\nRecrutador: {pergunta}"
     return sistema, prompt
 
 
@@ -716,7 +755,7 @@ def responder_chat_stream(ctx: dict, pergunta: str, historico: list[dict], digit
         for i, nivel in enumerate(niveis):
             try:
                 for parte in cliente_gemini().models.generate_content_stream(
-                        model=modelo, contents=[prompt], config=_config(modelo, sistema, None, 0.5, 800, nivel)):
+                        model=modelo, contents=[prompt], config=_config(modelo, sistema, None, 0.85, 700, nivel)):
                     uso = getattr(parte, "usage_metadata", None) or uso
                     if parte.text:
                         yield parte.text
@@ -741,31 +780,73 @@ def responder_chat_stream(ctx: dict, pergunta: str, historico: list[dict], digit
         yield palavra
 
 
-def _com_voz(ctx, texto, chance=0.4):
+def _com_voz(ctx, texto, chance=0.45):
+    """Dá o jeito da pessoa à resposta: às vezes começa com uma expressão dela, às vezes devolve uma pergunta."""
     p = ctx.get("personalidade") or {}
-    if p.get("bordoes") and random.random() < chance:
-        return f"{bordao(p)} {texto}"
+    sorte = random.random()
+    if p.get("expressoes") and sorte < chance:
+        e = expressao(p)
+        texto = f"{maiuscula(e)} {texto}" if e.endswith(("!", "?", "…")) else f"{maiuscula(e)}, {texto[:1].lower()}{texto[1:]}"
+    elif p.get("bordoes") and sorte < chance + 0.15:
+        texto = f"{texto} {bordao(p)}"
+    if random.random() < 0.25:
+        texto += " " + random.choice(["Quer que eu detalhe?", "Posso te mostrar quem está melhor?", "Ajudo em mais algo?"])
     return texto
+
+
+_PERIODO = {"manhã": "Bom dia", "tarde": "Boa tarde", "noite": "Boa noite"}
+
+
+def _papo_demo(ctx, q) -> str | None:
+    """Conversa de colega na demonstração: cumprimento, 'tudo bem?', agradecimento, hobbies, quem é você."""
+    ag, p = ctx["agente"], ctx.get("personalidade") or {}
+    agora = ctx.get("agora") or {}
+    estado = agora.get("estado") or ag.get("estado") or "aguardando"
+    frase_agora = (p.get("agora") or {}).get(estado) or PADRAO["agora"].get(estado, "")
+    if re.fullmatch(r"\s*(oi+|ola|opa|bom dia|boa tarde|boa noite|e ai|eai|fala|hey)\W*", q):
+        modelo, periodo = random.choice(p.get("saudacoes") or PADRAO["saudacoes"]), _PERIODO.get(agora.get("periodo"), "Oi")
+        texto = modelo.format(periodo=periodo, agora=frase_agora, nome=ag["nome"]).strip()
+        return texto.replace(", " + periodo, ", " + periodo.lower())  # "Olá, boa noite" no meio da frase
+    if re.search(r"tudo (bem|bom|certo|tranquilo)|como (vai|voce esta|ce ta|esta o (seu )?dia|foi o (seu )?dia)|beleza|blz", q):
+        base = random.choice(["Tudo ótimo por aqui!", "Tudo certo!", "Tudo tranquilo!", "Melhor agora!"])
+        return f"{base} {frase_agora} E com você?".strip()
+    if re.search(r"obrigad|valeu|brigad|agradec|show de bola|perfeito", q):
+        return random.choice([f"Imagina! {bordao(p)}", "De nada! Qualquer coisa é só chamar.", "Tamo junto!",
+                              f"Que bom que ajudou! {bordao(p)}"])
+    if re.search(r"voce (e|eh) (uma )?(pessoa|humano|humana|gente|robo|ia)|e uma ia|voce e real", q):
+        return (f"Sou um agente de IA do escritório, mas com o meu jeito: {p.get('resumo', 'faço parte do time')}. "
+                f"{('Fora do trabalho, ' + p['historia'][0].lower() + p['historia'][1:]) if p.get('historia') else ''}").strip()
+    if re.search(r"gosta|hobby|hobbies|fim de semana|final de semana|fds|tempo livre|folga", q):
+        gostos = p.get("gostos") or []
+        return (f"Ah, {', '.join(gostos[:2]) or 'um bom café'}! " + random.choice(p.get("papo") or PADRAO["papo"])
+                + random.choice([" E você?", " Você curte?", ""])).strip()
+    if re.search(r"piada|engracad|me faz rir|conta (uma )?(historia|coisa)", q):
+        return random.choice(p.get("papo") or PADRAO["papo"]) + " " + random.choice(p.get("reacoes") or PADRAO["reacoes"])
+    if re.search(r"quem (e|eh) voce|se apresent|personalidade|como voce e|fale de voce|me fala de voce", q):
+        return f"{ag['nome']} aqui! {maiuscula(p.get('apresentacao', 'faço parte da equipe'))}. {p.get('historia', '')}".strip()
+    return None
 
 
 def _chat_demo(ctx, pergunta):
     q = _sem_acento(pergunta)
     ag = ctx["agente"]
     p = ctx.get("personalidade") or {}
-    if re.fullmatch(r"\s*(oi|ola|bom dia|boa tarde|boa noite|e ai|tudo bem)\W*", q):
-        return p.get("saudacao") or f"Oi! {ag['nome']} aqui."
-    if re.search(r"quem (e|eh) voce|se apresent|personalidade|como voce e", q):
-        return f"{ag['nome']} aqui — {p.get('resumo', 'faço parte da equipe de recrutamento')}. {bordao(p)}"
+    papo = _papo_demo(ctx, q)
+    if papo:
+        return papo
     vagas, cands = ctx.get("vagas", []), ctx.get("candidatos", [])
     if ag["funcao"] == "recepcao":
-        return _com_voz(ctx, f'Tenho {ctx.get("fila_recepcao", 0)} currículo(s) aguardando triagem e já registrei '
-                             f'{ctx.get("curriculos_registrados", 0)} no total.')
+        fila = ctx.get("fila_recepcao", 0)
+        return _com_voz(ctx, (f'Tô com {fila} currículo(s) esperando triagem' if fila else 'A triagem tá em dia, nenhum currículo esperando')
+                        + f', e já registrei {ctx.get("curriculos_registrados", 0)} currículo(s) no total.')
     if ag["funcao"] == "supervisor":
         return _com_voz(ctx, _atlas_demo(ctx, q))
     if re.search(r"curricul.*(cheg|receb)|triagem|recepcao|e-?mail", q):
-        return "Isso é com a Bia, da recepção — pergunte no canal da equipe que ela responde."
+        return random.choice(["Isso é com a Bia, da recepção! Pergunta no canal da equipe que ela responde rapidinho.",
+                              "Quem sabe disso é a Bia. Ela conhece cada currículo que chegou."])
     if not vagas:
-        return "Ainda não tenho vagas atribuídas, então não tenho análises para comentar."
+        return random.choice(["Ainda não tenho vaga atribuída, então tô sem análise pra comentar.",
+                              "Por enquanto nenhuma vaga caiu comigo. Assim que cair, te conto."])
     nomeado = next((c for c in cands if _sem_acento(c["nome"].split(" ")[0]) in q), None)
     if nomeado and re.search(r"por ?que|justific|recomend|motivo|ajuda|colega", q):
         extra = ""
@@ -794,8 +875,10 @@ def _chat_demo(ctx, pergunta):
         r = [c for c in cands if c["recomendado"]]
         return _com_voz(ctx, "Mais compatíveis: " + "; ".join(f'{c["nome"]} ({c["vaga"]}, {c["compatibilidade"]})' for c in r[:5]) + "."
                         if r else "Ainda não recomendei nenhum candidato.")
-    return ("Não tenho esse registro. Posso responder sobre andamento das vagas, candidatos recomendados, "
-            "justificativas, consultas a colegas e requisitos a verificar. (Modo demonstração: respostas por regras, sem IA externa.)")
+    return random.choice([
+        "Hmm, disso eu não tenho registro. Posso te contar do andamento das minhas vagas ou de quem está mais compatível.",
+        "Aí você me pegou! Não tenho isso anotado. Quer saber das minhas vagas ou dos candidatos?",
+    ]) + " (Na demonstração eu respondo por regras; com o Gemini a conversa fica livre.)"
 
 
 def _atlas_demo(ctx, q):
@@ -820,16 +903,18 @@ def conversa_equipe(ctx: dict, pergunta: str, historico: list[dict]) -> list[dic
     equipe = ctx.get("equipe", [])
     if config.IA_MODO == "gemini":
         nomes = {_sem_acento(a["nome"]): a for a in equipe}
-        sistema = (f"Você escreve as falas de uma conversa em grupo da equipe de recrutamento {config.DA_EMPRESA}, formada por agentes "
-                   "de IA com personalidades próprias (veja EQUIPE). O recrutador escreveu no canal da equipe. Responda como "
-                   "1 a 3 membros, na ordem natural: quem tem a informação responde; Atlas organiza quando precisa; um colega "
-                   "pode complementar ou citar o outro pelo nome. Cada fala com no máximo 2 frases, na voz da personalidade. "
-                   "Use SOMENTE os dados do CONTEXTO; se ninguém tiver o registro, diga isso. Nunca decida contratações de "
-                   f"candidatos nem comente características protegidas. Sem markdown.{REGRAS_FALA}")
+        sistema = (f"Você escreve as falas do grupo de mensagens da equipe de recrutamento {config.DA_EMPRESA}: agentes de IA com "
+                   "personalidades próprias (veja em EQUIPE a história e o jeito de escrever de cada um). O recrutador "
+                   "escreveu no grupo. Responda como 1 a 3 pessoas do time, como num grupo de trabalho de verdade: quem tem "
+                   "a informação responde; o Atlas organiza quando precisa; um colega pode completar, concordar, brincar de "
+                   "leve ou chamar o outro pelo nome. Cada fala curta (1 ou 2 frases), cada um do SEU jeito — vocabulário, "
+                   "pontuação e humor diferentes; nada de tom de relatório nem falas iguais. Sobre trabalho, use SOMENTE os "
+                   "dados do CONTEXTO; se ninguém tiver o registro, digam isso com naturalidade. Nunca decidam contratações "
+                   f"nem comentem características protegidas. Sem markdown.{REGRAS_FALA}")
         conv = "\n".join(f'{m.get("nome") or ("Recrutador" if m.get("autor") == "usuario" else "Equipe")}: {m.get("texto", "")}'
                          for m in historico[-8:])
         r = _gemini_json("equipe", sistema, [f"CONTEXTO:\n{_js(ctx)}\n\nCONVERSA:\n{conv}\nRecrutador: {pergunta}"],
-                         ConversaSchema, temperatura=0.6, max_saida=900)
+                         ConversaSchema, temperatura=0.85, max_saida=900)
         saida = []
         for f in r.get("falas", [])[:3]:
             a = nomes.get(_sem_acento(f.get("agente", "")).strip())

@@ -23,7 +23,7 @@ from .catalogo import CATEGORIAS_SENSIVEIS, ESPECIALIDADES, NOMES_EXTRAS, aparen
 from .db import sessao
 from .models import (Agente, Analise, Candidato, Candidatura, Configuracao, Contratacao, Curriculo, Decisao,
                      Especialidade, Evento, Pendencia, Tarefa, Vaga, VagaAgente, agora, iso)
-from .personalidade import bordao, falar, maiuscula, perfil_para, publico
+from .personalidade import VERSAO_PERFIL, bordao, expressao, falar, maiuscula, perfil_para, publico
 from .arquivos import apagar_arquivo, ler_arquivo, salvar_arquivo
 
 log = logging.getLogger("hub.servicos")
@@ -1260,13 +1260,35 @@ def contratacoes_recentes(db, limite=10) -> list[dict]:
             for c in db.scalars(select(Contratacao).order_by(Contratacao.id.desc()).limit(limite)).all()]
 
 
+def agora_local() -> dict:
+    """Hora e período do dia no fuso da operação (para o agente falar 'bom dia' na hora certa)."""
+    from zoneinfo import ZoneInfo
+    t = datetime.now(ZoneInfo(config.FUSO_HORARIO))
+    periodo = "manhã" if 5 <= t.hour < 12 else "tarde" if 12 <= t.hour < 18 else "noite"
+    dias = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "domingo"]
+    return {"hora": t.strftime("%H:%M"), "periodo": periodo, "dia_da_semana": dias[t.weekday()]}
+
+
+def _conversas_de(db, ag_id: int, limite=6) -> list[str]:
+    """O que o agente conversou com os colegas por último (para lembrar do papo e não repetir)."""
+    evs = db.scalars(select(Evento).where(Evento.tipo == "conversa", or_(
+        Evento.agente_id == ag_id, Evento.dados["destino_id"].as_integer() == ag_id)).order_by(Evento.id.desc()).limit(limite)).all()
+    nomes = dict(db.execute(select(Agente.id, Agente.nome)).all())
+    return [f'{nomes.get(e.agente_id, "?")} → {nomes.get((e.dados or {}).get("destino_id"), "todos")}: {e.mensagem}'
+            for e in reversed(evs)]
+
+
 def contexto_chat(db, ag: Agente, lote: Lote | None = None) -> dict:
     lote = lote or Lote(db)
     d = detalhe_agente(db, ag, lote)
     cands = candidatos_do_agente(db, ag.id)[:15]  # contexto enxuto: menos tokens por pergunta
     ctx = {
         "agente": {k: d[k] for k in ("nome", "funcao", "especialidade", "estado", "atividade")},
-        "personalidade": publico(perfil(ag)),
+        "personalidade": perfil(ag),
+        "agora": agora_local() | {"estado": d["estado"], "atividade": d["atividade"]},
+        "colegas_agora": [{k: x[k] for k in ("nome", "estado", "atividade")}
+                          for x in (agente_json(db, a, lote) for a in lote.ativos if a.id != ag.id)],
+        "conversas_recentes": _conversas_de(db, ag.id),
         "estatisticas": d["estatisticas"],
         "vagas": [{k: v[k] for k in ("titulo", "status", "recebidos", "analisados", "pendentes", "requisitos", "situacao")}
                   for v in d["vagas_detalhe"]],
@@ -1304,7 +1326,7 @@ def contexto_equipe(db, por_agente: bool = False) -> dict:
         equipe.append({"id": a.id, "nome": a.nome, "funcao": a.funcao, "especialidade": j["especialidade"],
                        "estado": j["estado"], "atividade": j["atividade"], "carga": j["carga"],
                        "vagas": [titulo_aberta[i] for i in lote.vagas_de.get(a.id, []) if i in titulo_aberta],
-                       "personalidade": {k: perfil(a).get(k) for k in ("resumo", "tom", "bordoes")}})
+                       "personalidade": {k: perfil(a).get(k) for k in ("resumo", "jeito", "expressoes", "historia")}})
     candidatos = []
     for a in (x for x in ags if x.funcao == "analista"):
         for c in candidatos_do_agente(db, a.id)[:5]:
@@ -1512,8 +1534,8 @@ def semear_basico(db):
                    aparencia=aparencia_para("Flávio", pele="#EEC49C", cabelo="#3B2618", estilo="topete", camisa="#3CAA6E", oculos=False, barba=True)),
         ])
         db.flush()
-    for ag in db.scalars(select(Agente)).all():  # bancos antigos: cada agente ganha sua personalidade
-        if not ag.perfil:
+    for ag in db.scalars(select(Agente)).all():  # bancos antigos: cada agente ganha (ou atualiza) sua personalidade
+        if not ag.perfil or (ag.perfil or {}).get("versao") != VERSAO_PERFIL:
             ag.perfil = perfil_para(ag.nome, ag.especialidade.nome if ag.especialidade else None)
         if ag.funcao == "supervisor" and (ag.aparencia or {}).get("camisa") == "#FFCD00":  # identidade visual antiga
             ag.aparencia = {**ag.aparencia, "camisa": COR_ATLAS}
