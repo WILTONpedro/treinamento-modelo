@@ -78,6 +78,9 @@ class SugestaoVagaSchema(BaseModel):
     vaga_id: int
     confianca: str
     motivo: str
+    evidencias: list[str]
+    lacunas: list[str]
+    perfil_indicado: str
 
 
 class SugestaoSetoresSchema(BaseModel):
@@ -105,6 +108,10 @@ REGRAS_ETICAS = """
 - Localização e disponibilidade só contam quando forem requisitos da vaga.
 - compatibilidade: ALTA = atende os requisitos principais com evidência; MEDIA = atende parte ou há lacunas
   relevantes; BAIXA = não atende requisitos obrigatórios.
+- Estudo, curso em andamento, "conhecimentos básicos", projetos pessoais e interesse NÃO equivalem a experiência
+  profissional. Se o título da vaga indica um nível que pede experiência (analista, especialista, técnico,
+  supervisor, coordenador, gerente, sênior) e o currículo não mostra experiência profissional na área, a
+  compatibilidade é BAIXA e o ponto vai para "incompatibilidades" (ou "a_verificar", se o currículo for ambíguo).
 - avaliacao_humana = true quando o perfil é promissor mas há dúvida importante que só uma pessoa pode resolver.
 """
 
@@ -554,21 +561,70 @@ def _revisar_demo(preliminar, consulta):
 
 
 # =========================================================================== sugestões do Atlas
-def sugerir_vaga(texto: str, vagas: list[dict]) -> dict | None:
-    """Para currículos sem pasta: qual vaga aberta combina? {vaga_id, confianca, motivo} ou None."""
+_EXPERIENTE = re.compile(r"\b(analista|especialista|tecnico|supervisor|supervisora|coordenador|coordenadora|gerente|"
+                         r"senior|sr|lider|consultor|consultora|engenheiro|engenheira|desenvolvedor|desenvolvedora)\b")
+_ENTRADA = re.compile(r"\b(assistente|auxiliar|ajudante|junior|jr|trainee|estagio|estagiario|estagiaria|aprendiz|"
+                      r"atendente|operador|operadora)\b")
+
+
+def nivel_da_vaga(titulo: str) -> str | None:
+    """'entrada' (aceita estudo e pouca experiência), 'experiente' (pede experiência na área) ou None."""
+    t = _sem_acento(titulo)
+    return "entrada" if _ENTRADA.search(t) else "experiente" if _EXPERIENTE.search(t) else None
+
+
+def _conferir_sugestao(r: dict, vagas: list[dict], pasta: str | None) -> dict | None:
+    """Trava que não depende só da IA: sem evidência de experiência profissional não há sugestão (fica BAIXA)."""
+    if not r:
+        return None
+    vaga = next((v for v in vagas if v["id"] == r.get("vaga_id")), None)
+    r["confianca"] = str(r.get("confianca") or "BAIXA").upper().replace("É", "E")
+    if r["confianca"] not in ("ALTA", "MEDIA", "BAIXA"):
+        r["confianca"] = "BAIXA"
+    r["evidencias"] = [str(x)[:200] for x in (r.get("evidencias") or []) if str(x).strip()][:4]
+    r["lacunas"] = [str(x)[:200] for x in (r.get("lacunas") or []) if str(x).strip()][:4]
+    r["perfil_indicado"] = str(r.get("perfil_indicado") or "")[:160]
+    if not vaga:
+        r.update(vaga_id=0, confianca="BAIXA")
+        return r
+    if r["confianca"] != "BAIXA" and not r["evidencias"]:
+        r["confianca"] = "BAIXA"
+        r["lacunas"].insert(0, "sem experiência profissional comprovada no currículo para esta vaga")
+    return r
+
+
+def sugerir_vaga(texto: str, vagas: list[dict], pasta: str | None = None, anos: int | None = None) -> dict | None:
+    """O Atlas, como recrutador, diz qual vaga aberta o currículo sustenta: {vaga_id (0 = nenhuma), confianca,
+    motivo, evidencias, lacunas, perfil_indicado}. Experiência profissional vale; estudo e interesse, não."""
     if not texto or not vagas:
         return None
+    vagas = [{**v, "nivel": nivel_da_vaga(v.get("titulo", ""))} for v in vagas]
     if config.IA_MODO == "gemini":
-        sistema = (f"Você é Atlas, coordenador da equipe de recrutamento {config.DA_EMPRESA}. Um currículo não se encaixou em nenhuma "
-                   "pasta da triagem. Diga se ele combina com alguma das vagas abertas (use o id). confianca: ALTA, "
-                   "MEDIA ou BAIXA. motivo: uma frase curta, sem nome do candidato e sem características protegidas. "
-                   "Se nenhuma combinar, use vaga_id 0 e confianca BAIXA.")
-        r = _gemini_json("encaminhamento", sistema, ["VAGAS ABERTAS:\n" + _js(vagas), "CURRÍCULO:\n" + texto[:12000]],
-                         SugestaoVagaSchema, max_saida=300)
-        if not any(v["id"] == r.get("vaga_id") for v in vagas):
-            return None
-        r["confianca"] = str(r.get("confianca", "BAIXA")).upper()
-        return r
+        sistema = (
+            f"Você é Atlas, coordenador da equipe de recrutamento {config.DA_EMPRESA}, com olhar de recrutador experiente. "
+            "Diga se o currículo SUSTENTA alguma das vagas abertas (use o id) ou se nenhuma combina (vaga_id 0).\n"
+            "Critérios, nesta ordem:\n"
+            "1. Experiência PROFISSIONAL na função ou na área da vaga é o que mais pesa. Estudo, curso em andamento, "
+            "\"conhecimentos básicos\", projetos pessoais e interesse NÃO são experiência.\n"
+            "2. O título indica o nível. nivel=experiente (analista, especialista, técnico, supervisor, coordenador, "
+            "gerente, sênior...) exige experiência profissional comprovada na área; nivel=entrada (assistente, auxiliar, "
+            "júnior, trainee, estágio, aprendiz...) aceita formação ou estudo com pouca experiência.\n"
+            "3. A pasta da triagem é a área principal do candidato. Vaga de outra área só se o currículo mostrar "
+            "experiência profissional nela.\n"
+            "4. Se os requisitos da vaga forem vagos, julgue pelo título e pela área e diga isso no motivo.\n"
+            "confianca: ALTA = experiência profissional na função (ou muito próxima) que atende os principais requisitos; "
+            "MEDIA = experiência profissional relacionada, com lacunas que uma entrevista resolve; BAIXA = só estudo ou "
+            "interesse, área diferente sem experiência, ou abaixo do nível da vaga. Na dúvida, BAIXA.\n"
+            "evidencias: até 3 trechos LITERAIS e curtos do currículo que mostrem a experiência profissional que sustenta "
+            "a vaga (vazio se não houver). lacunas: até 3 coisas que faltam para a vaga. perfil_indicado: em poucas "
+            "palavras, para que tipo de vaga a experiência real do candidato serve (mesmo que não esteja aberta). "
+            "motivo: até 2 frases, sem nome do candidato. Use só o que está no currículo e nas vagas; não considere "
+            "idade, gênero, cor/raça, religião, estado civil, filhos, deficiência, aparência ou origem.")
+        sobre = f"PASTA DA TRIAGEM: {pasta or 'não informada'}" + (f" · ANOS DE EXPERIÊNCIA (triagem): {anos}" if anos is not None else "")
+        r = _gemini_json("encaminhamento", sistema, [sobre, "VAGAS ABERTAS:\n" + _js(vagas), "CURRÍCULO:\n" + texto[:12000]],
+                         SugestaoVagaSchema, max_saida=600)
+        return _conferir_sugestao(r, vagas, pasta)
+    # demonstração: termos em comum, com as mesmas regras de nível e de área
     cv = set(_tokens(texto))
     melhor = None
     for v in vagas:
@@ -583,8 +639,19 @@ def sugerir_vaga(texto: str, vagas: list[dict]) -> dict | None:
         return None
     nota, v, comuns = melhor
     conf = "ALTA" if nota >= 0.5 else "MEDIA" if nota >= 0.3 else "BAIXA"
-    return {"vaga_id": v["id"], "confianca": conf,
-            "motivo": f"termos em comum com a vaga: {', '.join(sorted(comuns)[:5]) or 'nenhum'} (demonstração)"}
+    lacunas = []
+    alvo = set(_tokens(" ".join([v.get("titulo", ""), v.get("descricao", "")] + list(v.get("requisitos") or []))))
+    if conf != "BAIXA" and len(alvo) < 4:  # "ser bom em TI": pouco para comparar palavra a palavra
+        conf = "BAIXA"
+        lacunas.append("requisitos da vaga vagos demais para comparar (demonstração)")
+    outra_area = pasta and pasta != "OUTROS" and pasta not in (v.get("setores") or [])
+    if conf != "BAIXA" and outra_area and v["nivel"] == "experiente":
+        conf = "BAIXA"
+        lacunas.append(f"vaga de nível experiente em outra área (o currículo está na pasta {pasta.lower()})")
+    r = {"vaga_id": v["id"], "confianca": conf, "evidencias": sorted(comuns)[:3], "lacunas": lacunas,
+         "perfil_indicado": f"vagas da pasta {pasta.lower()}" if pasta and pasta != "OUTROS" else "",
+         "motivo": f"termos em comum com a vaga: {', '.join(sorted(comuns)[:5]) or 'nenhum'} (demonstração)"}
+    return _conferir_sugestao(r, vagas, pasta)
 
 
 def sugerir_setores(titulo: str, descricao: str = "") -> dict:

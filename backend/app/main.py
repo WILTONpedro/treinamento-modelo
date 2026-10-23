@@ -656,13 +656,13 @@ async def banco_sugerir(cur_id: int, request: Request, u: Usuario = Depends(exig
         with sessao() as db:
             cur = _curriculo_do_banco(db, cur_id)
             return acervo.dados_para_sugestao(db, cur)
-    texto, abertas = await asyncio.to_thread(ler)
+    texto, abertas, pasta, anos = await asyncio.to_thread(ler)
     if not abertas:
         raise HTTPException(400, "Não há vagas abertas para sugerir.")
     if not texto:
         raise HTTPException(400, "Este currículo não tem texto legível para o Atlas comparar com as vagas.")
     try:
-        sugestao = await asyncio.to_thread(S.ia.sugerir_vaga, texto, abertas)
+        sugestao = await asyncio.to_thread(S.ia.sugerir_vaga, texto, abertas, pasta, anos)
     except uso_ia.IAIndisponivel as e:
         raise HTTPException(503, f"A IA está pausada: {e}")
     except Exception as e:

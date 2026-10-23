@@ -323,15 +323,14 @@ def executar_distribuicao(tarefa_id: int):
         sup = atlas(db)
         _ocupar(sup, t, f"distribuindo o currículo #{cur.id}")
         ler = cur.setor == "OUTROS" and config.ENCAMINHAMENTO_AUTOMATICO and bool(cur.texto)
-        abertas = [{"id": v.id, "titulo": v.titulo, "area": v.area, "descricao": v.descricao, "requisitos": v.requisitos}
-                   for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all()] if ler else []
+        abertas = acervo.vagas_para_sugestao(db) if ler else []
         if abertas:
             _pensar(db, sup, "Esse não caiu em nenhuma pasta… deixa eu ler com calma.")
-        texto = cur.texto
+        texto, anos = cur.texto, cur.anos_experiencia
     sugestao = None
     if abertas:
         try:
-            sugestao = ia.sugerir_vaga(texto, abertas)  # fora da transação: a IA pode demorar
+            sugestao = ia.sugerir_vaga(texto, abertas, "OUTROS", anos)  # fora da transação: a IA pode demorar
         except ia.IAIndisponivel:
             _devolver_a_fila(tarefa_id)
             return

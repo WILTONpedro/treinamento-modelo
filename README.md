@@ -417,8 +417,13 @@ no topo ou clique no arquivo do escritório) mostra:
   decisão;
 - **a vaga sugerida**: a melhor análise; sem análise, a vaga em que ele está na fila; sem vaga, a sugestão do
   Atlas. Currículos "OUTROS" já vêm com a leitura do Atlas da distribuição; para os demais, o botão **✨ Pedir
-  sugestão ao Atlas** faz uma chamada à IA e guarda a resposta. Com confiança baixa, o Atlas diz que nenhuma vaga
-  combina bem e cita a mais próxima;
+  sugestão ao Atlas** faz uma chamada à IA e guarda a resposta. O Atlas julga como recrutador: experiência
+  **profissional** na função é o que vale (estudo, curso em andamento e "conhecimentos básicos" não são
+  experiência); o título indica o nível (analista, técnico, supervisor… pedem experiência na área; auxiliar,
+  júnior, estágio… aceitam estudo); a pasta da triagem mostra a área real do candidato. Ele mostra os trechos do
+  currículo que sustentam a vaga (✔), o que falta (✖) e o **perfil indicado** (para que tipo de vaga a experiência
+  serve). Sem trecho que comprove experiência, não há sugestão: o Atlas diz que nenhuma vaga combina bem e cita a
+  mais próxima. Requisitos claros na vaga ("1 ano de experiência com suporte técnico") deixam tudo mais preciso;
 - **Encaminhar** para uma vaga aberta (supervisor ou admin): vira uma candidatura e o analista da vaga analisa.
 
 Cada listagem, abertura, sugestão e encaminhamento fica na auditoria (LGPD). A API: `GET /api/banco`,

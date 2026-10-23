@@ -14,6 +14,7 @@ from .catalogo import CATEGORIAS_DISPONIVEIS
 from .models import Agente, Analise, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Vaga, agora, iso
 
 OUTROS = {"codigo": "outros", "nome": "Outras pastas"}
+CRITERIO = 2  # versão das regras do Atlas ao sugerir vaga (2: experiência profissional x estudo, nível, evidências)
 ORDEM_COMPAT = {"ALTA": 0, "MEDIA": 1, "BAIXA": 2}
 SITUACOES = ("talentos", "analise", "recomendados", "humana", "decididos", "triagem", "descartados")
 POR_PAGINA = 40
@@ -178,7 +179,7 @@ def listar(db: Session, grupo: str | None = None, pasta: str | None = None, situ
             continue
         if situacao == "decididos" and not (melhor and melhor.get("decisao")):
             continue
-        sug = (cur.triagem_json or {}).get("sugestao_atlas")
+        sug = sugestao_de(cur)
         itens.append({
             "curriculo_id": cur.id, "nome": cand.nome if cand else "Candidato", "cidade": cand.cidade if cand else None,
             "setor": cur.setor, "grupo": grupo_de(cur.setor, gs), "status": cur.status, "situacao": sit,
@@ -211,7 +212,7 @@ def detalhe(db: Session, cur: Curriculo) -> dict:
                     "grupo": grupo_de(cur.setor, gs), "confianca": cur.confianca,
                     "anos_experiencia": cur.anos_experiencia, "resumo": cur.resumo_triagem or ""},
         "candidaturas": lista, "vaga_sugerida": _sugestao(lista),
-        "sugestao_atlas": (cur.triagem_json or {}).get("sugestao_atlas"),
+        "sugestao_atlas": sugestao_de(cur),
         "vagas_abertas": [{"id": i, "titulo": t, "da_pasta": (cur.setor in (s or []))} for i, t, s in abertas if i not in ja],
     }
 
@@ -219,25 +220,34 @@ def detalhe(db: Session, cur: Curriculo) -> dict:
 def guardar_sugestao(cur: Curriculo, sugestao: dict | None, vaga: Vaga | None):
     """A sugestão do Atlas fica no currículo (não precisa perguntar de novo à IA); sai junto na anonimização.
     Com confiança baixa não é sugestão: fica registrado que nenhuma vaga combina bem, citando a mais próxima."""
-    conf = str((sugestao or {}).get("confianca") or "BAIXA").upper()
+    s = sugestao or {}
+    conf = str(s.get("confianca") or "BAIXA").upper()
     boa = bool(vaga) and conf in ("ALTA", "MEDIA")
-    if boa:
-        motivo = (sugestao or {}).get("motivo") or ""
-    elif vaga:
-        motivo = f"nenhuma vaga aberta combina bem; a mais próxima seria “{vaga.titulo}”"
-    else:
-        motivo = "nenhuma vaga aberta combina com este currículo agora"
+    motivo = s.get("motivo") or ("" if boa else "nenhuma vaga aberta combina com este currículo agora")
     cur.triagem_json = {**(cur.triagem_json or {}), "sugestao_atlas": {
         "vaga_id": vaga.id if boa else None, "vaga": vaga.titulo if boa else None,
-        "confianca": conf, "motivo": motivo, "em": iso(agora())}}
+        "mais_proxima": vaga.titulo if vaga and not boa else None,
+        "confianca": conf, "motivo": motivo, "evidencias": s.get("evidencias") or [], "lacunas": s.get("lacunas") or [],
+        "perfil_indicado": s.get("perfil_indicado") or "", "criterio": CRITERIO, "em": iso(agora())}}
     return boa
 
 
-def dados_para_sugestao(db: Session, cur: Curriculo) -> tuple[str, list[dict]]:
-    """Texto e vagas abertas para o Atlas sugerir uma vaga (a chamada à IA fica fora da transação)."""
-    abertas = [{"id": v.id, "titulo": v.titulo, "area": v.area, "descricao": v.descricao, "requisitos": v.requisitos}
-               for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all()]
-    return cur.texto or "", abertas
+def sugestao_de(cur: Curriculo) -> dict | None:
+    """A sugestão guardada; a de um critério antigo (antes de experiência x estudo) não vale como sugestão."""
+    s = (cur.triagem_json or {}).get("sugestao_atlas")
+    if s and s.get("criterio") != CRITERIO:
+        return {**s, "antiga": True, "vaga_id": None, "vaga": None}
+    return s
+
+
+def vagas_para_sugestao(db: Session) -> list[dict]:
+    return [{"id": v.id, "titulo": v.titulo, "area": v.area, "descricao": v.descricao, "requisitos": v.requisitos,
+             "setores": v.setores} for v in db.scalars(select(Vaga).where(Vaga.status == "aberta")).all()]
+
+
+def dados_para_sugestao(db: Session, cur: Curriculo) -> tuple[str, list[dict], str | None, int | None]:
+    """Texto, vagas abertas, pasta e anos de experiência para o Atlas sugerir (a IA é chamada fora da transação)."""
+    return cur.texto or "", vagas_para_sugestao(db), cur.setor, cur.anos_experiencia
 
 
 def registrar_sugestao(db: Session, cur: Curriculo, sugestao: dict | None):

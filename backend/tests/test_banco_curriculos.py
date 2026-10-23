@@ -92,3 +92,77 @@ def test_recrutador_ve_mas_nao_encaminha(cli):
         assert rui.get("/api/banco").status_code == 200 and rui.get(f"/api/banco/{cur_id}").status_code == 200
         assert rui.post(f"/api/banco/{cur_id}/encaminhar", headers=H, json={"vaga_id": vaga_id}).status_code == 403
         assert rui.post(f"/api/banco/{cur_id}/sugerir", headers=H).status_code == 403
+
+
+# --------------------------------------------------------------------------- critério do Atlas ao sugerir vaga
+SEGURANCA_QUE_ESTUDA_TI = """Carlos Teste
+Campinas - SP
+EXPERIÊNCIA
+Segurança — Supermercado Bom Preço (2025–atual): controle de acesso e rondas.
+Operador de caixa — Mercado Central (2024–2025).
+FORMAÇÃO
+Curso técnico em informática (em andamento). Conhecimentos básicos em programação."""
+VAGAS = [{"id": 2, "titulo": "ANALISTA DE TI", "area": "TI", "descricao": "SER DO TI", "requisitos": ["SER BOM EM TI"],
+          "setores": ["TI"]},
+         {"id": 5, "titulo": "Auxiliar de suporte técnico", "area": "TI", "descricao": "", "requisitos": [], "setores": ["TI"]}]
+
+
+def test_nivel_pelo_titulo():
+    from app import ia
+    assert ia.nivel_da_vaga("ANALISTA DE TI") == "experiente" and ia.nivel_da_vaga("Gerente de Produção") == "experiente"
+    assert ia.nivel_da_vaga("Auxiliar de suporte técnico") == "entrada" and ia.nivel_da_vaga("Estágio em TI") == "entrada"
+    assert ia.nivel_da_vaga("Vendedor") is None
+
+
+def test_atlas_sem_evidencia_de_experiencia_nao_sugere(monkeypatch):
+    """A IA disse MÉDIA para Analista de TI sem citar experiência profissional: a trava rebaixa para BAIXA."""
+    from app import config, ia
+    pedido = {}
+
+    def falso(finalidade, sistema, conteudos, schema, temperatura=0.2, max_saida=1500):
+        pedido.update(sistema=sistema, conteudos="\n".join(conteudos))
+        return {"vaga_id": 2, "confianca": "MEDIA", "motivo": "Tem curso técnico na área.", "evidencias": [],
+                "lacunas": [], "perfil_indicado": "segurança patrimonial, atendimento de caixa"}
+    monkeypatch.setattr(config, "IA_MODO", "gemini")
+    monkeypatch.setattr(ia, "_gemini_json", falso)
+    r = ia.sugerir_vaga(SEGURANCA_QUE_ESTUDA_TI, VAGAS, "VIGIA", 1)
+    assert r["confianca"] == "BAIXA" and "sem experiência profissional" in r["lacunas"][0]
+    assert r["perfil_indicado"].startswith("segurança")
+    # o pedido leva os critérios de recrutador, a pasta da triagem e o nível e as pastas de cada vaga
+    assert "NÃO são experiência" in pedido["sistema"] and "nivel=experiente" in pedido["sistema"]
+    assert "PASTA DA TRIAGEM: VIGIA" in pedido["conteudos"] and '"nivel":"experiente"' in pedido["conteudos"]
+    assert '"setores":["TI"]' in pedido["conteudos"]
+
+    # com evidência de experiência profissional, a sugestão vale
+    monkeypatch.setattr(ia, "_gemini_json", lambda *a, **k: {
+        "vaga_id": 5, "confianca": "MEDIA", "motivo": "Atendimento e noções de suporte.", "perfil_indicado": "suporte júnior",
+        "evidencias": ["Operador de caixa — Mercado Central (2024–2025)"], "lacunas": ["experiência formal com suporte"]})
+    r = ia.sugerir_vaga(SEGURANCA_QUE_ESTUDA_TI, VAGAS, "VIGIA", 1)
+    assert r["confianca"] == "MEDIA" and r["vaga_id"] == 5
+
+
+def test_demonstracao_nao_sugere_vaga_experiente_de_outra_area():
+    from app import ia
+    # requisitos vagos ("ser bom em TI") não dão sugestão
+    r = ia.sugerir_vaga("Segurança, controle de acesso. Estudo TI e sou bom em TI.", VAGAS[:1], "VIGIA", 1)
+    assert r["confianca"] == "BAIXA" and any("vagos" in x for x in r["lacunas"])
+    # vaga de nível experiente em outra área: termos em comum não bastam
+    vaga = [{"id": 7, "titulo": "Analista de suporte", "area": "TI", "descricao": "Suporte técnico a usuários",
+             "requisitos": ["Redes e infraestrutura", "Atendimento a chamados"], "setores": ["TI"]}]
+    r = ia.sugerir_vaga("Vigilante. Estudo suporte técnico, redes e infraestrutura; atendimento a chamados no curso.",
+                        vaga, "VIGIA", 1)
+    assert r["confianca"] == "BAIXA" and any("outra área" in x for x in r["lacunas"])
+
+
+def test_sugestao_antiga_pede_de_novo(cli):
+    from app.models import Curriculo
+    cur_id = cli.get("/api/banco?situacao=talentos").json()["itens"][0]["curriculo_id"]
+    with sessao() as db:
+        cur = db.get(Curriculo, cur_id)
+        cur.triagem_json = {**(cur.triagem_json or {}), "sugestao_atlas": {"vaga_id": 1, "vaga": "Qualquer", "confianca": "MEDIA",
+                                                                        "motivo": "critério antigo"}}
+    d = cli.get(f"/api/banco/{cur_id}").json()
+    assert d["sugestao_atlas"]["antiga"] and d["sugestao_atlas"]["vaga"] is None
+    r = cli.post(f"/api/banco/{cur_id}/sugerir", headers=H)
+    assert r.status_code == 200 and not r.json()["sugestao_atlas"].get("antiga")
+    assert r.json()["sugestao_atlas"]["criterio"] == 2

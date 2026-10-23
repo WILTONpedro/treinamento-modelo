@@ -1284,6 +1284,8 @@
     }
     if (v) return `<div class="sug">⏳ Na vaga <b>${esc(v.vaga)}</b> <span class="mini">· aguardando a análise</span></div>`;
     if (at && at.vaga) return `<div class="sug">💡 Atlas sugere: <b>${esc(at.vaga)}</b> <span class="mini">· ${esc(at.motivo)}</span></div>`;
+    if (at && at.antiga) return `<div class="sug mini">Sugestão antiga do Atlas: abra e peça de novo (critério novo).</div>`;
+    if (at) return `<div class="sug">🧭 Atlas: nenhuma vaga aberta combina${at.perfil_indicado ? ` <span class="mini">· perfil: ${esc(at.perfil_indicado)}</span>` : ''}</div>`;
     if (i.status === 'triado') return `<div class="sug mini">Sem vaga aberta para esta pasta: o Atlas encaminha quando abrir uma.</div>`;
     return '';
   }
@@ -1301,6 +1303,17 @@
           ${parecer ? `<div class="mini parecer">“${esc(parecer.length > 170 ? parecer.slice(0, 167) + '…' : parecer)}”</div>` : ''}</div>`;
       }).join('') || '<p class="vazio">Nenhum currículo aqui. Os que chegarem por e-mail ou pelo botão Enviar currículos aparecem nas pastas depois da triagem.</p>') +
       (BANCO.tem_mais ? '<p style="text-align:center;margin:8px 0 14px"><button class="btn claro mini" data-bmais>Carregar mais</button></p>' : '');
+  }
+  // a opinião do Atlas sobre o currículo: a vaga (ou nenhuma), o porquê, o que sustenta, o que falta e o perfil
+  function opiniaoAtlas(at) {
+    if (at.antiga) return `<b>Sugestão antiga do Atlas</b><div class="mini">Foi feita antes do critério novo (experiência profissional conta; estudo e interesse, não). Peça de novo abaixo.</div>`;
+    const conf = { ALTA: 'alta', MEDIA: 'média', BAIXA: 'baixa' }[at.confianca] || (at.confianca || '').toLowerCase();
+    return `${at.vaga ? `💡 <b>Atlas sugere: ${esc(at.vaga)}</b> <span class="chip claro">confiança ${esc(conf)}</span>` : `🧭 <b>Atlas: nenhuma vaga aberta combina${at.mais_proxima ? ' bem' : ''}</b>`}
+      ${at.motivo ? `<p style="margin:4px 0">${esc(at.motivo)}</p>` : ''}
+      ${(at.evidencias || []).length ? `<div class="mini ok">✔ ${at.evidencias.map(x => '“' + esc(x) + '”').join(' · ')}</div>` : ''}
+      ${(at.lacunas || []).length ? `<div class="mini ruim">✖ ${at.lacunas.map(esc).join(' · ')}</div>` : ''}
+      ${!at.vaga && at.mais_proxima ? `<div class="mini">Mais próxima entre as abertas: ${esc(at.mais_proxima)}</div>` : ''}
+      ${at.perfil_indicado ? `<div class="mini" style="margin-top:4px"><b>Perfil indicado para:</b> ${esc(at.perfil_indicado)}</div>` : ''}`;
   }
   async function abrirFicha(id, silencioso) {
     BANCO.sel = id;
@@ -1343,8 +1356,9 @@
         ${c.dado_sensivel ? '<div class="mini alerta" style="margin-top:4px">Contém dado pessoal sensível declarado pelo candidato: use só para a finalidade da vaga.</div>' : ''}</div>
       <div class="cartao destaque">${v && v.compatibilidade ? `💡 <b>Vaga sugerida: ${esc(v.vaga)}</b><div class="mini">a melhor análise: ${esc((COMPAT[v.compatibilidade] || COMPAT.BAIXA)[1].toLowerCase())}${v.analista ? ', por ' + esc(v.analista) : ''}</div>`
         : v ? `⏳ <b>Na vaga ${esc(v.vaga)}</b><div class="mini">aguardando a análise</div>`
-        : at ? `💡 <b>${at.vaga ? 'Atlas sugere: ' + esc(at.vaga) : 'Atlas: nenhuma vaga aberta combina'}</b><div class="mini">${esc(at.motivo)} · confiança ${esc((at.confianca || '').toLowerCase())}</div>`
+        : at ? opiniaoAtlas(at)
         : `<b>Sem vaga sugerida ainda</b><div class="mini">${d.status === 'triado' ? 'Nenhuma vaga aberta usa esta pasta. Peça uma sugestão ao Atlas ou encaminhe abaixo.' : esc(d.situacao)}</div>`}</div>
+      ${v && at && !at.antiga ? `<div class="cartao">${opiniaoAtlas(at)}</div>` : ''}
       <div class="sec">O que a IA disse</div>
       <div class="cartao"><div class="disse">${av(tr.por_id, 24)}<div><div><b>${esc(tr.por)}</b> <span class="mini">fez a triagem</span>${tr.confianca ? ` <span class="chip claro">confiança ${esc(tr.confianca.toLowerCase())}</span>` : ''}</div>
         <p>“${esc(tr.resumo || 'sem resumo')}”</p></div></div></div>
