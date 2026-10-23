@@ -29,6 +29,8 @@ SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#Nome}
 UninstallDisplayIcon={app}\{#Exe}
+SetupIconFile=icone.ico
+WizardSmallImageFile=icone-instalador-55.bmp,icone-instalador-110.bmp
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 

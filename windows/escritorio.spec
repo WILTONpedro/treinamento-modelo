@@ -30,6 +30,7 @@ exe = EXE(  # noqa: F821
     exclude_binaries=True,
     name="EscritorioRecrutamento",
     console=False,  # sem janela preta: o escritório abre no Edge/Chrome em modo aplicativo
+    icon=os.path.join(raiz, "windows", "icone.ico"),
     upx=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name="EscritorioRecrutamento", upx=False)  # noqa: F821
