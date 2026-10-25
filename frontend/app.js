@@ -64,12 +64,45 @@
     if (r.status === 401 && url !== '/auth/login') { mostrarLogin(); throw new Error('sessão'); }
     const tipo = r.headers.get('content-type') || '';
     const dado = tipo.includes('json') ? await r.json() : await r.text();
+    if (r.status === 503 && dado && dado.banco) { // banco fora do ar ou acesso cortado: aviso na tela e espera voltar
+      avisoBanco(dado);
+      const er = new Error(dado.detail); er.banco = dado.banco; throw er;
+    }
+    if (r.ok && SEM_BANCO) fimAvisoBanco();
     if (!r.ok) {
       const msg = (dado && dado.detail) || 'Erro ' + r.status;
       if (r.status === 403 && /senha temporária/.test(msg) && !$('#modal').dataset.travado) modalSenha(true).then(() => location.reload());
       throw new Error(msg);
     }
     return dado;
+  }
+
+  // ================================================================ banco fora do ar / acesso cortado
+  // A faixa diz o que houve (âmbar: sem conexão; vermelha: acesso recusado), o escritório fica esmaecido e a tela
+  // confere /api/saude a cada 5 s: quando o banco volta, some sozinha e recarrega (se caiu na abertura, a página).
+  let SEM_BANCO = null, tSaude = 0, recarregarAoVoltar = false;
+  function avisoBanco(p) {
+    const el = $('#avisobanco');
+    const titulo = p.banco === 'recusado' ? 'Acesso ao banco recusado' : p.banco === 'preparando' ? 'Quase lá' : 'Sem conexão com o banco';
+    el.className = p.banco === 'recusado' ? 'recusado' : 'fora';
+    el.innerHTML = `<b>${p.banco === 'recusado' ? '⛔' : '⚠'} ${esc(titulo)}</b><span>${esc(p.detail || '')}</span><i class="mini">tentando de novo…</i>`;
+    document.body.classList.add('sem-banco');
+    SEM_BANCO = p;
+    if (!tSaude) tSaude = setInterval(conferirBanco, 5000);
+  }
+  async function conferirBanco() {
+    try {
+      const r = await fetch('/api/saude', { credentials: 'same-origin' });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok) { fimAvisoBanco(); return; }
+      if (d && d.banco) avisoBanco(d);
+    } catch (_) { /* o próprio programa pode estar reiniciando: tenta na próxima */ }
+  }
+  function fimAvisoBanco() {
+    clearInterval(tSaude); tSaude = 0; SEM_BANCO = null;
+    $('#avisobanco').className = 'oculto'; document.body.classList.remove('sem-banco');
+    if (recarregarAoVoltar) { location.reload(); return; }
+    carregar(); if (P) pintarPainel(true);
   }
 
   // identidade configurável (APP_NOME / APP_SUBTITULO no servidor); sem nome, nada de marca na tela
@@ -110,8 +143,15 @@
     medir(); addEventListener('resize', medir);
     requestAnimationFrame(quadroAnim);
   }
-  async function entrar() { if (EU.trocar_senha) await modalSenha(true); iniciar(); }
-  (async () => { await carregarMarca(); try { EU = await api('GET', '/auth/eu'); } catch (_) { mostrarLogin(); return; } entrar(); })();
+  async function entrar() { if (EU.trocar_senha) await modalSenha(true); await iniciar(); }
+  (async () => {
+    await carregarMarca();
+    try { EU = await api('GET', '/auth/eu'); } catch (e) {
+      if (e.banco) { recarregarAoVoltar = true; return; } // banco fora na abertura: não é caso de login; espera voltar
+      mostrarLogin(); return;
+    }
+    try { await entrar(); } catch (e) { if (e.banco) recarregarAoVoltar = true; else throw e; }
+  })();
 
   function montarTopo() {
     const demo = D.ia_modo !== 'gemini';

@@ -128,7 +128,7 @@ def usuario_local(db: Session) -> Usuario:
     return u
 
 
-def usuario_atual(request: Request, db: Session = Depends(obter_db)) -> Usuario:
+def usuario_atual(request: Request, db: Session = Depends(obter_db, scope="function")) -> Usuario:
     if config.LOCAL:
         if not pedido_local(request):
             raise HTTPException(403, "Este escritório só abre no próprio computador.")

@@ -153,26 +153,32 @@ def passos(tabelas, e: dict, script: bool = False) -> list[tuple[str, str]]:
 
 
 def ajustar(eng, tabelas):
-    """Aplica o que falta; um passo que falhar (ex.: sem permissão) é registrado e não impede o sistema de subir."""
-    with eng.connect() as con:
+    """Aplica o que falta; um passo que falhar (ex.: sem permissão) é registrado e não impede o sistema de subir.
+
+    Tudo numa transação só, com a vez do banco: vários computadores abrindo juntos (8h da manhã) não aplicam o
+    mesmo ajuste ao mesmo tempo; o próximo espera e já encontra tudo feito. Cada passo tem o seu ponto de retorno
+    (savepoint): um que falhar não desfaz os outros."""
+    from .lideranca import esperar_vez
+    with eng.begin() as con:
+        esperar_vez(con, "ajustes")
         e = estado(con)
-    s = '"%s"' % e["schema"].replace('"', '')
-    lista, falhas = passos(tabelas, e), 0
-    for rotulo, sql in lista:
-        try:
-            with eng.begin() as con:
-                con.execute(text(sql))
-        except Exception as erro:
-            if rotulo.startswith("visão"):  # visão mudou de colunas: recria
-                try:
-                    with eng.begin() as con:
-                        con.execute(text(f"DROP VIEW IF EXISTS {s}.{rotulo.split()[-1]}"))
-                        con.execute(text(sql))
-                    continue
-                except Exception as e2:
-                    erro = e2
-            falhas += 1
-            log.warning("Banco: %s não aplicado: %s", rotulo, str(erro).splitlines()[0][:160])
+        s = '"%s"' % e["schema"].replace('"', '')
+        lista, falhas = passos(tabelas, e), 0
+        for rotulo, sql in lista:
+            try:
+                with con.begin_nested():
+                    con.execute(text(sql))
+            except Exception as erro:
+                if rotulo.startswith("visão"):  # visão mudou de colunas: recria
+                    try:
+                        with con.begin_nested():
+                            con.execute(text(f"DROP VIEW IF EXISTS {s}.{rotulo.split()[-1]}"))
+                            con.execute(text(sql))
+                        continue
+                    except Exception as e2:
+                        erro = e2
+                falhas += 1
+                log.warning("Banco: %s não aplicado: %s", rotulo, str(erro).splitlines()[0][:160])
     log.info("Banco PostgreSQL (schema %s): %d ajuste(s) aplicado(s)%s", e["schema"], len(lista) - falhas,
              f", {falhas} com falha" if falhas else "; tudo em dia")
 

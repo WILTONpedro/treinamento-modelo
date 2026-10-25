@@ -45,6 +45,12 @@ svg.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-wid
 #zoom button.on{color:var(--acc);border-color:rgba(245,181,68,.45)}
 
 /* atividade (discreta: abre pelo sino) */
+/* banco fora do ar ou acesso cortado: faixa no alto e escritório esmaecido até voltar */
+#avisobanco{position:fixed;top:62px;left:50%;transform:translateX(-50%);z-index:36;width:max-content;max-width:min(720px,calc(100vw - 32px));display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding:10px 16px;border-radius:var(--r);box-shadow:var(--sh);font-size:13px}
+#avisobanco.fora{background:#33270F;border:1px solid var(--warn);color:#FFE2B0}
+#avisobanco.recusado{background:#341416;border:1px solid var(--bad);color:#FFCBC6}
+#avisobanco b{font-weight:800}#avisobanco i{color:var(--m);font-style:normal}
+body.sem-banco #palco{filter:grayscale(.6) brightness(.72);transition:filter .5s}
 #atividade{position:fixed;top:56px;right:12px;width:min(400px,calc(100vw - 24px));max-height:min(70vh,560px);z-index:35;background:var(--sup);border:1px solid var(--b);border-radius:14px;box-shadow:var(--sh);display:flex;flex-direction:column;overflow:hidden}
 #atividade header{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--b);font-weight:800}
 #atividade header .vivo{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 3px rgba(63,181,107,.2)}

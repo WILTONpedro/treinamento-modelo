@@ -18,6 +18,8 @@ import uuid
 
 from sqlalchemy import text
 
+from . import config
+
 log = logging.getLogger("hub.lideranca")
 
 PRAZO = 20  # segundos sem renovar até outro computador poder assumir
@@ -29,6 +31,7 @@ class Lideranca:
         self.pg = eng.dialect.name == "postgresql"
         self.eu = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"[:200]
         self._valido_ate = 0.0  # relógio deste computador: até quando a vez está garantida
+        self._avisado_em = 0.0  # sem banco por muito tempo: um aviso por minuto no registro, não a cada 5 s
 
     def tentar(self) -> bool:
         """Renova a vez (se já comanda) ou assume (se ninguém comanda ou o prazo venceu). Seguro chamar sempre."""
@@ -42,7 +45,9 @@ class Lideranca:
                     "WHERE comando.dono = EXCLUDED.dono OR comando.ate < now() RETURNING dono"),
                     {"n": self.nome, "eu": self.eu, "p": PRAZO}).scalar()
         except Exception as e:  # sem banco: segue só até o fim do prazo que já tinha (depois, outro pode assumir)
-            log.warning("Não consegui renovar o comando da equipe: %s", str(e).splitlines()[0][:160])
+            if time.monotonic() - self._avisado_em > 60:
+                self._avisado_em = time.monotonic()
+                log.warning("Não consegui renovar o comando da equipe: %s", str(e).splitlines()[0][:160])
             return time.monotonic() < self._valido_ate
         if dono == self.eu:
             self._valido_ate = time.monotonic() + PRAZO - 5
@@ -68,4 +73,6 @@ def esperar_vez(con, nome: str):
     if dialeto.name != "postgresql":
         return
     con.execute(text("SET LOCAL lock_timeout = '120s'"))
-    con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"escritorio-recrutamento:{nome}"})
+    # a chave leva o schema: empresas que dividem o mesmo projeto do Supabase não esperam umas pelas outras
+    con.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                {"k": f"escritorio-recrutamento:{config.DB_SCHEMA}:{nome}"})

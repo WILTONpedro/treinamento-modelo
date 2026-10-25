@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,12 +13,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import InterfaceError, InternalError, OperationalError
 from sqlalchemy.orm import Session
 
 from . import acervo, config, eventos, momentos, servicos as S, uso_ia
 from .catalogo import CATEGORIAS_DISPONIVEIS
-from .db import Base, engine, migrar, obter_db, sessao
+from .db import Base, engine, migrar, obter_db, problema_do_banco, sessao
 from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decisao, Especialidade, Pendencia,
                      SolicitacaoTitular, Usuario, Vaga, agora, iso)
 from .arquivos import ler_arquivo
@@ -48,6 +50,19 @@ VERSAO, VERSAO_DATA = _versao_da_tela()
 
 
 # =========================================================================== trabalhador em segundo plano
+_avisado_em: dict[str, float] = {}
+
+
+def _falha_no_ciclo(nome: str, e: Exception):
+    """Sem banco (fora do ar ou acesso cortado): um aviso por minuto no registro, não um erro a cada volta."""
+    if problema_do_banco(e):
+        if time.monotonic() - _avisado_em.get(nome, 0.0) > 60:
+            _avisado_em[nome] = time.monotonic()
+            log.warning("%s: sem acesso ao banco (%s)", nome, str(getattr(e, "orig", e)).splitlines()[0][:160])
+        return
+    log.exception("Falha: %s", nome)
+
+
 async def trabalhador():
     """Executa a fila: uma tarefa por vez para a recepção, para o Atlas e para cada analista."""
     ativos: dict[str, asyncio.Task] = {}
@@ -57,8 +72,8 @@ async def trabalhador():
                 ativos.pop(raia)
             for raia, tid, tipo in await asyncio.to_thread(S.reservar_tarefas, set(ativos)):
                 ativos[raia] = asyncio.create_task(asyncio.to_thread(S.executar, tid, tipo))
-        except Exception:
-            log.exception("Falha no ciclo do trabalhador")
+        except Exception as e:
+            _falha_no_ciclo("fila de trabalho", e)
         await asyncio.sleep(0.5)
 
 
@@ -79,8 +94,8 @@ async def supervisao():
                 ultima_limpeza = t
                 await asyncio.to_thread(S.limpar_conversas)
             await asyncio.to_thread(momentos.talvez_um_momento)
-        except Exception:
-            log.exception("Falha na supervisão")
+        except Exception as e:
+            _falha_no_ciclo("supervisão", e)
         await asyncio.sleep(max(0.2, config.SUPERVISAO_SEGUNDOS))
 
 
@@ -139,7 +154,7 @@ async def rotinas():
                     log.info("Retenção: %d titular(es) anonimizado(s)", n)
             if config.IMAP_ATIVO and t - ultimo_imap > config.IMAP_INTERVALO:
                 ultimo_imap = t
-                await asyncio.to_thread(email_imap.ler_caixa)
+                await asyncio.to_thread(email_imap.ler_e_avisar)
             if demo and t > proximo_demo:
                 proximo_demo = t + config.DEMO_INTERVALO
                 lote = demo.pop(0)
@@ -149,8 +164,8 @@ async def rotinas():
                         for a in arqs:
                             S.registrar_curriculo(db, a.read_bytes(), a.name, "text/plain", "demo")
                 await asyncio.to_thread(_registrar)
-        except Exception:
-            log.exception("Falha nas rotinas")
+        except Exception as e:
+            _falha_no_ciclo("rotinas (e-mail, retenção)", e)
         await asyncio.sleep(1)
 
 
@@ -182,9 +197,12 @@ def verificar_producao():
         raise SystemExit("Configuração insegura para produção: " + "; ".join(problemas))
 
 
-@asynccontextmanager
-async def ciclo_de_vida(app: FastAPI):
-    verificar_producao()
+# Banco pronto? Até ficar, as rotas de dados respondem 503 com o aviso para a tela (veja banco_pronto).
+ESTADO_BANCO: dict = {"pronto": False, "problema": None}
+_acordar: asyncio.Event | None = None  # a tela viu o banco voltar: tenta de novo na hora, sem esperar o intervalo
+
+
+def _preparar_banco():
     with engine.begin() as con:  # vários computadores abrindo juntos: um prepara o banco, os outros esperam a vez
         esperar_vez(con, "tabelas")
         Base.metadata.create_all(con)
@@ -199,18 +217,67 @@ async def ciclo_de_vida(app: FastAPI):
                 db.add(Usuario(nome="Recrutador Demo", email="admin@demo.local", senha_hash=gerar_hash("demo1234"), papel="admin"))
                 log.warning("SEED_DEMO: usuário de demonstração admin@demo.local / demo1234 — NÃO use em produção")
             _semear_demo(db)
+
+
+async def _insistir_no_banco(comecar, espera: float = 5.0):
+    """O banco não respondeu na abertura (computador ligou antes da internet, acesso suspenso...): tenta de novo
+    com espera crescente (5 s até 1 min) ou na hora em que a tela perceber que ele voltou."""
+    while True:
+        try:
+            await asyncio.wait_for(_acordar.wait(), timeout=espera)
+        except asyncio.TimeoutError:
+            pass
+        _acordar.clear()
+        try:
+            await asyncio.to_thread(_preparar_banco)
+        except Exception as e:
+            p = problema_do_banco(e)
+            if not p:
+                log.exception("Falha ao preparar o banco")
+            ESTADO_BANCO["problema"] = p or ESTADO_BANCO["problema"]
+            espera = min(60.0, espera * 2)
+            continue
+        log.info("Banco de dados disponível: o escritório volta ao normal")
+        comecar()
+        return
+
+
+@asynccontextmanager
+async def ciclo_de_vida(app: FastAPI):
+    global _acordar
+    verificar_producao()
     eventos.configurar_loop(asyncio.get_running_loop())
+    _acordar = asyncio.Event()
     if not config.TRIAGEM_API_KEY and not config.LOCAL:
         log.warning("TRIAGEM_API_KEY não definida: POST /triagem aceita chamadas sem chave. Defina em produção.")
     log.info("IA em modo %s%s", config.IA_MODO, " · acesso local (só este computador, sem login)" if config.LOCAL else "")
     vez = Lideranca(engine)
-    comando = asyncio.create_task(comandar(vez))
-    # PostgreSQL: os eventos gravados por qualquer computador ligado ao banco chegam a este escritório
-    acompanhamento = eventos.acompanhar_banco() if engine.dialect.name == "postgresql" else None
+    tarefas: dict = {}
+
+    def comecar():
+        ESTADO_BANCO.update(pronto=True, problema=None)
+        tarefas["comando"] = asyncio.create_task(comandar(vez))
+        # PostgreSQL: os eventos gravados por qualquer computador ligado ao banco chegam a este escritório
+        if engine.dialect.name == "postgresql":
+            tarefas["acompanhamento"] = eventos.acompanhar_banco()
+
+    try:
+        _preparar_banco()
+        comecar()
+    except Exception as e:
+        p = problema_do_banco(e)
+        if not p:
+            raise
+        ESTADO_BANCO.update(pronto=False, problema=p)
+        log.warning("Sem acesso ao banco ao abrir (%s): o escritório abre, avisa e tenta de novo sozinho",
+                    str(getattr(e, "orig", e)).splitlines()[0][:160])
+        tarefas["insistir"] = asyncio.create_task(_insistir_no_banco(comecar))
     yield
-    comando.cancel()
-    if acompanhamento:
-        acompanhamento.set()
+    for nome in ("insistir", "comando"):
+        if tarefas.get(nome):
+            tarefas[nome].cancel()
+    if tarefas.get("acompanhamento"):
+        tarefas["acompanhamento"].set()
     await asyncio.to_thread(vez.soltar)  # fechando: outro computador assume a equipe na hora
 
 
@@ -218,6 +285,19 @@ app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=c
 if config.ORIGENS_CORS:
     app.add_middleware(CORSMiddleware, allow_origins=config.ORIGENS_CORS, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
+
+
+_SEMPRE = ("/api/marca", "/api/saude")
+
+
+@app.middleware("http")
+async def banco_pronto(request: Request, call_next):
+    """Enquanto o banco não fica pronto, as rotas de dados devolvem o aviso (a tela mostra e espera)."""
+    caminho = request.url.path
+    if not ESTADO_BANCO["pronto"] and caminho.startswith(("/api/", "/auth/")) and caminho not in _SEMPRE:
+        return JSONResponse(ESTADO_BANCO["problema"] or {"banco": "fora", "detail": "Preparando o banco de dados…"},
+                            status_code=503)
+    return await call_next(request)
 
 
 if config.LOCAL:
@@ -251,6 +331,43 @@ async def _erro_negocio(_, e: S.ErroNegocio):
     return JSONResponse({"detail": str(e)}, status_code=400)
 
 
+@app.exception_handler(OperationalError)
+@app.exception_handler(InterfaceError)
+@app.exception_handler(InternalError)
+async def _erro_de_banco(request: Request, e: Exception):
+    """O banco caiu ou o acesso foi cortado no meio do dia: a tela recebe o aviso (503) e confere /api/saude."""
+    p = problema_do_banco(e)
+    if not p:
+        log.error("Erro do banco em %s: %s", request.url.path, str(getattr(e, "orig", e)).splitlines()[0][:200])
+        return JSONResponse({"detail": "Erro interno no banco de dados."}, status_code=500)
+    ESTADO_BANCO["problema"] = p
+    return JSONResponse(p, status_code=503)
+
+
+def _testar_banco() -> bool:
+    with engine.connect() as con:
+        con.execute(text("select 1"))
+    return bool(uso_ia.bloqueio())  # o teto de gasto do dia também lê o banco
+
+
+@app.get("/api/saude")
+async def saude():
+    """Verificação de saúde: banco e situação da IA. A tela confere aqui se o banco voltou (a cada poucos segundos,
+    só enquanto mostra o aviso)."""
+    try:
+        ia_pausada = await asyncio.to_thread(_testar_banco)
+    except Exception as e:
+        p = problema_do_banco(e) or {"banco": "fora", "detail": "Sem conexão com o banco de dados."}
+        ESTADO_BANCO["problema"] = p
+        return JSONResponse(p, status_code=503)
+    if not ESTADO_BANCO["pronto"]:  # voltou, mas o escritório ainda está se preparando: acorda a nova tentativa
+        if _acordar:
+            _acordar.set()
+        return JSONResponse({"banco": "preparando", "detail": "O banco voltou: preparando o escritório…"}, status_code=503)
+    ESTADO_BANCO["problema"] = None
+    return {"ok": True, "banco": "ok", "ia_modo": config.IA_MODO, "ia_pausada": ia_pausada}
+
+
 # =========================================================================== autenticação
 class Login(BaseModel):
     email: str
@@ -267,7 +384,7 @@ def _gravar_sessao(response: Response, u: Usuario):
 
 
 @app.post("/auth/login")
-def login(dados: Login, request: Request, response: Response, db: Session = Depends(obter_db)):
+def login(dados: Login, request: Request, response: Response, db: Session = Depends(obter_db, scope="function")):
     if config.LOCAL:
         raise HTTPException(400, "Neste computador o escritório abre sem login.")
     limitar_login(request.client.host if request.client else "?")
@@ -287,7 +404,7 @@ class TrocaSenha(BaseModel):
 
 @app.post("/auth/senha")
 def trocar_senha(d: TrocaSenha, request: Request, response: Response, u: Usuario = Depends(usuario_atual),
-                 db: Session = Depends(obter_db)):
+                 db: Session = Depends(obter_db, scope="function")):
     if config.LOCAL:
         raise HTTPException(400, "Neste computador o escritório abre sem senha.")
     limitar_login(request.client.host if request.client else "?")
@@ -314,12 +431,6 @@ def sair(response: Response):
 @app.get("/auth/eu")
 def eu(u: Usuario = Depends(usuario_atual)):
     return _usuario_json(u)
-
-
-@app.get("/api/saude")
-def saude(db: Session = Depends(obter_db)):
-    db.execute(select(1))  # banco respondendo
-    return {"ok": True, "ia_modo": config.IA_MODO, "ia_pausada": bool(uso_ia.bloqueio())}
 
 
 @app.get("/api/marca")
@@ -380,7 +491,7 @@ async def enviar_curriculos(request: Request, arquivos: list[UploadFile] = File(
 
 # =========================================================================== escritório
 @app.get("/api/escritorio")
-def escritorio(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def escritorio(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     return S.escritorio(db) | {"usuario": _usuario_json(u), "versao": VERSAO}
 
 
@@ -414,13 +525,13 @@ def _agente(db, ag_id) -> Agente:
 
 
 @app.get("/api/agentes/{ag_id}")
-def agente(ag_id: int, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def agente(ag_id: int, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     return S.detalhe_agente(db, _agente(db, ag_id))
 
 
 @app.get("/api/agentes/{ag_id}/candidatos")
 def candidatos(ag_id: int, request: Request, vaga_id: int | None = None,
-               u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+               u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     _agente(db, ag_id)
     auditar(db, u, "listar_candidatos", "agente", ag_id, request, vaga_id=vaga_id)
     return S.candidatos_do_agente(db, ag_id, vaga_id)
@@ -467,7 +578,7 @@ async def chat_stream(ag_id: int, m: Mensagem, u: Usuario = Depends(usuario_atua
 
 
 @app.get("/api/equipe/conversas")
-def conversas(limite: int = 60, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def conversas(limite: int = 60, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     """Canal da equipe: o que os agentes disseram uns aos outros (consultas, contratações, boletins)."""
     return S.conversas_equipe(db, min(max(limite, 1), 200))
 
@@ -518,7 +629,7 @@ def dispensar(ag_id: int, request: Request, u: Usuario = Depends(exigir("supervi
 
 
 @app.get("/api/ia/uso")
-def ia_uso(u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db)):
+def ia_uso(u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db, scope="function")):
     """Tokens e custo estimado da IA (hoje e últimos 30 dias), por finalidade, e se ela está pausada."""
     hoje = uso_ia.inicio_do_dia()
     preco = uso_ia.preco(config.GEMINI_MODELO_AGENTES)
@@ -539,12 +650,12 @@ async def ia_testar(request: Request, u: Usuario = Depends(exigir("admin"))):
 
 
 @app.get("/api/contratacoes")
-def contratacoes(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def contratacoes(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     return S.contratacoes_recentes(db, 30)
 
 
 @app.get("/api/especialidades")
-def especialidades(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def especialidades(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     return [{"id": e.id, "codigo": e.codigo, "nome": e.nome, "descricao": e.descricao, "setores": e.setores}
             for e in db.scalars(select(Especialidade).order_by(Especialidade.id)).all()]
 
@@ -558,7 +669,7 @@ class NovaEspecialidade(BaseModel):
 
 
 @app.post("/api/especialidades")
-def nova_especialidade(d: NovaEspecialidade, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def nova_especialidade(d: NovaEspecialidade, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     invalidos = [s for s in d.setores if s not in CATEGORIAS_DISPONIVEIS]
     if invalidos:
         raise HTTPException(400, f"Pastas inexistentes: {', '.join(invalidos)}")
@@ -582,14 +693,14 @@ def _candidatura(db, cid) -> Candidatura:
 
 
 @app.get("/api/candidaturas/{cid}")
-def candidatura(cid: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def candidatura(cid: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     c = _candidatura(db, cid)
     auditar(db, u, "ver_curriculo", "candidatura", cid, request)
     return S.detalhe_candidatura(db, c)
 
 
 @app.get("/api/curriculos/{cur_id}/arquivo")
-def arquivo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def arquivo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     cur = db.get(Curriculo, cur_id)
     if not cur or not cur.caminho:
         raise HTTPException(404, "Arquivo indisponível.")
@@ -609,7 +720,7 @@ def _curriculo_do_banco(db, cur_id) -> Curriculo:
 
 @app.get("/api/banco")
 def banco(request: Request, grupo: str | None = None, pasta: str | None = None, situacao: str | None = None,
-          busca: str = "", pagina: int = 1, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+          busca: str = "", pagina: int = 1, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     if situacao and situacao not in acervo.SITUACOES:
         raise HTTPException(400, "Situação inválida.")
     auditar(db, u, "listar_banco", "curriculo", None, request, grupo=grupo, pasta=pasta, situacao=situacao,
@@ -618,7 +729,7 @@ def banco(request: Request, grupo: str | None = None, pasta: str | None = None, 
 
 
 @app.get("/api/banco/{cur_id}")
-def banco_curriculo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def banco_curriculo(cur_id: int, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     cur = _curriculo_do_banco(db, cur_id)
     auditar(db, u, "ver_curriculo", "curriculo", cur_id, request)
     return acervo.detalhe(db, cur)
@@ -630,7 +741,7 @@ class Encaminhamento(BaseModel):
 
 @app.post("/api/banco/{cur_id}/encaminhar")
 def banco_encaminhar(cur_id: int, d: Encaminhamento, request: Request, u: Usuario = Depends(exigir("supervisor")),
-                     db: Session = Depends(obter_db)):
+                     db: Session = Depends(obter_db, scope="function")):
     """O recrutador tira um currículo do banco e o põe numa vaga aberta: o analista da vaga analisa."""
     cur = _curriculo_do_banco(db, cur_id)
     vaga = db.get(Vaga, d.vaga_id)
@@ -685,7 +796,7 @@ class NovaDecisao(BaseModel):
 
 
 @app.post("/api/candidaturas/{cid}/decisao")
-def decidir(cid: int, d: NovaDecisao, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def decidir(cid: int, d: NovaDecisao, request: Request, u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     if d.decisao not in ("entrevista", "banco_talentos", "descartado"):
         raise HTTPException(400, "Decisão inválida.")
     c = _candidatura(db, cid)
@@ -701,7 +812,7 @@ def decidir(cid: int, d: NovaDecisao, request: Request, u: Usuario = Depends(usu
 
 # =========================================================================== vagas, quadro e pendências
 @app.get("/api/vagas")
-def vagas(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def vagas(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     lote = S.Lote(db)
     return [S.vaga_json(db, v, completo=True, lote=lote) for v in db.scalars(select(Vaga).order_by(Vaga.id)).all()]
 
@@ -733,7 +844,7 @@ async def sugerir_vaga(d: RascunhoVaga, u: Usuario = Depends(exigir("supervisor"
 
 
 @app.post("/api/vagas")
-def criar_vaga(d: NovaVaga, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db)):
+def criar_vaga(d: NovaVaga, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db, scope="function")):
     invalidos = [s for s in d.setores if s not in CATEGORIAS_DISPONIVEIS]
     if invalidos:
         raise HTTPException(400, f"Pastas inexistentes: {', '.join(invalidos)}")
@@ -747,7 +858,7 @@ class StatusVaga(BaseModel):
 
 
 @app.patch("/api/vagas/{vid}")
-def status_vaga(vid: int, d: StatusVaga, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db)):
+def status_vaga(vid: int, d: StatusVaga, request: Request, u: Usuario = Depends(exigir("supervisor")), db: Session = Depends(obter_db, scope="function")):
     v = db.get(Vaga, vid)
     if not v:
         raise HTTPException(404, "Vaga não encontrada.")
@@ -757,7 +868,7 @@ def status_vaga(vid: int, d: StatusVaga, request: Request, u: Usuario = Depends(
 
 
 @app.get("/api/quadro")
-def quadro(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db)):
+def quadro(u: Usuario = Depends(usuario_atual), db: Session = Depends(obter_db, scope="function")):
     pend = db.scalars(select(Pendencia).where(Pendencia.status == "aberta").order_by(Pendencia.id.desc())).all()
     nomes = {a.id: a.nome for a in db.scalars(select(Agente)).all()}
     lote = S.Lote(db)
@@ -798,12 +909,12 @@ def _usuario_admin_json(x: Usuario):
 
 
 @app.get("/api/usuarios")
-def usuarios(u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def usuarios(u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     return [_usuario_admin_json(x) for x in db.scalars(select(Usuario).order_by(Usuario.id)).all()]
 
 
 @app.post("/api/usuarios")
-def novo_usuario(d: NovoUsuario, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def novo_usuario(d: NovoUsuario, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     if d.papel not in PAPEIS:
         raise HTTPException(400, "Papel inválido.")
     if db.scalar(select(Usuario).where(Usuario.email == d.email.strip().lower())):
@@ -832,7 +943,7 @@ def _admins_ativos(db) -> int:
 
 @app.patch("/api/usuarios/{uid}")
 def editar_usuario(uid: int, d: EdicaoUsuario, request: Request, u: Usuario = Depends(exigir("admin")),
-                   db: Session = Depends(obter_db)):
+                   db: Session = Depends(obter_db, scope="function")):
     alvo = db.get(Usuario, uid)
     if not alvo:
         raise HTTPException(404, "Usuário não encontrado.")
@@ -857,7 +968,7 @@ def editar_usuario(uid: int, d: EdicaoUsuario, request: Request, u: Usuario = De
 
 
 @app.post("/api/usuarios/{uid}/senha")
-def redefinir_senha(uid: int, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def redefinir_senha(uid: int, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     alvo = db.get(Usuario, uid)
     if not alvo:
         raise HTTPException(404, "Usuário não encontrado.")
@@ -869,7 +980,7 @@ def redefinir_senha(uid: int, request: Request, u: Usuario = Depends(exigir("adm
 
 
 @app.get("/api/lgpd/titulares")
-def buscar_titulares(busca: str, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def buscar_titulares(busca: str, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     termo = f"%{busca.strip().lower()}%"
     achados = db.scalars(select(Candidato).where(Candidato.anonimizado_em.is_(None),
                                                  or_(func.lower(Candidato.email).like(termo), func.lower(Candidato.nome).like(termo))).limit(20)).all()
@@ -885,7 +996,7 @@ def _titular(db, cid) -> Candidato:
 
 
 @app.get("/api/lgpd/titulares/{cid}/exportar")
-def exportar(cid: int, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def exportar(cid: int, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     c = _titular(db, cid)
     db.add(SolicitacaoTitular(candidato_id=c.id, tipo="acesso", usuario_id=u.id, concluido_em=agora()))
     auditar(db, u, "exportar_titular", "candidato", cid, request)
@@ -898,7 +1009,7 @@ class Eliminacao(BaseModel):
 
 
 @app.post("/api/lgpd/titulares/{cid}/eliminar")
-def eliminar(cid: int, d: Eliminacao, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def eliminar(cid: int, d: Eliminacao, request: Request, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     c = _titular(db, cid)
     S.anonimizar_titular(db, c, "pedido do titular")
     db.add(SolicitacaoTitular(candidato_id=c.id, tipo="eliminacao", observacao=d.observacao, usuario_id=u.id, concluido_em=agora()))
@@ -907,7 +1018,7 @@ def eliminar(cid: int, d: Eliminacao, request: Request, u: Usuario = Depends(exi
 
 
 @app.get("/api/auditoria")
-def auditoria(limite: int = 200, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db)):
+def auditoria(limite: int = 200, u: Usuario = Depends(exigir("admin")), db: Session = Depends(obter_db, scope="function")):
     nomes = {x.id: x.nome for x in db.scalars(select(Usuario)).all()}
     return [{"ts": iso(a.ts), "usuario": nomes.get(a.usuario_id), "acao": a.acao, "recurso": a.recurso,
              "recurso_id": a.recurso_id, "ip": a.ip, "detalhes": a.detalhes}

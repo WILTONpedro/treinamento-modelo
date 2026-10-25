@@ -49,3 +49,18 @@ EXE(  # noqa: F821
     icon=os.path.join(raiz, "windows", "icone.ico"),
     upx=False,
 )
+
+# NovaEmpresa.exe (um arquivo só): o kit do FORNECEDOR para preparar cada empresa nova (banco, e-mail, configuração
+# e pacote lacrado). Fica fora do instalador das empresas: vai num artefato separado ("Ferramentas-do-fornecedor").
+c = Analysis(  # noqa: F821
+    [os.path.join(raiz, "backend", "nova_empresa.py")],
+    pathex=[os.path.join(raiz, "backend")],
+    excludes=["tkinter", "pytest", "fastapi", "uvicorn", "sqlalchemy", "psycopg"],
+)
+EXE(  # noqa: F821
+    PYZ(c.pure), c.scripts, c.binaries, c.datas, [],  # noqa: F821
+    name="NovaEmpresa",
+    console=True,  # janela de texto: pergunta e mostra o código de ativação
+    icon=os.path.join(raiz, "windows", "icone.ico"),
+    upx=False,
+)

@@ -209,6 +209,7 @@ SEGUNDOS_CONCLUIDO = _int("SEGUNDOS_CONCLUIDO", 8)
 # --- Leitura de e-mail (opcional; desligada por padrão) -----------------------
 IMAP_ATIVO = _bool("IMAP_ATIVO", False)
 IMAP_HOST = os.environ.get("IMAP_HOST", "")
+IMAP_PORTA = _int("IMAP_PORTA", 993)  # IMAP com TLS direto (Gmail, Zoho, provedores de hospedagem)
 IMAP_USUARIO = os.environ.get("IMAP_USUARIO", "")
 IMAP_SENHA = os.environ.get("IMAP_SENHA", "")
 IMAP_PASTA = os.environ.get("IMAP_PASTA", "INBOX")

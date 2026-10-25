@@ -144,8 +144,9 @@ remove a pausa e inclui backups diários.
 
 **Cópia de segurança por conta própria** (recomendada mesmo no plano Pro): `supabase/backup.sh` gera um arquivo
 `backups/hub-<data>.dump` com dados, regras, proteções e arquivos cifrados, confere se a cópia está completa e
-apaga as com mais de 30 dias (`GUARDAR_DIAS`). Lê a `DATABASE_URL` do `.env` do sistema e usa o `pg_dump` 17
-local ou, sem ele, o Docker:
+apaga as com mais de 30 dias (`GUARDAR_DIAS`). Lê a `DATABASE_URL` e o `DB_SCHEMA` do `.env` do sistema (ou do
+ambiente) e usa o `pg_dump` 17 local ou, sem ele, o Docker. Num projeto com várias empresas, a cópia leva só o schema
+da empresa (`DB_SCHEMA=rh_<empresa>`; o arquivo leva o nome do schema):
 
 ```bash
 supabase/backup.sh                       # cópia agora, em ./backups
@@ -176,6 +177,11 @@ mesmo banco no Supabase. Não há site na internet nem tela de login: o atalho a
   do pooler do projeto é `aws-0-…` ou `aws-1-…`.
   O programa liga junto com o Windows e continua trabalhando com a janela fechada.
 - **Currículos por e-mail sem nada aberto na internet:** o programa busca os currículos numa caixa de e-mail (IMAP).
+- **Sem banco, sem susto:** se a internet cair ou o acesso ao banco for cortado, o escritório não fecha.
+  - Ele mostra uma faixa: âmbar sem conexão, vermelha com o acesso recusado.
+  - O escritório fica esmaecido e tenta de novo sozinho.
+  - Quando o banco volta, a faixa some.
+  - Se o Windows abrir o programa antes da rede, ele espera o banco em vez de fechar.
 
 **1. Uma vez, por quem cuida do sistema** (em qualquer computador com Python):
 
@@ -187,7 +193,8 @@ python -m app.preparar --local --empresa "Sua Empresa" --gemini-key SUA_CHAVE \
 ```
 
 Isso gera o arquivo `escritorio.env` na pasta do projeto. Para os currículos chegarem por e-mail, preencha nele
-`IMAP_ATIVO=true`, `IMAP_HOST`, `IMAP_USUARIO` e `IMAP_SENHA` (no Gmail ou no Microsoft 365, uma *senha de app*).
+`IMAP_ATIVO=true`, `IMAP_HOST`, `IMAP_USUARIO` e `IMAP_SENHA` (no Gmail, uma *senha de app*; a Microsoft não
+aceita senha no IMAP: veja *E-mail dos currículos*).
 **Guarde uma cópia num cofre de senhas:** a `CHAVE_ARQUIVOS` dele abre os currículos, e todos os computadores
 precisam do mesmo arquivo.
 
@@ -206,51 +213,147 @@ Para atualizar, troque a pasta pela versão nova e rode o instalador de novo; na
 
 Para entregar **só o aplicativo**, sem pastas de código e sem Python na máquina do cliente, há um instalador
 único, `EscritorioRecrutamento-Setup.exe`, igual para todas as empresas. O que muda de uma empresa para outra é
-só o arquivo de configuração dela (`escritorio.env`), que liga o programa ao banco daquela empresa.
+só a configuração dela, que liga o programa ao banco, à chave do Gemini e à caixa de e-mail daquela empresa.
 
-- **Onde baixar:** no GitHub, aba *Actions* → *Instalador Windows* → execução mais recente → *Artifacts*. Cada
-  mudança no código gera um instalador novo, depois de rodar os testes e de instalar, abrir e desinstalar o
-  programa num Windows de verdade.
-- **Para cada empresa:** um banco próprio (projeto ou schema separado no Supabase) e um `escritorio.env` próprio,
-  gerado com `python -m app.preparar --local …`. Assim os candidatos de uma empresa nunca aparecem na outra.
-- **Entregar sem expor a configuração:** o `escritorio.env` tem a senha do banco, a chave do Gemini e a do e-mail,
-  então ele nunca vai legível para a empresa. Lacre-o e mande o pacote e o código por canais diferentes:
-  ```bash
-  cd backend
-  python -m app.preparar --lacrar ../escritorio.env --saida ../empresa-x.escritorio
-  # mostra o código de ativação uma única vez, ex.: K7QM-2HXR-9TWD-P4NB-ZE6C
-  ```
-  O pacote `.escritorio` vai cifrado (AES-GCM, chave tirada do código). Mande o arquivo por e-mail e o código por
-  WhatsApp ou numa ligação.
-- **Na instalação:** o instalador pede o arquivo `.escritorio` e o código. Ele confere o código antes de instalar e
-  guarda a configuração em `%APPDATA%\EscritorioRecrutamento\escritorio.cfg`, cifrada pelo próprio Windows
-  (DPAPI): só aquele usuário, naquele computador, consegue lê-la, e copiá-la para outro computador não funciona.
-  Nenhum arquivo legível fica na máquina. Os dados locais ficam em `%LOCALAPPDATA%\EscritorioRecrutamento\`. O
-  instalador não pede administrador, cria o atalho na área de trabalho e liga junto com o Windows. Para a TI da
-  empresa instalar sem perguntas:
-  `EscritorioRecrutamento-Setup.exe /VERYSILENT /CONFIG="C:\caminho\empresa-x.escritorio" /CODIGO=K7QM-2HXR-9TWD-P4NB-ZE6C`.
-  Um `escritorio.env` legível continua aceito, para o seu próprio computador.
-- **Mudar a configuração de uma empresa** (ex.: ligar o e-mail): edite o `escritorio.env` dela no seu computador,
-  lacre de novo e mande o pacote e o código novos. Ela roda o instalador outra vez; os dados ficam no banco.
-- **O limite do lacre:** o programa precisa usar os segredos, então alguém com controle total do computador e
-  conhecimento técnico ainda consegue tirá-los da memória. O lacre impede o vazamento casual (abrir no Bloco de
-  Notas, repassar o arquivo, instalar em outro computador). Para o caso de um vazamento, limite o estrago:
-  - um projeto Supabase por empresa, ligado pelo papel `hub_app` (nunca `postgres`): a senha só abre os dados
-    daquela empresa;
-  - uma chave do Gemini por empresa (um projeto no Google AI Studio para cada uma), com orçamento e alerta de gasto
-    no Google Cloud, além do `IA_LIMITE_DIARIO_USD`;
-  - uma caixa de e-mail por empresa, com senha de app.
-  - Se uma configuração vazar: troque a senha do `hub_app` daquele projeto, revogue a chave do Gemini e a senha de
-    app do e-mail, gere um pacote novo e reinstale.
-- **Atualizar:** rodar o instalador novo; a configuração e os dados ficam. Para desinstalar, use *Configurações →
-  Aplicativos* do Windows.
-- **Controle:** o acesso de cada empresa é a senha do banco dela. Trocar essa senha no Supabase desliga o
-  escritório daquela empresa até ela receber uma configuração nova.
-- **O código** vai compilado dentro do programa, o que desestimula a cópia mas não a impede: a proteção de verdade
-  é o contrato de licença.
+**Onde baixar:** no GitHub, aba *Actions* → *Instalador Windows* → execução mais recente → *Artifacts*:
+- `EscritorioRecrutamento-Setup`: o instalador, que vai para as empresas;
+- `Ferramentas-do-fornecedor`: o `NovaEmpresa.exe`, que fica só com você.
 
-Para gerar o instalador num Windows, sem o GitHub: `pip install -r backend/requirements.txt pyinstaller`,
-`pyinstaller windows/escritorio.spec` e `iscc windows/escritorio.iss` (Inno Setup 6).
+Cada mudança no código gera os dois de novo. Antes, a CI roda os testes e, num Windows de verdade, instala, abre e
+desinstala o programa com uma empresa de teste gerada pelo próprio `NovaEmpresa.exe`.
+
+### Preparar uma empresa nova
+
+Dê dois cliques no `NovaEmpresa.exe`: ele pergunta tudo e grava em *Documentos\Empresas do Escritório*. Ou, com
+Python:
+
+```bash
+cd backend
+python -m app.preparar --nova-empresa "Padaria Pão Dourado" \
+    --supabase "postgresql://postgres.<ref>:[YOUR-PASSWORD]@aws-1-sa-east-1.pooler.supabase.com:6543/postgres" \
+    --gemini-key CHAVE_DO_GEMINI_DA_EMPRESA \
+    --imap-usuario curriculos@padaria.com.br --imap-senha "senha de app"
+```
+
+Em `--supabase`, cole o endereço do painel (*Connect → Transaction pooler*) como ele vem, com `[YOUR-PASSWORD]`.
+O comando não usa a senha do `postgres`: ele cria um papel novo, só desta empresa, com senha forte. O resultado é a
+pasta `empresas/padaria_pao_dourado/`:
+
+| O quê | Para quê | Vai para a empresa? |
+|---|---|---|
+| `1-banco.sql` | cria o papel e o schema da empresa, com os limites de tempo e sem acesso para outros papéis | não: você cola no *SQL Editor* do projeto, uma vez (rodar de novo é recusado) |
+| `padaria_pao_dourado.escritorio` | a configuração lacrada (AES-GCM, chave tirada do código; nenhum segredo legível dentro) | sim, por e-mail |
+| código de ativação | aparece só na tela, uma vez | sim, por outro canal (WhatsApp, ligação) |
+| `escritorio.env` | a mesma configuração, legível | nunca: guarde num cofre de senhas |
+| `LEIA-ME.txt` | o passo a passo e os comandos de operação desta empresa | não |
+
+Outras opções:
+- `--compartilhado`: põe a empresa num projeto que já tem outras (veja os dois modelos abaixo);
+- `--demonstracao`: pacote de teste, com análises por regras e sem custo de IA, para a empresa experimentar;
+- `--imap-host`: o servidor do e-mail (padrão `imap.gmail.com`);
+- `--limite-diario`: o teto de gasto de IA por dia, em US$ (padrão 3);
+- `--pasta`: onde criar a pasta da empresa.
+
+**Na instalação:**
+- O instalador pede o `.escritorio` e o código, e confere o código antes de instalar.
+- A configuração fica em `%APPDATA%\EscritorioRecrutamento\escritorio.cfg`, cifrada pelo próprio Windows (DPAPI).
+  Só aquele usuário, naquele computador, consegue lê-la; copiá-la para outro computador não funciona. Nenhum arquivo
+  legível fica na máquina.
+- Os dados locais ficam em `%LOCALAPPDATA%\EscritorioRecrutamento\`.
+- O instalador não pede administrador, cria o atalho na área de trabalho e liga junto com o Windows.
+
+Para a TI da empresa instalar sem perguntas:
+`EscritorioRecrutamento-Setup.exe /VERYSILENT /CONFIG="C:\caminho\empresa-x.escritorio" /CODIGO=K7QM-2HXR-9TWD-P4NB-ZE6C`.
+Um `escritorio.env` legível continua aceito, para o seu próprio computador. Para lacrar uma configuração feita à mão:
+`python -m app.preparar --lacrar escritorio.env --saida empresa-x.escritorio`.
+
+### Um projeto do Supabase por empresa, ou várias empresas num projeto
+
+| | A. Um projeto por empresa (padrão) | B. Várias empresas num projeto (`--compartilhado`) |
+|---|---|---|
+| No banco | projeto próprio, papel `hub_app`, schema `hub` | cada empresa com papel `hub_<empresa>` e schema `rh_<empresa>` |
+| Isolamento | outro projeto, outro endereço, outra senha | pelo PostgreSQL: o papel de uma empresa recebe *permission denied* no schema da outra, e a senha de uma não entra como outra |
+| Custo no Supabase (Pro) | US$ 25 por mês com o primeiro projeto incluso; cada empresa a mais, cerca de US$ 10 por mês | US$ 25 por mês no total; empresa nova não custa nada até o disco ou as conexões acabarem |
+| Espaço | 8 GB só dela (depois, US$ 0,125 por GB) | 8 GB divididos entre todas |
+| Computadores | uns 60 por empresa | uns 60 somando todas as empresas do projeto |
+| Backup diário do Supabase | volta só aquela empresa | volta o projeto inteiro (todas juntas); para uma só, use o `backup.sh` por schema |
+| Quando usar | empresa maior, ou contrato que exige banco separado | começar com custo baixo, com empresas pequenas |
+
+Os números:
+- **Preços:** do Supabase, conferidos em outubro de 2026. O plano Free (2 projetos ativos, 500 MB cada, pausa após
+  7 dias de pouco uso) serve para testar, não para um cliente pagando.
+- **Computadores:** na simulação, cada computador abriu 2 a 3 conexões no pooler, e o pooler do tamanho Micro
+  aceita 200. Acima disso, o tamanho Small (400 conexões) custa cerca de US$ 15 por mês em vez de US$ 10.
+- **Espaço:** cada empresa ocupa cerca de 1,5 MB vazia. Cada currículo ocupa o tamanho do arquivo (cifrado) mais 1 a
+  3 KB de dados, e a retenção da LGPD anonimiza os antigos e libera os arquivos.
+- **IA:** com o Gemini, cerca de US$ 0,002 por currículo (triagem, análise e eventuais releituras), cobrados na
+  chave da empresa.
+
+### O dia a dia do fornecedor
+
+Os comandos de cada empresa já vêm prontos no `LEIA-ME.txt` dela. Os de SQL rodam no Supabase → *SQL Editor*.
+
+- **Suspender** (ex.: falta de pagamento): `alter role <papel> nologin;` e derrube as conexões abertas com
+  `select pg_terminate_backend(pid) from pg_stat_activity where usename = '<papel>';`.
+  - Em segundos, o escritório mostra a faixa vermelha *Acesso ao banco recusado*. Nada se perde.
+  - No modelo B, as outras empresas do projeto seguem normais.
+- **Reativar:** `alter role <papel> login;`. O escritório volta sozinho, sem reinstalar nada.
+- **A configuração vazou:** `python -m app.preparar --trocar-senha empresas/<empresa>`. O comando gera:
+  - uma senha nova;
+  - o `2-trocar-senha.sql`: rode no *SQL Editor* e a senha antiga para de entrar na hora;
+  - um pacote novo, com código novo.
+
+  Reinstale nos computadores da empresa; os dados ficam. Se for o caso, revogue também a chave do Gemini e a senha
+  de app do e-mail.
+- **Backup só de uma empresa:**
+  `DATABASE_URL="<a URL do escritorio.env dela>" DB_SCHEMA=<schema> supabase/backup.sh backups/<empresa>`.
+- **Restaurar um backup diário do Supabase:** o backup não guarda a senha dos papéis próprios, então o escritório
+  mostra *Acesso ao banco recusado* até ela ser redefinida. Rode
+  `alter role <papel> with password '<a senha da DATABASE_URL do escritorio.env dela>';`. É a mesma senha, então
+  nada muda nos computadores.
+- **Mudar a configuração** (ex.: ligar o e-mail):
+  - edite o `escritorio.env` dela;
+  - lacre de novo com `python -m app.preparar --lacrar escritorio.env --saida <empresa>.escritorio --forcar`;
+  - mande o pacote e o código novos; a empresa roda o instalador outra vez.
+- **Atualizar o programa:** mande o instalador novo. A empresa deixa o campo da configuração em branco, e a
+  configuração instalada continua valendo, com os dados.
+- **Desinstalar:** *Configurações → Aplicativos* do Windows.
+
+### E-mail dos currículos
+
+- **Vários computadores:** ligue o e-mail na configuração de todos. Só o computador que comanda a equipe lê a
+  caixa, a cada 2 minutos, e outro assume se ele desligar.
+- **Gmail ou Google Workspace:** use uma *senha de app*, que exige a verificação em duas etapas na conta.
+- **Microsoft (Outlook.com, Hotmail, Microsoft 365):** não aceita mais senha, nem senha de app, no IMAP. Ela exige
+  o login da Microsoft (OAuth), que o programa não faz.
+  - Use uma caixa do Gmail ou do Workspace só para os currículos, ou um provedor que aceite IMAP com senha.
+  - A porta muda com `IMAP_PORTA` (padrão 993).
+  - O `NovaEmpresa` avisa quando o endereço é da Microsoft.
+- **Certificado:** a conexão confere o certificado do servidor, então um servidor falso no caminho não recebe a
+  senha.
+- **Quando a leitura falha** (senha trocada, servidor fora): a Bia mostra no escritório uma pendência com o
+  motivo, e ela some sozinha quando a leitura volta.
+- **Nada se perde:** uma mensagem só é marcada como lida depois que o currículo está no banco.
+
+### Os limites da proteção
+
+O programa precisa usar os segredos. Então alguém com controle total do computador e conhecimento técnico ainda
+consegue tirá-los da memória. O lacre impede o vazamento casual: abrir no Bloco de Notas, repassar o arquivo,
+instalar em outro computador.
+
+Para o caso de um vazamento, limite o estrago:
+- cada empresa com o próprio papel no banco (nunca `postgres`): a senha só abre os dados daquela empresa;
+- uma chave do Gemini por empresa (um projeto no Google AI Studio para cada uma), com orçamento e alerta de gasto
+  no Google Cloud, além do `IA_LIMITE_DIARIO_USD`;
+- uma caixa de e-mail por empresa, com senha de app.
+
+O código vai compilado dentro do programa. Isso desestimula a cópia, mas não a impede: a proteção de verdade é o
+contrato de licença.
+
+Para gerar o instalador e o `NovaEmpresa.exe` num Windows, sem o GitHub:
+- `pip install -r backend/requirements.txt pyinstaller`;
+- `pyinstaller windows/escritorio.spec`;
+- `iscc windows/escritorio.iss` (Inno Setup 6).
 
 ## Colocar em produção (servidor com login)
 
@@ -372,7 +475,8 @@ Além de responder, o currículo é registrado, deduplicado, distribuído pelo A
 reenviado não é reprocessado; um currículo pode entrar em várias vagas, uma análise por vaga. Se a IA estiver
 pausada, a resposta vem na hora com `"status": "na_fila"` e a triagem acontece quando ela voltar.
 
-Se preferir que o próprio sistema leia a caixa de entrada, ligue `IMAP_ATIVO=true` e preencha os dados IMAP.
+Se preferir que o próprio sistema leia a caixa de entrada, ligue `IMAP_ATIVO=true` e preencha os dados IMAP
+(veja *E-mail dos currículos*, em *Vender para empresas*).
 
 ## O escritório
 
@@ -554,6 +658,7 @@ Todas as variáveis estão comentadas em `backend/.env.example`. As principais:
 | `ENCAMINHAMENTO_AUTOMATICO` | `true` | Atlas encaminha currículos sem pasta |
 | `REPROCESSAR_APOS_MIN` | `10` | espera antes da nova tentativa automática |
 | `BOLETIM_MINUTOS` | `60` | boletim do Atlas (0 desliga) |
+| `IMAP_ATIVO`, `IMAP_HOST`, `IMAP_PORTA`, `IMAP_USUARIO`, `IMAP_SENHA` | `false`, vazio, `993` | caixa de e-mail dos currículos (só o computador que comanda lê) |
 | `RETENCAO_DIAS` / `RETENCAO_CONVERSAS_HORAS` | `180` / `72` | anonimização de candidatos inativos / guarda das conversas entre agentes |
 
 ## Estados dos agentes
@@ -576,7 +681,7 @@ O deslocamento é só visual: a tarefa já começou no servidor, o descanso nunc
 | Método | Caminho | Uso |
 |---|---|---|
 | POST | `/triagem` | entrada do fluxo de e-mail (cabeçalho `X-API-Key`) |
-| GET | `/api/saude` | verificação de saúde (banco e situação da IA) |
+| GET | `/api/saude` | verificação de saúde (banco e situação da IA); 503 com `banco` (`fora` ou `recusado`) se o banco faltar |
 | GET | `/api/marca` | nome do sistema exibido na tela (público) |
 | POST | `/auth/login`, `/auth/senha`, `/auth/sair` | sessão e troca da própria senha |
 | GET/POST/PATCH | `/api/usuarios`, `/api/usuarios/{id}`, `/api/usuarios/{id}/senha` | gestão de acessos (admin) |

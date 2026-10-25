@@ -42,17 +42,14 @@ jobs:
         shell: pwsh
         timeout-minutes: 10  # um aviso esperando clique num instalador silencioso trava para sempre
         run: |
-          $cfg = Join-Path $env:RUNNER_TEMP "escritorio.env"
-          # configuração de teste: banco local (SQLite) e IA de demonstração, nada sai da máquina
-          "# Configuração de teste`nACESSO=local`nAMBIENTE=desenvolvimento`nIA_MODO=demo`nDEMO_DURACAO_ANALISE=1`nPORTA_LOCAL=8765`nSEGREDO_JWT=segredo-do-teste-de-instalacao-com-tamanho" |
-            Set-Content -Path $cfg -Encoding utf8BOM
-          # como vai para uma empresa: configuração lacrada + código de ativação
-          $pacote = Join-Path $env:RUNNER_TEMP "empresa.escritorio"
-          Push-Location backend
-          $saida = python -m app.preparar --lacrar $cfg --saida $pacote
-          $lacrou = $LASTEXITCODE
-          Pop-Location
-          if ($lacrou -ne 0) { throw "não consegui lacrar a configuração" }
+          # como vai para uma empresa: o kit do fornecedor (NovaEmpresa.exe) prepara a configuração lacrada e mostra o
+          # código de ativação. Empresa de teste: banco local (SQLite) e IA de demonstração, nada sai da máquina.
+          $empresas = Join-Path $env:RUNNER_TEMP "empresas"
+          $saida = & dist\NovaEmpresa.exe "Empresa do Teste" --demonstracao --pasta $empresas
+          if ($LASTEXITCODE -ne 0) { $saida; throw "o kit do fornecedor falhou" }
+          $pacote = Join-Path $empresas "empresa_do_teste\empresa_do_teste.escritorio"
+          if (-not (Test-Path $pacote)) { throw "o kit do fornecedor não gerou o pacote" }
+          if (Select-String -Path $pacote -Pattern "SEGREDO_JWT" -Quiet) { throw "o pacote está legível" }
           $codigo = ([regex]::Match(($saida -join "`n"), "[A-Z0-9]{4}(-[A-Z0-9]{4}){4}")).Value
           if (-not $codigo) { throw "o código de ativação não apareceu" }
           $pastaCfg = Join-Path $env:APPDATA "EscritorioRecrutamento"
@@ -70,6 +67,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "instalação falhou ($($p.ExitCode))" }
           $exe = Join-Path $env:LOCALAPPDATA "Programs\EscritorioRecrutamento\EscritorioRecrutamento.exe"
           if (-not (Test-Path $exe)) { throw "o programa não foi instalado" }
+          if (Test-Path (Join-Path (Split-Path $exe) "NovaEmpresa.exe")) { throw "o kit do fornecedor foi junto para a empresa" }
           if (-not (Test-Path (Join-Path $pastaCfg "escritorio.cfg"))) { throw "a configuração lacrada não foi guardada" }
           if (Test-Path (Join-Path $pastaCfg "escritorio.env")) { throw "ficou uma configuração legível no computador" }
           if (Select-String -Path (Join-Path $pastaCfg "escritorio.cfg") -Pattern "SEGREDO_JWT" -Quiet) { throw "a configuração guardada está legível" }
@@ -117,4 +115,11 @@ jobs:
         with:
           name: EscritorioRecrutamento-Setup
           path: dist-instalador/EscritorioRecrutamento-Setup.exe
+          retention-days: 30
+
+      # só para quem vende: prepara cada empresa nova (não vai para as empresas)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ferramentas-do-fornecedor
+          path: dist/NovaEmpresa.exe
           retention-days: 30

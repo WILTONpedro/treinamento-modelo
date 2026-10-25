@@ -2,6 +2,7 @@ import logging
 import re
 from contextlib import contextmanager
 from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy.exc import InterfaceError, InternalError, OperationalError
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from . import config
@@ -104,10 +105,12 @@ def migrar(eng=None):
                 se_faltar = "IF NOT EXISTS " if eng.dialect.name == "postgresql" else ""
                 con.execute(text(f"ALTER TABLE {tabela.name} ADD COLUMN {se_faltar}{col.name} {tipo}"))
                 log.info("Migração: coluna %s.%s criada", tabela.name, col.name)
+    from .lideranca import esperar_vez
     for tabela in Base.metadata.sorted_tables:  # índices novos também chegam a bancos antigos
         for indice in tabela.indexes:
             try:
                 with eng.begin() as con:
+                    esperar_vez(con, "indices")  # dois computadores atualizados juntos não criam o mesmo índice
                     indice.create(bind=con, checkfirst=True)
             except Exception as e:  # ex.: dados antigos duplicados impedem um índice único; o sistema sobe assim mesmo
                 log.warning("Índice %s não criado: %s", indice.name, str(e).splitlines()[0][:160])
@@ -116,27 +119,64 @@ def migrar(eng=None):
         ajustar(eng, Base.metadata.sorted_tables)
 
 
+# Banco fora do ar ou acesso cortado: a tela mostra um aviso e o programa tenta de novo sozinho (main.py).
+SEM_ACESSO = ("O banco de dados recusou o acesso deste escritório. Fale com quem forneceu o programa: pode ser "
+              "preciso receber uma configuração nova.")
+SEM_CONEXAO = "Sem conexão com o banco de dados. Confira a internet: o escritório tenta de novo sozinho."
+_RECUSADO = ("authentication", "not permitted to log in", "no such user", "tenant or user not found",
+             "permission denied for database")
+
+
+def problema_do_banco(e: Exception) -> dict | None:
+    """Erro de conexão (não da consulta): {"banco": "recusado" | "fora", "detail": aviso para a tela}; senão None.
+
+    Tempo limite de consulta, trava e conflito também chegam como OperationalError, mas não são falta de banco:
+    o código SQLSTATE separa (08 conexão, 28 autorização, 53 recursos, 57P desligamento)."""
+    if _sqlite or not isinstance(e, (OperationalError, InterfaceError, InternalError)):
+        return None  # SQLite fica no próprio computador: "database is locked" é passageiro
+    orig = getattr(e, "orig", None) or e
+    if isinstance(e, InternalError):  # o pooler perdeu o fio da conversa (logo depois de o banco voltar): passageiro
+        return {"banco": "fora", "detail": SEM_CONEXAO} if "results from command" in str(orig) else None
+    estado = getattr(orig, "sqlstate", None) or ""
+    if estado and not estado.startswith(("08", "28", "53", "57P")):
+        return None
+    msg = str(orig).lower()
+    recusado = (estado.startswith("28") or any(x in msg for x in _RECUSADO) or ("tenant/user" in msg and "not found" in msg)
+                or ('role "' in msg and "does not exist" in msg))
+    return {"banco": "recusado", "detail": SEM_ACESSO} if recusado else {"banco": "fora", "detail": SEM_CONEXAO}
+
+
+def _desfazer(s, e: Exception):
+    """Conexão com problema (banco caiu, acesso cortado, pooler fora de sincronia): ela é descartada em vez de
+    voltar para o pool, onde atrapalharia o próximo pedido."""
+    if problema_do_banco(e):
+        s.invalidate()
+    else:
+        s.rollback()
+
+
 @contextmanager
 def sessao():
     s = Sessao()
     try:
         yield s
         s.commit()
-    except Exception:
-        s.rollback()
+    except Exception as e:
+        _desfazer(s, e)
         raise
     finally:
         s.close()
 
 
 def obter_db():
-    """Dependência do FastAPI."""
+    """Dependência do FastAPI. Use com scope="function": o commit acontece ANTES da resposta. No padrão do FastAPI
+    ele viria depois de a tela já ter recebido "ok", e uma falha nessa hora (conexão caindo) passaria despercebida."""
     s = Sessao()
     try:
         yield s
         s.commit()
-    except Exception:
-        s.rollback()
+    except Exception as e:
+        _desfazer(s, e)
         raise
     finally:
         s.close()

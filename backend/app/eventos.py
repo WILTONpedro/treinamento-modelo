@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections import OrderedDict
 
 from sqlalchemy import event as sa_event, select
@@ -77,6 +78,7 @@ def acompanhar_banco(intervalo: float = 1.0) -> threading.Event:
 
 def _acompanhar(parar: threading.Event, intervalo: float):
     ultimo = None  # maior número já visto; começa no presente (o histórico não é reenviado)
+    avisado_em = 0.0  # sem banco por muito tempo: um aviso por minuto no registro, não a cada 6 s
     while not parar.wait(intervalo):
         try:
             with Sessao() as s:
@@ -93,7 +95,9 @@ def _acompanhar(parar: threading.Event, intervalo: float):
                     for ev in s.scalars(select(Evento).where(Evento.id.in_(novos)).order_by(Evento.id)):
                         _transmitir(serializar(ev))
         except Exception as e:
-            log.warning("Não consegui buscar os eventos dos outros computadores: %s", str(e).splitlines()[0][:160])
+            if time.monotonic() - avisado_em > 60:
+                avisado_em = time.monotonic()
+                log.warning("Não consegui buscar os eventos dos outros computadores: %s", str(e).splitlines()[0][:160])
             parar.wait(5)
 
 

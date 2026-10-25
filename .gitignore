@@ -8,6 +8,9 @@ __pycache__/
 .pytest_cache/
 backups/
 escritorio.env
+# kit do fornecedor: configurações e pacotes de cada empresa (têm senhas)
+empresas/
+*.escritorio
 dist/
 build/
 dist-instalador/
