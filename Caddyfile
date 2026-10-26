@@ -4,6 +4,11 @@
 	reverse_proxy app:8000 {
 		# eventos em tempo real (SSE) e chat em streaming: sem buffer
 		flush_interval -1
+		# O IP de quem acessa é definido AQUI, pelo Caddy, a partir da conexão real, substituindo qualquer
+		# X-Forwarded-For que o cliente tenha mandado. Sem isto, um atacante escolheria o IP que aparece no
+		# registro e que limita as tentativas de login. (Atrás de outro balanceador? configure trusted_proxies.)
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"

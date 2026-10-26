@@ -8,12 +8,17 @@ services:
   app:
     build: .
     env_file: .env
+    # O app só aceita X-Forwarded-For vindo do Caddy (IP fixo abaixo), não de qualquer um: senão o cliente
+    # escolheria o próprio IP e burlaria o limite de login e a auditoria.
+    environment:
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.29.0.2}
     volumes:
       - dados:/dados               # currículos cifrados (quando ARMAZENAMENTO=disco)
     depends_on:
       db:
         condition: service_healthy
         required: false            # com o banco no Supabase o serviço db não sobe
+    networks: [interna]
     restart: unless-stopped
 
   db:
@@ -30,6 +35,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    networks: [interna]
     restart: unless-stopped
 
   caddy:
@@ -45,7 +51,20 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    # IP fixo: é o único endereço de onde o app aceita X-Forwarded-For (veja FORWARDED_ALLOW_IPS).
+    networks:
+      interna:
+        ipv4_address: 172.29.0.2
     restart: unless-stopped
+
+# Rede interna com faixa fixa, só para o Caddy ter um IP previsível. Se 172.29.0.0/24 colidir com algo no
+# servidor, troque aqui e em FORWARDED_ALLOW_IPS (app) / ipv4_address (caddy).
+networks:
+  interna:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
 
 volumes:
   dados:

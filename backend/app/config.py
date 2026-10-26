@@ -240,6 +240,8 @@ def problemas_producao() -> list[str]:
             p.append("TRIAGEM_API_KEY ausente (POST /triagem ficaria aberto)")
         if not COOKIE_SECURE:
             p.append("COOKIE_SECURE precisa ser true (acesso só por HTTPS)")
+        if "*" in ORIGENS_CORS:
+            p.append("ORIGENS_CORS não pode ser '*' (com credenciais, qualquer site acessaria): liste os domínios")
     if SEED_DEMO:
         p.append("SEED_DEMO precisa ser false (cria usuário e dados de demonstração)")
     if ARMAZENAMENTO not in ("disco", "banco"):

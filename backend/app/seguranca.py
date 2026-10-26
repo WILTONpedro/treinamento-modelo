@@ -63,17 +63,35 @@ ROTAS_LIVRES_DE_TROCA = ("/auth/eu", "/auth/senha", "/auth/sair", "/api/marca")
 
 
 _tentativas: dict[str, deque] = defaultdict(deque)
+_tentativas_conta: dict[str, deque] = defaultdict(deque)
+
+
+def _bater(mapa: dict[str, deque], chave: str, janela: float, teto: int, aviso: str):
+    agora_s = time.time()
+    fila = mapa[chave]
+    while fila and agora_s - fila[0] > janela:
+        fila.popleft()
+    if len(fila) >= teto:
+        raise HTTPException(429, aviso)
+    fila.append(agora_s)
 
 
 def limitar_login(ip: str):
     """No máximo 8 tentativas por IP a cada 5 minutos."""
-    agora_s = time.time()
-    fila = _tentativas[ip]
-    while fila and agora_s - fila[0] > 300:
-        fila.popleft()
-    if len(fila) >= 8:
-        raise HTTPException(429, "Muitas tentativas. Aguarde alguns minutos.")
-    fila.append(agora_s)
+    _bater(_tentativas, ip, 300, 8, "Muitas tentativas. Aguarde alguns minutos.")
+
+
+def limitar_conta(email: str):
+    """Além do limite por IP: no máximo 10 tentativas por conta a cada 15 minutos. Resiste à troca de IP
+    (um atacante com vários IPs ainda fica limitado por conta-alvo)."""
+    email = (email or "").strip().lower()
+    if email:
+        _bater(_tentativas_conta, email, 900, 10, "Muitas tentativas nesta conta. Aguarde alguns minutos.")
+
+
+def login_ok(email: str):
+    """Login certo: zera o contador daquela conta (quem errou e acertou não fica perto do bloqueio)."""
+    _tentativas_conta.pop((email or "").strip().lower(), None)
 
 
 # --------------------------------------------------------------------------- acesso local (ACESSO=local)

@@ -25,7 +25,8 @@ from .models import (Agente, Auditoria, Candidato, Candidatura, Curriculo, Decis
 from .arquivos import ler_arquivo
 from .lideranca import Lideranca, esperar_vez
 from .seguranca import (COOKIE, PAPEIS, auditar, conferir_chave_triagem, conferir_senha, criar_token, exigir, gerar_hash,
-                        limitar_login, pedido_local, senha_temporaria, usuario_atual, validar_senha)
+                        limitar_conta, limitar_login, login_ok, pedido_local, senha_temporaria, usuario_atual,
+                        validar_senha)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("hub")
@@ -281,10 +282,17 @@ async def ciclo_de_vida(app: FastAPI):
     await asyncio.to_thread(vez.soltar)  # fechando: outro computador assume a equipe na hora
 
 
-app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=ciclo_de_vida, docs_url="/api/docs", redoc_url=None)
-if config.ORIGENS_CORS:
+# Em produção, a documentação interativa (OpenAPI/Swagger) fica desligada: ela lista todos os endpoints e
+# formatos para qualquer um, sem login. Em desenvolvimento continua em /api/docs.
+_EM_PRODUCAO = config.AMBIENTE == "producao"
+app = FastAPI(title=config.APP_NOME or "Escritório de Recrutamento", lifespan=ciclo_de_vida,
+              docs_url=None if _EM_PRODUCAO else "/api/docs", redoc_url=None,
+              openapi_url=None if _EM_PRODUCAO else "/openapi.json")
+if config.ORIGENS_CORS and "*" not in config.ORIGENS_CORS:
     app.add_middleware(CORSMiddleware, allow_origins=config.ORIGENS_CORS, allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
+elif config.ORIGENS_CORS:  # "*" com credenciais aceitaria qualquer site: recusado (em produção, nem sobe)
+    log.warning("ORIGENS_CORS contém '*': ignorado (com credenciais, liste os domínios exatos). Veja problemas_producao.")
 
 
 _SEMPRE = ("/api/marca", "/api/saude")
@@ -315,10 +323,14 @@ async def cabecalhos_seguranca(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
+    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+    if config.COOKIE_SECURE:  # só faz sentido sob HTTPS (o Caddy também põe; repetir é inofensivo)
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     if not request.url.path.startswith("/api/docs"):
         resp.headers.setdefault("Content-Security-Policy",
                                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-                                "img-src 'self' data: blob:; frame-src 'self'; object-src 'self'; base-uri 'none'")
+                                "img-src 'self' data: blob:; frame-src 'self'; frame-ancestors 'self'; "
+                                "object-src 'self'; base-uri 'none'; form-action 'self'")
     if request.url.path.startswith("/api/"):
         resp.headers.setdefault("Cache-Control", "no-store")
     else:  # a tela: o navegador sempre confere com o programa antes de usar o que guardou
@@ -387,10 +399,13 @@ def _gravar_sessao(response: Response, u: Usuario):
 def login(dados: Login, request: Request, response: Response, db: Session = Depends(obter_db, scope="function")):
     if config.LOCAL:
         raise HTTPException(400, "Neste computador o escritório abre sem login.")
+    email = dados.email.strip().lower()
     limitar_login(request.client.host if request.client else "?")
-    u = db.scalar(select(Usuario).where(Usuario.email == dados.email.strip().lower()))
+    limitar_conta(email)
+    u = db.scalar(select(Usuario).where(Usuario.email == email))
     if not u or not u.ativo or not conferir_senha(dados.senha, u.senha_hash):
         raise HTTPException(401, "E-mail ou senha incorretos.")
+    login_ok(email)
     u.ultimo_acesso_em = agora()
     _gravar_sessao(response, u)
     auditar(db, u, "login", "usuario", u.id, request)

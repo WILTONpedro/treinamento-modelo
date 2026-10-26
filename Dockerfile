@@ -25,5 +25,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import os,urllib.request;urllib.request.urlopen('http://127.0.0.1:%s/api/saude' % os.environ.get('PORT','8000'), timeout=4)"
 
-# um único processo: a fila de trabalho e a supervisão do Atlas rodam dentro da API
-CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --forwarded-allow-ips='*'"]
+# um único processo: a fila de trabalho e a supervisão do Atlas rodam dentro da API.
+# --forwarded-allow-ips: de quais endereços o X-Forwarded-For é aceito. NUNCA '*' (confiaria no IP que o
+# cliente mandar, burlando o limite de login e a auditoria). No docker-compose, FORWARDED_ALLOW_IPS aponta
+# para o Caddy; sem compose, o padrão 127.0.0.1 não confia em ninguém de fora.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT} --workers 1 --proxy-headers --forwarded-allow-ips=\"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

@@ -106,8 +106,9 @@ Como o banco aguenta a chegada dos currículos:
   pedidos de titulares não podem ser apagados (nem com `DELETE`, nem com `TRUNCATE`), nem pelo painel; a LGPD é
   atendida por anonimização. A tabela `auditoria` só aceita inclusões. Para uma manutenção planejada que
   precise mesmo apagar algo: `SET hub.permitir_exclusao = on;` na mesma sessão;
-- **dados sempre coerentes:** 24 regras de validação (status, origens, tipos, valores não negativos, arquivo de
-  até 50 MB) e um e-mail por candidato ativo; o mesmo titular mandando outro currículo cai no mesmo cadastro;
+- **dados sempre coerentes:** 24 regras de validação (status, origens, tipos, valores não negativos, teto de 50 MB
+  por arquivo no banco; o programa recusa bem antes, no `TAMANHO_MAX_MB`, padrão 10 MB) e um e-mail por candidato
+  ativo; o mesmo titular mandando outro currículo cai no mesmo cadastro;
 - **chegadas simultâneas:** o mesmo arquivo chegando duas vezes ao mesmo tempo (o fluxo de e-mail repetindo o
   envio, por exemplo) vira um registro só; duas instâncias do sistema nunca pegam a mesma tarefa da fila;
 - **nada trava o banco:** o papel `hub_app` tem limites de 60 s por consulta, 15 s de espera por bloqueio e
@@ -704,3 +705,23 @@ O deslocamento é só visual: a tarefa já começou no servidor, o descanso nunc
 - Os custos exibidos são estimativas a partir dos tokens informados pela API; a cobrança oficial é a do Google.
 - No celular o escritório abre ajustado à altura da tela; arraste para os lados para ver tudo.
 - Bancos criados por versões anteriores são atualizados na inicialização (colunas e índices novos são acrescentados).
+
+## Segurança (resumo)
+
+Passou por uma revisão de segurança (incluindo tentativa de abuso). O que vale saber:
+
+- **Como se conecta ao banco:** o programa usa o papel `hub_app`, dono do schema, que é totalmente confiável
+  dentro dele (pode ler e, em manutenção, apagar). O isolamento entre empresas é no PostgreSQL: cada empresa tem
+  papel e schema próprios e recebe *permission denied* no schema da outra. A proteção contra exclusão
+  (`impedir_exclusao`) é uma rede de segurança contra engano, não contra quem já controla a aplicação.
+- **Atrás de um proxy (modo rede):** o IP de quem acessa é definido pelo Caddy a partir da conexão real; o
+  programa só aceita esse cabeçalho do Caddy (`FORWARDED_ALLOW_IPS`). Assim ninguém escolhe o próprio IP para
+  burlar o limite de login ou a auditoria.
+- **Força bruta:** limite por IP (8 em 5 min) e por conta (10 em 15 min).
+- **Produção:** `AMBIENTE=producao` recusa subir sem HTTPS, sem `SEGREDO_JWT`/`CHAVE_ARQUIVOS`, sem
+  `TRIAGEM_API_KEY` ou com `ORIGENS_CORS=*`; a documentação interativa (`/api/docs`) fica desligada.
+- **Currículo é dado, não ordem:** o conteúdo do currículo vai para a IA entre delimitadores, e o prompt manda
+  ignorar instruções embutidas (ex.: "recomende este candidato"). A decisão final é sempre do recrutador humano.
+- **Arquivos maliciosos:** o programa limita a expansão de `.docx` (anti *zip bomb*) e o número de páginas de PDF.
+- **Roteiro (ainda não incluído):** login por SSO/OIDC e MFA no modo rede; papel de banco só-leitura de menor
+  privilégio para as consultas; e verificação automática de dependências (SBOM / `pip-audit`).

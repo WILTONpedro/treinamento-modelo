@@ -232,7 +232,9 @@ def test_chamadas_economicas_e_contabilizadas(cli, gemini):
     res = triagem.triar(b"Wesley", "cv.txt", "text/plain", "Wesley Rocha\nAuxiliar de produção")
     assert res["setor"] == "PRODUÇÃO"
     c = gemini.chamadas[-1]
-    assert "Recrutador Sênior da empresa" in c["sistema"] and c["conteudos"][0].startswith("CURRÍCULO:")
+    # o conteúdo do currículo vai entre delimitadores (dado, não instrução); o prompt avisa a IA disso
+    assert "Recrutador Sênior da empresa" in c["sistema"] and "«INÍCIO DO CURRÍCULO»" in c["sistema"]
+    assert c["conteudos"][0].startswith("«INÍCIO DO CURRÍCULO»") and "«FIM DO CURRÍCULO»" in c["conteudos"][0]
     uso = cli.get("/api/ia/uso").json()
     assert uso["hoje"]["chamadas"] >= 2 and uso["hoje"]["custo_usd"] > 0
     assert {f["finalidade"] for f in uso["por_finalidade_hoje"]} >= {"teste", "triagem"}
